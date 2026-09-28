@@ -32,12 +32,17 @@ if (args.Length == 4 && args[0] == "--capture-sites" && args[2] == "--capture-ou
     }
     return;
 }
-if ((args.Length == 2 || args.Length == 4) && args[0] is "--inspect-svg" or "--inspect-inline-svg")
+if ((args.Length == 2 || args.Length == 4) &&
+    args[0] is "--inspect-svg" or "--inspect-inline-svg" or "--inspect-image-svg")
 {
     // --inspect-inline-svg treats the file as markup that appeared inline in an HTML
     // page: it goes through the HTML parser (foreign-content namespace and attribute
     // case adjustment) and renders with script inert, as the browser's inline path does.
+    // --inspect-image-svg renders the file as an <img> would: script inert and text
+    // areas on one line, the policies ImageLoader applies. --inspect-svg keeps the
+    // strict renderer contract.
     bool inlineMarkup = args[0] == "--inspect-inline-svg";
+    bool browserContext = inlineMarkup || args[0] == "--inspect-image-svg";
     string inspectPath = Path.GetFullPath(args[1]);
     var inspectInfo = new FileInfo(inspectPath);
     if (!inspectInfo.Exists || inspectInfo.Length > SvgRenderLimits.Default.MaxSourceChars)
@@ -51,7 +56,11 @@ if ((args.Length == 2 || args.Length == 4) && args[0] is "--inspect-svg" or "--i
     if (inlineMarkup)
     {
         inspectSource = SerializeInlineSvg(inspectSource) ?? string.Empty;
+    }
+    if (browserContext)
+    {
         inspectLimits.TreatScriptsAsInert = true;
+        inspectLimits.LayOutTextAreasOnOneLine = true;
     }
     using var inspectResult = new FenSvgRenderer().Render(inspectSource, inspectLimits);
     bool inspectAdmissible = SvgRenderResult.IsAdmissible(inspectResult);

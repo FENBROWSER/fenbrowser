@@ -61,7 +61,7 @@ def compare(ours, chrome):
 
 def render_ours(svg_path, prefix, inline):
     # Inline captures go through FenBrowser's HTML parser like an inline <svg> on a page.
-    mode = "--inspect-inline-svg" if inline else "--inspect-svg"
+    mode = "--inspect-inline-svg" if inline else "--inspect-image-svg"
     out = subprocess.run([str(BENCH), mode, str(svg_path), "--output-prefix", str(prefix)],
                          capture_output=True, text=True, timeout=60)
     line = out.stdout.strip().splitlines()[-1] if out.stdout.strip() else "{}"
