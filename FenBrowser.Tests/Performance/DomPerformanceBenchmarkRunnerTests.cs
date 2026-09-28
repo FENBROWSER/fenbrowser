@@ -15,7 +15,9 @@ public sealed class DomPerformanceBenchmarkRunnerTests
         Assert.All(report.Results, result =>
         {
             Assert.True(result.AverageExecutionMs > 0);
-            Assert.True(result.AverageAllocatedBytes > 0);
+            // Unobserved append/remove now allocates nothing at all, so zero is a
+            // valid measurement; the per-benchmark caps below bound the rest.
+            Assert.True(result.AverageAllocatedBytes >= 0);
             Assert.True(result.Operations > 0);
         });
         var appendRemove = report.Results.Single(result => result.Name == "append-remove");
