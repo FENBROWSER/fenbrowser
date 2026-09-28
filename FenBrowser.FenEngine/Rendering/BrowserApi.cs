@@ -9504,6 +9504,45 @@ pre {{
 
         private int _cursorIndex = 0;
         private int _selectionAnchor = -1;
+        private int _adoptedSelectionVersion;
+
+        /// <summary>
+        /// Takes over a selection a script set on the focused text control
+        /// (setSelectionRange, select, a value assignment) since the editor last
+        /// published its own, so the next keystroke edits where the page put it.
+        /// </summary>
+        private void AdoptScriptSelection()
+        {
+            var element = _focusedElement;
+            if (element == null || !FormControlSelection.Applies(element))
+            {
+                return;
+            }
+
+            var version = FormControlSelection.ScriptVersion(element);
+            if (version == _adoptedSelectionVersion)
+            {
+                return;
+            }
+
+            _adoptedSelectionVersion = version;
+            var (start, end, direction) = FormControlSelection.Get(element);
+            if (start == end)
+            {
+                _cursorIndex = end;
+                _selectionAnchor = -1;
+            }
+            else if (direction == "backward")
+            {
+                _cursorIndex = start;
+                _selectionAnchor = end;
+            }
+            else
+            {
+                _cursorIndex = end;
+                _selectionAnchor = start;
+            }
+        }
 
         private void SetFocusedElementState(Element element, bool fromKeyboard = false)
         {
@@ -9525,6 +9564,9 @@ pre {{
                 _focusedElementValueAtFocus = IsTextEntryElement(element)
                     ? ReadEditableValue(element)
                     : null;
+                // A selection set while the control was unfocused is its own; the
+                // focusing path places the caret and publishes it from here on.
+                _adoptedSelectionVersion = FormControlSelection.ScriptVersion(element);
             }
 
             var ownerDocument = element?.OwnerDocument;
@@ -9546,6 +9588,19 @@ pre {{
                 ElementStateManager.Instance.UpdateTextCaret(
                     _focusedElement,
                     Math.Clamp(_cursorIndex, 0, value.Length));
+
+                // The control's own selection (selectionStart/End/Direction) follows
+                // the editor's caret; a backward selection has its anchor after it.
+                if (FormControlSelection.Applies(_focusedElement))
+                {
+                    int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
+                    int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
+                    string direction = _selectionAnchor == -1 || start == end
+                        ? "none"
+                        : (_selectionAnchor > _cursorIndex ? "backward" : "forward");
+                    FormControlSelection.Set(_focusedElement, start, end, direction, fromScript: false);
+                    _adoptedSelectionVersion = FormControlSelection.ScriptVersion(_focusedElement);
+                }
             }
             else
             {
@@ -10231,7 +10286,8 @@ pre {{
              if (_focusedElement == null) return;
              var tag = _focusedElement.NodeName?.ToLowerInvariant();
              if (tag != "input" && tag != "textarea") return;
-             
+
+             AdoptScriptSelection();
              var val = GetTextEntryValue(_focusedElement);
              int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
              int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
@@ -10242,6 +10298,7 @@ pre {{
                  case "selectall":
                      _selectionAnchor = 0;
                      _cursorIndex = val.Length;
+                     PublishTextCaretState();
                      TryInvokeRepaintReady(_engine.GetActiveDom());
                      break;
                      
@@ -10257,6 +10314,7 @@ pre {{
                          _cursorIndex = start + data.Length;
                          _selectionAnchor = -1; // Clear selection
                          SetTextEntryValue(_focusedElement, val);
+                         PublishTextCaretState();
                          TryInvokeRepaintReady(_engine.GetActiveDom());
                      }
                      break;
@@ -10266,6 +10324,7 @@ pre {{
         public string GetSelectedText()
         {
              if (_focusedElement == null) return "";
+             AdoptScriptSelection();
              var val = GetTextEntryValue(_focusedElement);
              int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
              int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
@@ -10275,16 +10334,18 @@ pre {{
         public void DeleteSelection()
         {
              if (_focusedElement == null) return;
+             AdoptScriptSelection();
              var val = GetTextEntryValue(_focusedElement);
              int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
              int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
-             
+
              if (end > start)
              {
                  val = val.Remove(start, end - start);
                  _cursorIndex = start;
                  _selectionAnchor = -1;
                  SetTextEntryValue(_focusedElement, val);
+                 PublishTextCaretState();
                  TryInvokeRepaintReady(_engine.GetActiveDom());
              }
         }
@@ -12139,6 +12200,7 @@ pre {{
 
                 if (tag == "input" || tag == "textarea") // Added textarea support
                 {
+                    AdoptScriptSelection();
                     var val = GetTextEntryValue(_focusedElement);
                     
                     // Normalize selection indices
