@@ -33854,26 +33854,29 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         private bool TryReadNumberList(JsValue value, ref float[] segments)
         {
-            var numbers = new List<float>();
-            if (value.Tag == JsValueTag.Object)
+            // WebIDL sequence<unrestricted double>: every element converted to a number.
+            // Small integers are Int32-tagged, so [4, 2] and its length are not
+            // JsValueTag.Number; an empty sequence is valid and clears the dash list.
+            if (value.Tag != JsValueTag.Object)
             {
-                var lengthValue = _owner.ReadJsProperty(value, "length");
-                if (lengthValue.Tag == JsValueTag.Number)
-                {
-                    var count = (int)lengthValue.AsNumber();
-                    for (var i = 0; i < count; i++)
-                    {
-                        var item = _owner.ReadJsProperty(value, i.ToString(CultureInfo.InvariantCulture));
-                        if (item.Tag == JsValueTag.Number)
-                        {
-                            numbers.Add((float)item.AsNumber());
-                        }
-                    }
-                }
+                return false;
             }
 
-            segments = numbers.ToArray();
-            return numbers.Count > 0;
+            var lengthValue = _owner.ReadJsProperty(value, "length");
+            if (lengthValue.Tag is not (JsValueTag.Int32 or JsValueTag.Number))
+            {
+                return false;
+            }
+
+            var count = (int)Math.Max(0d, ReadJsNumber(lengthValue));
+            var numbers = new float[count];
+            for (var i = 0; i < count; i++)
+            {
+                numbers[i] = (float)ReadJsNumber(_owner.ReadJsProperty(value, i.ToString(CultureInfo.InvariantCulture)));
+            }
+
+            segments = numbers;
+            return true;
         }
 
         private bool TryGetCanvasGradientProperty(
