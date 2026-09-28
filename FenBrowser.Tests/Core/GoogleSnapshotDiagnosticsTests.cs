@@ -367,22 +367,27 @@ namespace FenBrowser.Tests.Core
                 return true;
             }
 
+            // The dump's first line is "<!-- URL: ... -->". Only the page itself (with or
+            // without a query) counts: tests that navigate a fake google.com/search leave
+            // their dumps in the same logs directory, and the assertions here are about
+            // the homepage's search chrome.
+            const string urlHeader = "<!-- URL: ";
             try
             {
-                foreach (string line in File.ReadLines(path).Take(2))
+                string header = File.ReadLines(path).FirstOrDefault() ?? string.Empty;
+                if (!header.StartsWith(urlHeader, StringComparison.Ordinal))
                 {
-                    if (line.IndexOf(requiredUrlPrefix, StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        return true;
-                    }
+                    return false;
                 }
+
+                string url = header.Substring(urlHeader.Length).Replace("-->", string.Empty).Trim();
+                return string.Equals(url, requiredUrlPrefix, StringComparison.OrdinalIgnoreCase) ||
+                       url.StartsWith(requiredUrlPrefix + "?", StringComparison.OrdinalIgnoreCase);
             }
             catch
             {
                 return false;
             }
-
-            return false;
         }
 
         private static async Task<GoogleSnapshotMetrics> AnalyzeSnapshotAsync(string snapshotPath)
