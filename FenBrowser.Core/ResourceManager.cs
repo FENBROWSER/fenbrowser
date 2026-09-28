@@ -600,7 +600,8 @@ public Uri LastTextResponseUri { get; private set; }
                     requestUri,
                     topLevelDocumentUri,
                     IsTopLevelDocumentRequest(secFetchDest),
-                    context?.Method ?? HttpMethod.Get.Method);
+                    context?.Method ?? HttpMethod.Get.Method,
+                    BrowserSettings.Instance.BlockThirdPartyCookies);
                 if (!string.IsNullOrEmpty(cookieHeader))
                 {
                     cookieIdentity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(cookieHeader)));
@@ -954,11 +955,15 @@ public Uri LastTextResponseUri { get; private set; }
                 request.RequestUri,
                 topLevelDocumentUri,
                 isTopLevelNavigation,
-                request.Method?.Method ?? HttpMethod.Get.Method);
+                request.Method?.Method ?? HttpMethod.Get.Method,
+                BrowserSettings.Instance.BlockThirdPartyCookies);
 
             if (!string.IsNullOrWhiteSpace(cookieHeader))
             {
                 request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+                // The jar already withheld third-party cookies and kept Partitioned ones;
+                // PrivacyHandler's whole-header strip is only for headers built elsewhere.
+                PrivacyHandler.MarkThirdPartyCookiesFiltered(request);
             }
         }
 

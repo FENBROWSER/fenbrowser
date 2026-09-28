@@ -2733,7 +2733,7 @@ private void FlushPendingLayoutForScript(Element element)
                  return false;
              };
 
-             js.CookieReadBridge = scope => CookieJar.GetDocumentCookieString(scope, _activeBaseUri ?? scope);
+             js.CookieReadBridge = scope => CookieJar.GetDocumentCookieString(scope, _activeBaseUri ?? scope, BrowserSettings.Instance.BlockThirdPartyCookies);
              js.CookieWriteBridge = (scope, cookieString) =>
                  CookieJar.SetDocumentCookie(scope, cookieString, _activeBaseUri ?? scope, BrowserSettings.Instance.BlockThirdPartyCookies);
              js.RequestRender = ScheduleRepaintFromJs;

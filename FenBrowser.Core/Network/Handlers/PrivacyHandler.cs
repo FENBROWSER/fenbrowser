@@ -1,11 +1,22 @@
 using System;
 using System.Threading;
+using System.Net.Http;
 using System.Threading.Tasks;
 
 namespace FenBrowser.Core.Network.Handlers
 {
     public class PrivacyHandler : INetworkHandler
     {
+        private static readonly HttpRequestOptionsKey<bool> ThirdPartyCookiesFiltered = new("fen.cookies.third-party-filtered");
+
+        /// <summary>
+        /// The request's Cookie header came from the cookie jar, which already applied
+        /// third-party blocking per cookie (keeping Partitioned cookies), so the header
+        /// must not be stripped wholesale here.
+        /// </summary>
+        internal static void MarkThirdPartyCookiesFiltered(HttpRequestMessage request) =>
+            request.Options.Set(ThirdPartyCookiesFiltered, true);
+
         public async Task HandleAsync(NetworkContext context, Func<Task> next, CancellationToken ct)
         {
             ArgumentNullException.ThrowIfNull(context);
@@ -33,7 +44,8 @@ namespace FenBrowser.Core.Network.Handlers
             // Do not apply a second unconditional cross-origin trimming policy here;
             // doing so changes the semantics of valid policies such as unsafe-url.
 
-            if (settings.BlockThirdPartyCookies && IsThirdPartyRequest(context))
+            bool jarFiltered = req.Options.TryGetValue(ThirdPartyCookiesFiltered, out var filtered) && filtered;
+            if (settings.BlockThirdPartyCookies && !jarFiltered && IsThirdPartyRequest(context))
             {
                 req.Headers.Remove("Cookie");
             }

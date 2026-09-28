@@ -5,6 +5,9 @@ using FenBrowser.Core;
 using System.Net.Http;
 using System.Threading.Tasks;
 using System;
+using System.Net;
+using System.Threading;
+using FenBrowser.Core.Storage;
 
 namespace FenBrowser.Tests.Privacy
 {
@@ -175,6 +178,75 @@ namespace FenBrowser.Tests.Privacy
             await handler.HandleAsync(context, () => Task.CompletedTask, default);
 
             Assert.False(request.Headers.Contains("Cookie"));
+        }
+
+        // CHIPS: a Partitioned cookie is keyed to the top-level site it was set under, so
+        // third-party cookie blocking still lets an embedded site set and read it; only
+        // its unpartitioned cookies are withheld in the cross-site context.
+        [Fact]
+        public void CookieJar_WithThirdPartyBlocking_KeepsPartitionedCookiesOnly()
+        {
+            var jar = new BrowserCookieJar();
+            var frame = new Uri("https://widget.test/frame");
+            var top = new Uri("https://parent.test/page");
+
+            jar.SetDocumentCookie(frame, "chips=1; Secure; SameSite=None; Partitioned", top, blockThirdPartyCookies: true);
+            jar.SetDocumentCookie(frame, "tracker=1; Secure; SameSite=None", top, blockThirdPartyCookies: true);
+
+            var header = jar.GetRequestCookieHeader(frame, top, blockThirdPartyCookies: true);
+            Assert.Contains("chips=1", header);
+            Assert.DoesNotContain("tracker=1", header);
+
+            // An unpartitioned cookie the site set as a first party is not sent to it
+            // while it is embedded elsewhere.
+            jar.SetDocumentCookie(frame, "session=1; Secure; SameSite=None", frame);
+            Assert.DoesNotContain("session=1", jar.GetRequestCookieHeader(frame, top, blockThirdPartyCookies: true));
+            Assert.Contains("session=1", jar.GetRequestCookieHeader(frame, top, blockThirdPartyCookies: false));
+        }
+
+        [Fact]
+        public async Task ResourceManager_WithThirdPartyBlocking_SendsPartitionedCookies()
+        {
+            BrowserSettings.Instance.BlockThirdPartyCookies = true;
+            var requestUri = new Uri("https://assets.widget.test/data");
+            var frameUri = new Uri("https://widget.test/frame");
+            var top = new Uri("https://parent.test/page");
+            var jar = new BrowserCookieJar();
+            jar.SetDocumentCookie(requestUri, "chips=1; Secure; SameSite=None; Partitioned", top);
+            jar.SetDocumentCookie(requestUri, "tracker=1; Secure; SameSite=None", requestUri);
+
+            string sent = null;
+            using var client = new HttpClient(new CapturingHandler(r => sent = r.Headers.TryGetValues("Cookie", out var v) ? string.Join("; ", v) : string.Empty));
+            var manager = new ResourceManager(client, isPrivate: true, jar);
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+            using var response = await manager.SendAsync(request, policy: null, new FetchContext
+            {
+                RequestUri = requestUri,
+                InitiatorUri = frameUri,
+                FrameDocumentUri = frameUri,
+                TopLevelDocumentUri = top,
+                Destination = "empty",
+                Mode = "no-cors",
+                CredentialsMode = "include",
+                Method = "GET"
+            });
+
+            Assert.Contains("chips=1", sent);
+            Assert.DoesNotContain("tracker=1", sent);
+        }
+
+        private sealed class CapturingHandler : HttpMessageHandler
+        {
+            private readonly Action<HttpRequestMessage> _capture;
+
+            public CapturingHandler(Action<HttpRequestMessage> capture) => _capture = capture;
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                _capture(request);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            }
         }
     }
 }
