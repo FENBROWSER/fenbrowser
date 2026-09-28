@@ -11182,6 +11182,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return decls;
                 }
 
+                // CSSOM 6.7: the camel-cased attribute (listStyleType), the
+                // webkit-cased one (webkitTransform) and cssFloat all name the dashed
+                // CSS property.
+                function __fenCssPropertyName(prop) {
+                    if (prop === 'cssFloat') return 'float';
+                    if (prop.startsWith('--') || !/[A-Z]/.test(prop)) return prop;
+                    var dashed = prop.replace(/[A-Z]/g, function (c) { return '-' + c.toLowerCase(); });
+                    return dashed.startsWith('webkit-') ? '-' + dashed : dashed;
+                }
+
                 function __fenWrapStyleProxy(decl) {
                     return new Proxy(decl, {
                         get: function (target, prop, receiver) {
@@ -11193,7 +11203,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 if (!isNaN(idx) && String(idx) === prop) {
                                     return target.item(idx);
                                 }
-                                return target.getPropertyValue(prop);
+                                return target.getPropertyValue(__fenCssPropertyName(prop));
                             }
                             return Reflect.get(target, prop, receiver);
                         },
@@ -11206,7 +11216,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 if (prop in target) {
                                     return Reflect.set(target, prop, value, receiver);
                                 }
-                                target.setProperty(prop, value);
+                                target.setProperty(__fenCssPropertyName(prop), value);
                                 return true;
                             }
                             return Reflect.set(target, prop, value, receiver);
