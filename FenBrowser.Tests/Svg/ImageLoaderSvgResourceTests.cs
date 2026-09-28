@@ -701,6 +701,43 @@ public sealed class ImageLoaderSvgResourceTests
     }
 
     [Fact]
+    public void SvgImage_SpacedNamespaceDeclarationRendersAsWritten()
+    {
+        // XML 1.0 §2.3 Eq allows whitespace around '=', so this root already
+        // declares the SVG namespace; the loader must not declare it a second time.
+        using SKBitmap? bitmap = RenderInline(
+            "<svg xmlns = 'http://www.w3.org/2000/svg' width='20' height='20'>" +
+            "<rect width='20' height='20' fill='lime'/></svg>");
+
+        Assert.NotNull(bitmap);
+        Assert.Equal(SKColors.Lime, bitmap!.GetPixel(10, 10));
+    }
+
+    [Fact]
+    public void SvgImage_UndeclaredNamespaceStillRendersAsSvg()
+    {
+        using SKBitmap? bitmap = RenderInline(
+            "<svg width='20' height='20'><rect width='20' height='20' fill='lime'/></svg>");
+
+        Assert.NotNull(bitmap);
+        Assert.Equal(SKColors.Lime, bitmap!.GetPixel(10, 10));
+    }
+
+    private static SKBitmap? RenderInline(string svg)
+    {
+        ImageLoader.ClearCache();
+        try
+        {
+            SKBitmap? cached = ImageLoader.GetInlineSvgImage(svg, 20, 20);
+            return cached?.Copy();
+        }
+        finally
+        {
+            ImageLoader.ClearCache();
+        }
+    }
+
+    [Fact]
     public void SharedAdmissionPredicate_RejectsEveryNonAuthoritativeResultShape()
     {
         Assert.False(SvgRenderResult.IsAdmissible(null));

@@ -1231,20 +1231,9 @@ namespace FenBrowser.FenEngine.Rendering
                 return null;
             }
 
-            if (!svgContent.Contains("xmlns=\"http://www.w3.org/2000/svg\"") &&
-                !svgContent.Contains("xmlns='http://www.w3.org/2000/svg'"))
-            {
-                if (svgContent.Contains("<svg "))
-                    svgContent = svgContent.Replace("<svg ", "<svg xmlns=\"http://www.w3.org/2000/svg\" ");
-                else if (svgContent.Contains("<svg>"))
-                    svgContent = svgContent.Replace("<svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\">");
-            }
-
-            if (svgContent.Contains("viewbox="))
-            {
-                svgContent = svgContent.Replace("viewbox=", "viewBox=");
-            }
-
+            // The markup reaches the parser verbatim. The first-party parser already
+            // treats an undeclared root <svg> as SVG, and XML names are case-sensitive,
+            // so textual namespace or 'viewbox' fix-ups would only rewrite author text.
             if (!TryAdmitSvgTargetSizeForContent(
                     targetWidth,
                     targetHeight,
