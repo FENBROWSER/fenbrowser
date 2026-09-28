@@ -6414,8 +6414,24 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            var parts = classAttr.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            return parts.Any(p => string.Equals(p, token, StringComparison.OrdinalIgnoreCase));
+            // Runs for every painted element, so scan in place: a lambda over the
+            // split tokens allocated a closure on every call, and a split array plus
+            // substrings for every element with a class.
+            var remaining = classAttr.AsSpan();
+            while (!remaining.IsEmpty)
+            {
+                remaining = remaining.TrimStart(" \t\r\n\f");
+                var end = remaining.IndexOfAny(" \t\r\n\f");
+                var candidate = end < 0 ? remaining : remaining[..end];
+                if (!candidate.IsEmpty && candidate.Equals(token, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                remaining = end < 0 ? ReadOnlySpan<char>.Empty : remaining[end..];
+            }
+
+            return false;
         }
         
         /// <summary>
