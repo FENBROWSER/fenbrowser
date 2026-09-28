@@ -183,8 +183,10 @@ public sealed class SyntheticCaptchaFlowTests
 
             RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
             var anchor = Assert.IsType<Element>(frameDocument.GetElementById("anchor"));
+            // OnClick queues the input task and page handlers run off the engine
+            // thread, so each click's effect is awaited rather than read at once.
             ClickCenter(host, renderer, anchor);
-            Assert.Equal("yes", frameDocument.Body?.GetAttribute("data-anchor"));
+            await WaitForAsync(() => FrameBodyAttributeIs(frameDocument, scriptEngine, "data-anchor"), "anchor click handler");
             await WaitForAsync(
                 () =>
                 {
@@ -244,10 +246,13 @@ public sealed class SyntheticCaptchaFlowTests
             Assert.True(verifyRect.Bottom <= expandedFrame.Bottom);
 
             ClickCenter(host, renderer, tile);
-            Assert.Equal("yes", frameDocument.Body?.GetAttribute("data-selected"));
+            await WaitForAsync(() => FrameBodyAttributeIs(frameDocument, scriptEngine, "data-selected"), "tile click handler");
             ClickCenter(host, renderer, verify);
-            Assert.Equal("yes", frameDocument.Body?.GetAttribute("data-verify-clicked"));
+            // The handler marks the click and then, in the same run, the verification;
+            // wait for the last of its writes rather than reading mid-handler.
+            await WaitForAsync(() => FrameBodyAttributeIs(frameDocument, scriptEngine, "data-verified"), "verify click handler");
 
+            Assert.Equal("yes", frameDocument.Body?.GetAttribute("data-verify-clicked"));
             Assert.Equal("yes", frameDocument.Body?.GetAttribute("data-selected"));
             Assert.Equal("yes", frameDocument.Body?.GetAttribute("data-verified"));
         }
@@ -256,6 +261,12 @@ public sealed class SyntheticCaptchaFlowTests
             BrowserSettings.Instance.BlockThirdPartyCookies = previousThirdPartySetting;
             ImageLoader.ClearCache();
         }
+    }
+
+    private static bool FrameBodyAttributeIs(Document frameDocument, FenJsBrowserScriptEngine scriptEngine, string name)
+    {
+        scriptEngine.Evaluate("void 0");
+        return string.Equals(frameDocument.Body?.GetAttribute(name), "yes", StringComparison.Ordinal);
     }
 
     private static void ClickCenter(BrowserHost host, SkiaDomRenderer renderer, Element element)
