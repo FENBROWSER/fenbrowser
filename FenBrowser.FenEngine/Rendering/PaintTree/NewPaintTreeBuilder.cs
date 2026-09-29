@@ -3592,24 +3592,31 @@ namespace FenBrowser.FenEngine.Rendering
             tileWidth = bitmapWidth;
             tileHeight = bitmapHeight;
 
-            var bitmap = new SKBitmap(new SKImageInfo(
-                bitmapWidth,
-                bitmapHeight,
-                SKColorType.Bgra8888,
-                SKAlphaType.Premul));
-            using (var canvas = new SKCanvas(bitmap))
+            var positions = SplitTopLevelComma(style.BackgroundPosition ?? string.Empty)
+                .Select(p => p.Trim())
+                .ToList();
+            var cacheKey = string.Join("\u0001", layers) + "\u0002" + string.Join("\u0001", positions) +
+                           "\u0002" + bitmapWidth.ToString(CultureInfo.InvariantCulture) +
+                           "x" + bitmapHeight.ToString(CultureInfo.InvariantCulture);
+            var bitmap = GradientTileCache.GetOrCreate(cacheKey, () =>
             {
-                canvas.Clear(SKColors.Transparent);
-                var positions = SplitTopLevelComma(style.BackgroundPosition ?? string.Empty)
-                    .Select(p => p.Trim())
-                    .ToList();
-
-                for (int i = layers.Count - 1; i >= 0; i--)
+                var tile = new SKBitmap(new SKImageInfo(
+                    bitmapWidth,
+                    bitmapHeight,
+                    SKColorType.Bgra8888,
+                    SKAlphaType.Premul));
+                using (var canvas = new SKCanvas(tile))
                 {
-                    var layerPosition = ResolveGradientLayerPosition(positions, i, tileWidth, tileHeight);
-                    DrawGradientLayerTile(canvas, layers[i], tileWidth, tileHeight, layerPosition);
+                    canvas.Clear(SKColors.Transparent);
+                    for (int i = layers.Count - 1; i >= 0; i--)
+                    {
+                        var layerPosition = ResolveGradientLayerPosition(positions, i, tileWidth, tileHeight);
+                        DrawGradientLayerTile(canvas, layers[i], tileWidth, tileHeight, layerPosition);
+                    }
                 }
-            }
+
+                return tile;
+            });
 
             var origin = ResolveBackgroundOriginPoint(box, style);
             var (tileModeX, tileModeY) = ResolveBackgroundTileModes(style.BackgroundRepeat);
