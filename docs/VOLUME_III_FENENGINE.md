@@ -12927,18 +12927,146 @@ about a third more mutated documents reach the whole pipeline.
 
 What this does not do: run script against an SVG document. The 36 WPT reftests
 blocked as dynamic content mutate the document from script before the comparison, so
-they need FenJS executing against a top-level SVG document, which is a separate
-project.
+they need FenJS executing against a top-level SVG document; 2.190 onwards does that.
 
 Also recorded here, as decisions rather than defects:
 
 - SVG 2 text in an area (`inline-size`, `shape-inside`, multi-line `white-space`,
   `text-align`, vertical `writing-mode`) blocks 19 reftests. Those references
   hard-code line breaks for FreeSans metrics, and Chromium does not implement these
-  properties in SVG, painting such text on one line. The renderer refuses the
-  document instead, under its complete-render contract; relaxing that for text is a
-  product decision.
+  properties in SVG, painting such text on one line. The strict renderer refuses the
+  document; browser consumers set `SvgRenderLimits.LayOutTextAreasOnOneLine`, which
+  drops the area properties and lays the text out on one line as Chromium paints it
+  (vertical `writing-mode` is refused either way).
 - Duplicate attributes keep the first occurrence (2.188).
+
+## 2.190 Scripted SVG Documents (2026-09-29)
+
+SVG documents now run their scripts through FenJS the way other engines do, which is
+what the WPT reftests that mutate the document before the comparison need.
+
+- `<script href>`: an SVG script's source is `href`, else the legacy `xlink:href`
+  (`ScriptSourceOf` in `Scripting/BrowserScriptEngineRuntime.cs`); HTML scripts keep
+  `src`.
+- `setAttributeNS`, `getAttributeNS`, `hasAttributeNS` and `removeAttributeNS` are
+  bound on elements (DOM Standard, "set an attribute value" by namespace and local
+  name).
+- Image load and error events (`Scripting/FenJsImageLoadEvents.cs`): whenever an
+  HTML `img` or SVG `image` gets a source (at setup, on insertion or on a source
+  attribute change), the resource is fetched through the document's pipeline and
+  decoded into the image cache, then a non-bubbling `load` or `error` is dispatched.
+  Only the latest source fires; a superseded request is dropped.
+- Handler attributes: `onload` is wired on every element except `body`/`frameset`
+  (whose `onload` is the window's), and wiring includes the root element itself.
+  It used to walk only the root's descendants, so `<svg onload>` and
+  `<html onclick>` never ran when the engine was handed the document element.
+- SVG load events (`DispatchSvgLoadEvents`, `Scripting/FenJsSvgDom.cs`): after the
+  document loads, each `svg` element gets a non-bubbling `load`, innermost first,
+  before the window's load (SVG 1.1 18.4 SVGLoad, as current engines dispatch it).
+
+This supersedes the "does not run script against an SVG document" note in 2.189.
+
+## 2.191 SVG DOM Transform Lists And Geometry (2026-09-29)
+
+`Scripting/FenJsSvgDom.cs` implements SVGTransform, SVGTransformList,
+SVGAnimatedTransformList and SVGMatrix for `transform` (graphics elements and
+`clipPath`), `gradientTransform` and `patternTransform`, plus `createSVGTransform`,
+`createSVGTransformFromMatrix` and `createSVGMatrix` on `svg`. A list reflects its
+attribute both ways (SVG 2 4.5.10): it re-parses the attribute whenever it changed
+since the list last looked, and every list or item mutation serializes the whole
+list back, so the renderer only ever reads attributes. An item that is already in a
+list is copied on insertion; out-of-range indexes throw IndexSizeError, `animVal`
+is read-only (NoModificationAllowedError), non-finite numbers throw TypeError, and a
+list holds at most 4096 items. Parsing uses the renderer's own grammar:
+`SvgValues.TryParseTransformFunctions` returns the functions of a list and
+`TryComposeTransformFunctions` composes them, so DOM and paint cannot disagree. An
+empty, whitespace-only or invalid `gradientTransform`/`patternTransform` does not
+stop template inheritance (it is an invalid declaration of the `transform`
+property), which is what `baseVal.clear()` leaves behind.
+
+`Scripting/FenJsSvgGeometry.cs` adds `getTotalLength` and `getPointAtLength` to
+`path` and the basic shapes (SVG 2 9.1). The outline comes from
+`Svg/SvgGeometryOutline.cs`, which the renderer now also uses for rect corners and
+`points` lists, so a script measures the painted path. Geometry values are read in
+cascade order (inline style, computed style, attribute) and only for the properties
+that are CSS properties (`cx cy r rx ry x y width height d`; `x1`..`y2` and
+`points` stay attributes). Percentages resolve against the nearest `svg` viewBox,
+else its absolute size, else the window. Lengths are measured at Skia
+`resScale` 1024: at the default a small circle measured 2.5% short.
+
+## 2.192 Paint-Server Transforms And Oversized Pattern Tiles (2026-09-29)
+
+- A `transform` declared through CSS on a gradient or pattern is resolved with
+  `SvgCssTransform` (units, `transform-origin`, the view-box reference box);
+  previously any value with units was read with the attribute grammar and sent the
+  document to fallback. Only the attribute uses the SVG list grammar.
+- `patternTransform` applies in the referencing element's user space, after
+  objectBoundingBox units have placed the tile (as Blink and Gecko do). It used to
+  apply inside the bounding-box space, so `translate` moved the pattern by multiples
+  of the box.
+- A pattern tile too large to rasterize (the default objectBoundingBox units make a
+  `width='100'` tile 100 times the shape) no longer fails the render when the shape
+  can only show one instance of it. Shapes pass the user-space area their fill and
+  stroke can reach (`ShapePaintedArea`: bounds grown by the worst-case stroke
+  extent); when that lies within one instance, only its visible part is recorded
+  and drawn with a clamped shader. Tiles whose painted area spans instances, text,
+  context paint and filter inputs keep the raster limit and fail closed.
+
+## 2.193 Zoom And Pan: currentScale And currentTranslate (2026-09-29)
+
+`Rendering/SvgZoomAndPanState.cs` keeps each outermost `svg` element's zoom and
+pan beside the DOM (never as markup). Scripts set it through `currentScale` and a
+live `currentTranslate` point (SVG 2 5.1.1); a nested `svg` reports scale 1 and
+ignores changes. Painting passes it, only for a document's root `svg`, as
+`SvgRenderRequest.ZoomAndPan`. The engine applies it to the root's user space
+inside the viewport clip, so zooming out reveals content beyond the viewport.
+Values beyond scale 10000 or translation 1e6 are refused by the renderer; the
+inline SVG cache key includes the zoom.
+
+## 2.194 The SMIL Document Timeline (2026-09-29)
+
+Inline and root SVGs were always painted at document time zero.
+`Rendering/SvgAnimationTimeline.cs` keeps a timeline per outermost `svg`: it starts
+when first used, can be paused, resumed and seeked (clamped to 0..1e9 seconds), and
+records the instance times that `beginElement(At)`/`endElement(At)` add (at most 64
+per list; negative times clamp to 0 because the timing grammar has none). Painting
+(`NewPaintTreeBuilder`) samples the renderer's SMIL model at the timeline's current
+time when the subtree holds animation elements (time stays 0 otherwise, keeping the
+bitmap cacheable) and appends the DOM instance times to the `begin`/`end` lists of
+the serialized copy. Script bindings (`Scripting/FenJsSvgAnimation.cs`):
+`pauseAnimations`, `unpauseAnimations`, `animationsPaused`, `getCurrentTime`,
+`setCurrentTime` on any `svg` (acting on its outermost timeline) and `beginElement`,
+`beginElementAt`, `endElement`, `endElementAt`, `getCurrentTime`, `targetElement`
+on animation elements.
+
+Not done: animations do not yet drive repaints by themselves. A frame shows the
+current time whenever something repaints, but an otherwise idle page with a running
+animation is not repainted per frame.
+
+## 2.195 External Resources For Inline SVG And External use (2026-09-29)
+
+- Inline and root SVGs preload their same-origin images and external `use`
+  documents (`ImageLoader.ResolveInlineSvgResources`), through the document's fetch
+  pipeline and the same snapshot builder SVG images use. Until the snapshot is ready
+  the render fails closed as before; a repaint follows. Snapshots are keyed by the
+  discovered resource set (plus owner and base URL), so animation frames and zoom
+  levels share one; at most 32 are retained, and the preload counts as a pending
+  image load. Cross-origin references are never fetched.
+- `use` with a URL (`sprites.svg#icon`, SVG 2 5.6) renders
+  (`Svg/SvgRenderEngine/Use.cs`, `DrawExternalUse`). The document is obtained only
+  through the authorized resolver and same-origin, parsed within the render limits,
+  cascaded with its own style sheets and sampled at the same document time by an
+  engine of its own, which then draws the target with the `use` element's inherited
+  style. A URL naming the document itself resolves locally. Refusals inside the
+  external document count as this render's (`SvgParseReport.Absorb`), so the
+  complete-render contract holds; the parse-time refusal of every external `use`
+  href was removed because this draw-time decision replaces it. Resource depth is
+  capped at 16.
+
+Open decision, not changed: a reference the renderer must refuse (for example a
+cross-origin `use`) still fails the whole render, on every path, as the existing
+fail-closed tests require. Browsers paint the rest of the document. Relaxing this is
+a security-policy decision.
 
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 

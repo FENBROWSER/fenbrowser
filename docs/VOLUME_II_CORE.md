@@ -1961,3 +1961,17 @@ HTML integration-point checks compare against `foreignObject`. End tags still cl
 the adjusted elements because the open-element stack compares names
 case-insensitively. Covered by `Core/Parsing/HtmlSvgNameAdjustmentTests`; the
 html5lib tree-construction tests pass unchanged.
+
+### 1.98 The ID Index Follows Tree Moves; Document.adoptNode (2026-09-29)
+
+`TreeScope` keeps an incremental ID index, but elements only entered it when it was
+first built or when their `id` changed. An element inserted after the first
+`getElementById` was never found, and a removed one stayed findable. `Node
+.UpdateTreeScopeRecursive` now moves each element's ID from the old scope's index
+to the new one whenever it changes trees (DOM Standard 4.2.4, "get an element by
+ID" only sees the tree). Seventeen previously failing iframe and scripting tests
+that look elements up after inserting them now pass. `Document.AdoptNode` (DOM
+Standard 4.5, "adopt") removes a node from its parent and rehomes its subtree,
+throwing NotSupportedError for documents and HierarchyRequestError for shadow roots;
+it is bound as `document.adoptNode`. Covered by `Core/DomIdIndexTests` and
+`Scripting/AdoptNodeTests`.

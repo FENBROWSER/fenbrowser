@@ -5858,3 +5858,24 @@ Result on 2026-09-29: 151/151 match (no pixel over the threshold): GitHub 128,
 X 10, Wikipedia 5, YouTube 3, Grafana 3, Google 1, Hacker News 1. The first run found
 five inline documents refused because the HTML tree builder did not restore SVG
 element names (VOLUME II 1.97), which is fixed.
+
+## 6.251 Scripted WPT SVG Reftests As Documents (2026-09-29)
+
+The static corpus runner cannot evaluate reftests that change the document from
+script, so `scripts/BenchSvg/WptDocumentRunner.cs` loads each test and reference as a
+top-level document in `BrowserHost` (XML DOM, FenJS, CSS, layout, paint) from a
+loopback, GET-only, root-confined HTTP server over the WPT checkout. It honours
+`reftest-wait`, primes a paint, waits for pending image loads to drain, paints at
+800x600 on white and compares with the manifest's fuzzy tolerances. Reports go to the
+`--output` directory; with `FEN_SVG_DIAGNOSTICS=failures` each test's diagnostics
+include SVG render refusals next to script errors.
+
+    BenchSvg --wpt-documents D:/wpt/svg --tests scripts/BenchSvg/scripted-reftests.txt \
+             --output Results/svg/wpt-documents
+
+Result on 2026-09-29: 34/36 (13 before this work). The static image corpus moved from
+232/309 to 234/309 with external `use`. Remaining: `text/reftests/first-letter.svg`
+(`::first-letter` is refused in SVG text) and `struct/reftests/use-cross-origin.svg`
+(the refused cross-origin `use` fails the whole render; see VOLUME III 2.195). The
+fuzz suite gained a target whose `use` elements load external documents that resolve
+to the mutated document itself.
