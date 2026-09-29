@@ -105,10 +105,13 @@ namespace FenBrowser.FenEngine.Svg
 
             SKMatrix patternTransform = pattern.Transform;
 
+            // patternTransform acts in the referencing element's user space, after
+            // objectBoundingBox units resolve the tile there (as Blink and Gecko do,
+            // and as WPT pservers/reftests/pattern-transform-03 requires).
             var localMatrix = context == null
-                ? SKMatrix.Concat(unitsMatrix, patternTransform)
+                ? SKMatrix.Concat(patternTransform, unitsMatrix)
                 : SKMatrix.Concat(
-                    SKMatrix.Concat(unitsMatrix, patternTransform), context.ToElementSpace);
+                    SKMatrix.Concat(patternTransform, unitsMatrix), context.ToElementSpace);
             if (!SvgValues.IsFinite(localMatrix))
             {
                 _report.RequireFallback("SVG pattern transform is not finite and bounded");

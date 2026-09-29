@@ -29,6 +29,18 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(90, 90));
         }
 
+        [Theory]
+        [InlineData("style='transform: translate(-25px, -25px) scale(2)'")]
+        [InlineData("patternTransform='translate(-25 -25) scale(2)'")]
+        public void CssAndAttributeTransforms_AgreeOnAnOversizedTile(string transform)
+        {
+            // Scaled by 2 and pulled back by 25, the lime square covers the whole rect.
+            using var result = Render(string.Format(HugeTile, transform));
+
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(1, 1));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(98, 98));
+        }
+
         [Fact]
         public void CssTransformWithUnits_AppliesToAGradient()
         {
