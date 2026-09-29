@@ -5,6 +5,8 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Adapters;
+using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Svg;
 using FenBrowser.Js.Host;
 using FenBrowser.Js.Runtime;
@@ -41,6 +43,8 @@ public sealed partial class FenJsBrowserScriptEngine
     };
 
     private readonly ConditionalWeakTable<Element, Dictionary<string, SvgAnimatedTransformListHost>> _svgTransformLists = new();
+
+    private readonly ConditionalWeakTable<Element, SvgCurrentTranslateHost> _svgCurrentTranslates = new();
 
     private abstract class FenJsSvgDomHost
     {
@@ -217,6 +221,24 @@ public sealed partial class FenJsBrowserScriptEngine
     }
 
     /// <summary>
+    /// SVGSVGElement.currentTranslate: a live point over the zoom-and-pan translation
+    /// of an outermost svg element. Any other svg element's point is detached (SVG 2
+    /// §5.1.1: its changes have no effect).
+    /// </summary>
+    private sealed class SvgCurrentTranslateHost : FenJsSvgDomHost
+    {
+        public SvgCurrentTranslateHost(Element svg) => Svg = svg;
+
+        public override string InterfaceName => "SVGPoint";
+
+        public Element Svg { get; }
+
+        public float DetachedX { get; set; }
+
+        public float DetachedY { get; set; }
+    }
+
+    /// <summary>
     /// SVGMatrix. A matrix obtained from SVGTransform.matrix is a live view: writing
     /// a component turns the transform into a matrix transform. Any other matrix owns
     /// its value.
@@ -296,6 +318,14 @@ public sealed partial class FenJsBrowserScriptEngine
 
         switch (property)
         {
+            case "currentScale":
+                value = JsValue.FromNumber(IsOutermostSvgElement(element) ? SvgZoomAndPanState.Get(element).Scale : 1f);
+                return true;
+            case "currentTranslate":
+                value = ToHostOrNull(
+                    _svgCurrentTranslates.GetValue(element, svg => new SvgCurrentTranslateHost(svg)),
+                    HostObjectKind.Other);
+                return true;
             case "createSVGTransform":
                 value = GetOrCreateHostCallable(element, property,
                     (_, _) => ToHostOrNull(new SvgTransformHost(IdentityMatrixFunction()), HostObjectKind.Other));
@@ -310,6 +340,35 @@ public sealed partial class FenJsBrowserScriptEngine
                 return true;
             default:
                 return false;
+        }
+    }
+
+    /// <summary>
+    /// Assignments to SVG element properties this binding owns. currentScale sets the
+    /// zoom of an outermost svg element and is ignored on any other (SVG 2 §5.1.1).
+    /// </summary>
+    private bool TrySetSvgElementProperty(Element element, string property, JsValue value)
+    {
+        if (property != "currentScale" || element?.NamespaceUri != Namespaces.Svg || element.LocalName != "svg")
+        {
+            return false;
+        }
+
+        float scale = Math.Clamp(ToSvgFloat(value), -SvgZoomAndPan.MaxScale, SvgZoomAndPan.MaxScale);
+        if (IsOutermostSvgElement(element))
+        {
+            var current = SvgZoomAndPanState.Get(element);
+            SetZoomAndPan(element, current with { Scale = scale });
+        }
+        return true;
+    }
+
+    private void SetZoomAndPan(Element svg, SvgZoomAndPan value)
+    {
+        if (SvgZoomAndPanState.TrySet(svg, value))
+        {
+            svg.MarkDirty(InvalidationKind.Paint);
+            RequestRender?.Invoke();
         }
     }
 
@@ -336,6 +395,19 @@ public sealed partial class FenJsBrowserScriptEngine
         }
     }
 
+    /// <summary>An svg element with no svg ancestor (SVG 2 "outermost svg element").</summary>
+    private static bool IsOutermostSvgElement(Element element)
+    {
+        for (var ancestor = element.ParentElement; ancestor != null; ancestor = ancestor.ParentElement)
+        {
+            if (ancestor.LocalName == "svg" && ancestor.NamespaceUri == Namespaces.Svg)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private bool TryGetSvgDomProperty(FenJsSvgDomHost host, string property, out JsValue value)
     {
         bool found = host switch
@@ -345,6 +417,7 @@ public sealed partial class FenJsBrowserScriptEngine
             SvgTransformHost transform => TryGetTransformProperty(transform, property, out value),
             SvgMatrixHost matrix => TryGetMatrixProperty(matrix, property, out value),
             SvgPointHost point => TryGetSvgPointProperty(point, property, out value),
+            SvgCurrentTranslateHost translate => TryGetCurrentTranslateProperty(translate, property, out value),
             _ => Undefined(out value)
         };
         if (found)
@@ -389,8 +462,38 @@ public sealed partial class FenJsBrowserScriptEngine
             return true;
         }
 
+        if (host is SvgCurrentTranslateHost translate && property is "x" or "y")
+        {
+            float coordinate = Math.Clamp(ToSvgFloat(value), -SvgZoomAndPan.MaxTranslate, SvgZoomAndPan.MaxTranslate);
+            if (!IsOutermostSvgElement(translate.Svg))
+            {
+                if (property == "x") translate.DetachedX = coordinate; else translate.DetachedY = coordinate;
+                return true;
+            }
+
+            var current = SvgZoomAndPanState.Get(translate.Svg);
+            SetZoomAndPan(translate.Svg, property == "x"
+                ? current with { TranslateX = coordinate }
+                : current with { TranslateY = coordinate });
+            return true;
+        }
+
         SetStoredHostProperty(host, property, value);
         return true;
+    }
+
+    private bool TryGetCurrentTranslateProperty(SvgCurrentTranslateHost translate, string property, out JsValue value)
+    {
+        bool live = IsOutermostSvgElement(translate.Svg);
+        var zoom = SvgZoomAndPanState.Get(translate.Svg);
+        switch (property)
+        {
+            case "x": value = JsValue.FromNumber(live ? zoom.TranslateX : translate.DetachedX); return true;
+            case "y": value = JsValue.FromNumber(live ? zoom.TranslateY : translate.DetachedY); return true;
+            default:
+                value = JsValue.Undefined;
+                return false;
+        }
     }
 
     private bool TryGetAnimatedTransformListProperty(SvgAnimatedTransformListHost animated, string property, out JsValue value)

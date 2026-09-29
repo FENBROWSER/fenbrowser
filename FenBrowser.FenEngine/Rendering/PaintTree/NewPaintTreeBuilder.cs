@@ -4075,7 +4075,9 @@ namespace FenBrowser.FenEngine.Rendering
                     elem, style, box.ContentBox.Width, box.ContentBox.Height);
 
                 // Re-rasterize with resolved colors
-                 var bitmap = RenderSvgToCachedBitmap(elem, svgContent, box.ContentBox.Width, box.ContentBox.Height);
+                 var bitmap = RenderSvgToCachedBitmap(
+                     elem, svgContent, box.ContentBox.Width, box.ContentBox.Height,
+                     SvgZoomAndPanState.ForPainting(elem));
 
                 return new ImagePaintNode
                 {
@@ -4267,7 +4269,8 @@ namespace FenBrowser.FenEngine.Rendering
             Element source,
             string svgContent,
             float width,
-            float height)
+            float height,
+            FenBrowser.FenEngine.Adapters.SvgZoomAndPan? zoomAndPan = null)
         {
             if (!LayoutValidator.IsNonNegativeNumber(width) ||
                 !LayoutValidator.IsNonNegativeNumber(height) ||
@@ -4291,7 +4294,8 @@ namespace FenBrowser.FenEngine.Rendering
                 (int)Math.Ceiling(width),
                 (int)Math.Ceiling(height),
                 baseUri,
-                source?.OwnerDocument);
+                source?.OwnerDocument,
+                zoomAndPan);
         }
 
         private static string ResolveSvgPresentationProperty(CssComputed style, string propertyName)

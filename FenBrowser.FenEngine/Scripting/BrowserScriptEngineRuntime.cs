@@ -17405,6 +17405,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     element.SetAttribute(property, CoerceToHostString(value));
                     _owner.NotifyResizeObservers(element);
                     return true;
+                case Element element when _owner.TrySetSvgElementProperty(element, property, value):
+                    return true;
                 case Element element:
                     // Catch-all for arbitrary element properties (e.g. Google sets
                     // __gwbp, __jsl, and other internal bookkeeping properties on

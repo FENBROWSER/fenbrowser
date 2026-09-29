@@ -1218,7 +1218,8 @@ namespace FenBrowser.FenEngine.Rendering
             Uri baseUri = null,
             ISvgResourceResolver resourceResolver = null,
             SvgRenderLimits? limits = null,
-            string diagnosticSource = null)
+            string diagnosticSource = null,
+            SvgZoomAndPan? zoomAndPan = null)
         {
             var activeLimits = SvgRenderLimits.Normalize(limits ?? SvgRenderLimits.Default);
             // Every render here is an image (img, CSS image, data: URL) or an inline
@@ -1247,7 +1248,8 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 BaseUri = baseUri,
                 ResourceResolver = resourceResolver,
-                DiagnosticSource = diagnosticSource
+                DiagnosticSource = diagnosticSource,
+                ZoomAndPan = zoomAndPan
             });
 
             if (!IsAdmissibleSvgPixels(result))
@@ -2827,7 +2829,8 @@ namespace FenBrowser.FenEngine.Rendering
             int targetWidth,
             int targetHeight,
             Uri baseUri = null,
-            Document ownerDocument = null)
+            Document ownerDocument = null,
+            SvgZoomAndPan? zoomAndPan = null)
         {
             var limits = GetActiveSvgRenderLimits();
             if (string.IsNullOrWhiteSpace(svgContent) ||
@@ -2844,8 +2847,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             baseUri ??= ResolveDocumentBaseUri(ownerDocument);
+            if (zoomAndPan is { IsIdentity: true })
+            {
+                zoomAndPan = null;
+            }
             string cacheKey = CreateInlineSvgCacheKey(
-                svgContent, context, baseUri, targetWidth, targetHeight, limits);
+                svgContent, context, baseUri, targetWidth, targetHeight, limits, zoomAndPan);
             if (cacheKey == null)
             {
                 return null;
@@ -2866,7 +2873,8 @@ namespace FenBrowser.FenEngine.Rendering
                 baseUri,
                 null,
                 limits,
-                "inline-svg");
+                "inline-svg",
+                zoomAndPan);
             if (bitmap == null)
             {
                 return null;
@@ -2894,7 +2902,8 @@ namespace FenBrowser.FenEngine.Rendering
             Uri baseUri,
             int targetWidth,
             int targetHeight,
-            SvgRenderLimits limits)
+            SvgRenderLimits limits,
+            SvgZoomAndPan? zoomAndPan)
         {
             int byteCount;
             try
@@ -2925,6 +2934,11 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             string identity = "inline-svg:" + Convert.ToHexString(hash);
+            if (zoomAndPan is { } zoom)
+            {
+                identity += FormattableString.Invariant(
+                    $":zoom={zoom.Scale:R},{zoom.TranslateX:R},{zoom.TranslateY:R}");
+            }
             return CreateCacheKey(
                 identity,
                 context,
