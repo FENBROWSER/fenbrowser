@@ -152,6 +152,20 @@ internal static class WptDocumentRunner
                 return (null, diagnostics);
             }
 
+            // A first paint can start loads (an inline SVG's same-origin images); a
+            // browser repaints when they land, so let them drain and paint again.
+            using (var primer = new SKBitmap(ViewportWidth, ViewportHeight))
+            using (var primerCanvas = new SKCanvas(primer))
+            {
+                new SkiaDomRenderer().Render(root, primerCanvas, host.ComputedStyles,
+                    new SKRect(0, 0, ViewportWidth, ViewportHeight), url);
+            }
+            var loadDeadline = DateTime.UtcNow.AddMilliseconds(waitMs);
+            while (ImageLoader.PendingLoadCount > 0 && DateTime.UtcNow < loadDeadline)
+            {
+                await Task.Delay(25).ConfigureAwait(false);
+            }
+
             var bitmap = new SKBitmap(ViewportWidth, ViewportHeight);
             using (var canvas = new SKCanvas(bitmap))
             {
