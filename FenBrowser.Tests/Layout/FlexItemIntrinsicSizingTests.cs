@@ -191,5 +191,27 @@ namespace FenBrowser.Tests.Layout
             Assert.InRange(first.BorderBox.Width, expectedFirst - 0.5f, expectedFirst + 0.5f);
             Assert.InRange(second.BorderBox.Width, expectedSecond - 0.5f, expectedSecond + 0.5f);
         }
+
+        [Fact]
+        public async Task GrowingItem_InARowWithNoFreeSpace_IsItsFlexBaseSize()
+        {
+            // github.com's logo row: an empty `flex:1` menu-toggle slot beside the logo,
+            // held by the outer row at exactly its minimum (48px). With zero free space
+            // the slot's size is its 0px flex basis; it kept its 48px probe width and
+            // pushed the logo onto the nav. Chrome: slot 0px, logo at the row's start.
+            var (doc, computer) = await LayoutAsync(
+                "<div style='display:flex;width:600px'>" +
+                "<div id='top' style='display:flex;justify-content:space-between'>" +
+                "<div id='slot' style='flex:1'></div>" +
+                "<a id='logo' style='display:inline-flex;margin-right:16px'><svg width='32' height='32'></svg></a></div>" +
+                "<div style='width:100%'>menu</div></div>");
+
+            var top = Box(doc, computer, "top");
+            var slot = Box(doc, computer, "slot");
+            var logo = Box(doc, computer, "logo");
+            Assert.InRange(top.BorderBox.Width, 47.5f, 48.5f);
+            Assert.True(slot.BorderBox.Width <= 1.5f, $"slot kept {slot.BorderBox.Width}px");
+            Assert.InRange(logo.BorderBox.Left - top.BorderBox.Left, 0f, 1.5f);
+        }
     }
 }

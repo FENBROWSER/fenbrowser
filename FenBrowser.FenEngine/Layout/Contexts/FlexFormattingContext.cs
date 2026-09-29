@@ -478,7 +478,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
                 totalMainSize = containerMainSize;
             }
-            else if (remainingSpace > 0 && totalFlexGrow > 0)
+            // Exactly zero free space in a definite container still resolves each growing
+            // item to its flex base size (§9.7 adds a zero share); skipping it left a
+            // flex-basis:0 item at its probe width. github.com's empty `flex:1` menu-toggle
+            // slot kept 48px and pushed the logo onto the nav once its row fitted exactly.
+            else if ((remainingSpace > 0 || (remainingSpace == 0 && !shrinkToContentMainAxis)) && totalFlexGrow > 0)
             {
                 foreach (var item in items)
                 {
