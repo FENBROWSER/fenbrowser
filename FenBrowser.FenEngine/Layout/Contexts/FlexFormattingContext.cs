@@ -2040,6 +2040,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     child,
                     originLeft,
                     originTop,
+                    countWidth: true,
                     ref minLeft,
                     ref maxRight,
                     ref minTop,
@@ -2072,6 +2073,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             LayoutBox node,
             float originLeft,
             float originTop,
+            bool countWidth,
             ref float minLeft,
             ref float maxRight,
             ref float minTop,
@@ -2087,12 +2089,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
 
+            // A percentage width was resolved against the item being measured, so the
+            // horizontal extent of that box and of everything inside it is an output of
+            // the probe, not content (CSS Sizing 3 §5.2.1). Counting it fed a content-box
+            // `width:100%; padding:0 12px` child's overflow back into the item's width.
+            if (node.ComputedStyle is { } style && style.WidthPercent.HasValue && !style.Width.HasValue)
+            {
+                countWidth = false;
+            }
+
             float left = node.Geometry.MarginBox.Left - originLeft;
             float right = node.Geometry.MarginBox.Right - originLeft;
             float top = node.Geometry.MarginBox.Top - originTop;
             float bottom = node.Geometry.MarginBox.Bottom - originTop;
 
-            if (float.IsFinite(left) && float.IsFinite(right))
+            if (countWidth && float.IsFinite(left) && float.IsFinite(right))
             {
                 minLeft = Math.Min(minLeft, left);
                 maxRight = Math.Max(maxRight, right);
@@ -2110,6 +2121,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     child,
                     originLeft,
                     originTop,
+                    countWidth,
                     ref minLeft,
                     ref maxRight,
                     ref minTop,

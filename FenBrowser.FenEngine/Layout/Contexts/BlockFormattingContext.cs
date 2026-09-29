@@ -1521,9 +1521,26 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
 
+            // A percentage width was resolved against the very size being measured,
+            // so its laid-out extent - and everything positioned inside it - is an
+            // output of the previous pass, not content (CSS Sizing 3 §5.2.1: it
+            // contributes as auto, which MeasureShrinkToFitWidth handles). Counting
+            // it grew a content-box `width:100%; padding:0 12px` child's parent by
+            // 24px on every relayout: github.com's header search slot hit 600px+.
+            if (box.ComputedStyle is { } style && style.WidthPercent.HasValue && !style.Width.HasValue)
+            {
+                return;
+            }
+
+            // A block-level auto-width box fills its containing block (CSS 2.2 §10.3.3),
+            // so its own extent is the provisional width, not content; only what it
+            // holds counts. github.com's search trigger nests a `display:flex` label
+            // inside a percentage-width span, and that label's stretched 1254px was read
+            // as overflow, so a 16px icon button measured page-wide.
             float left = box.Geometry.MarginBox.Left - originLeft;
             float right = box.Geometry.MarginBox.Right - originLeft;
-            if (float.IsFinite(left) && float.IsFinite(right) && right > left)
+            if (!FillsContainingBlockInline(box) &&
+                float.IsFinite(left) && float.IsFinite(right) && right > left)
             {
                 minLeft = Math.Min(minLeft, left);
                 maxRight = Math.Max(maxRight, right);
@@ -1533,6 +1550,42 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 AccumulateDescendantOverflowShrinkToFitWidth(child, originLeft, ref minLeft, ref maxRight);
             }
+        }
+
+        // True for an in-flow, non-replaced, block-level box with an auto width whose
+        // parent lays it out in block flow: its used width is its containing block's.
+        // Flex, grid and table parents size their children from content, so there the
+        // box's extent is a real measurement.
+        private static bool FillsContainingBlockInline(LayoutBox box)
+        {
+            if (box is AnonymousBlockBox)
+            {
+                return true;
+            }
+
+            var style = box.ComputedStyle;
+            if (style == null || box.Parent == null ||
+                style.Width.HasValue || style.WidthPercent.HasValue ||
+                !string.IsNullOrEmpty(style.WidthExpression) ||
+                string.Equals(style.Float, "left", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(style.Float, "right", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string display = style.Display?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (display is not ("block" or "flex" or "grid" or "list-item" or "flow-root"))
+            {
+                return false;
+            }
+
+            if (box.SourceNode is Element element &&
+                ReplacedElementSizing.IsReplacedElementTag(element.TagName?.ToUpperInvariant() ?? string.Empty))
+            {
+                return false;
+            }
+
+            return FormattingContext.Resolve(box.Parent) is BlockFormattingContext or InlineFormattingContext;
         }
 
         private static bool TryMeasureTextLabelShrinkToFitWidth(LayoutBox box, out float width)

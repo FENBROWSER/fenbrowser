@@ -121,6 +121,35 @@ namespace FenBrowser.Tests.Layout
             Assert.InRange(child.BorderBox.Height, 24f, 28f);
         }
 
+        // github.com's header search trigger: a percent-width box with padding whose
+        // only visible content is a 16px icon (the label is display:none above 1012px).
+        // CSS Sizing 3 §5.2.1 makes the percentage auto for the contribution, so the
+        // shrink-to-fit parent is 16px + 24px padding. A content-box child then resolves
+        // 100% to those 40px and overflows by its padding (64px); the border-box button
+        // does not. Each row is Chrome's used width for the parent and the child.
+        [Theory]
+        [InlineData("flex", "<div id='c' style='width:100%;padding:0 12px'><span style='display:inline-block;width:16px;height:16px'></span></div>", 40f, 64f)]
+        [InlineData("flex", "<div id='c' style='display:grid;width:100%;padding:0 12px'><span style='display:block;width:16px;height:16px'></span></div>", 40f, 64f)]
+        [InlineData("flex", "<div id='c' style='display:grid;grid-template-columns:minmax(0,1fr);width:100%;padding:0 12px'><span style='display:block;width:16px;height:16px'></span></div>", 40f, 64f)]
+        [InlineData("flex", "<div id='c' style='display:grid;grid-template-columns:minmax(0,1fr);width:100%;padding:0 12px'><span style='display:flex;width:100%'><span style='display:block;width:16px;height:16px'></span></span></div>", 40f, 64f)]
+        [InlineData("flex", "<button id='c' style='display:grid;width:100%;padding:0 12px;border:2px solid'><span style='display:block;width:16px;height:16px'></span></button>", 44f, 44f)]
+        // The live header's shape: the icon sits in a `display:flex` label that stretches
+        // to the percentage spans around it, so the label's width is no measure of content.
+        [InlineData("flex", "<button id='c' style='display:grid;grid-template-columns:minmax(0,1fr);width:100%;box-sizing:border-box;padding:1px 12px;border:1px solid'><span style='display:flex;width:100%'><span style='width:100%'><span style='display:flex;align-items:center'><svg width='16' height='16' style='display:block;flex-shrink:0'></svg></span></span></span></button>", 42f, 42f)]
+        [InlineData("float", "<div id='c' style='display:grid;width:100%;padding:0 12px'><span style='display:block;width:16px;height:16px'></span></div>", 40f, 64f)]
+        public async Task PaddedPercentWidthChild_ContributesItsContentPlusPaddingOnce(string parent, string child, float expectedParent, float expectedChild)
+        {
+            string wrapper = parent == "float"
+                ? "<div style='float:left'><div id='slot'>" + child + "</div></div>"
+                : "<div style='display:flex;width:750px'><div id='slot'>" + child + "</div><div>x</div></div>";
+            var (doc, computer) = await LayoutAsync(wrapper);
+
+            var slot = Box(doc, computer, "slot");
+            var inner = Box(doc, computer, "c");
+            Assert.InRange(slot.BorderBox.Width, expectedParent - 0.5f, expectedParent + 0.5f);
+            Assert.InRange(inner.BorderBox.Width, expectedChild - 0.5f, expectedChild + 0.5f);
+        }
+
         [Fact]
         public async Task InlineFlexOnALine_ContributesItsFirstItemBaseline_NotItsBottomEdge()
         {
