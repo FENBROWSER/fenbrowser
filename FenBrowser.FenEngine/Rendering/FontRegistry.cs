@@ -61,6 +61,24 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly Dictionary<string, SKTypeface> _loadedFonts 
             = new Dictionary<string, SKTypeface>(StringComparer.OrdinalIgnoreCase);
 
+        // Every face loaded for a family with the weights/style its @font-face declared, so
+        // resolution can match weight the way CSS Fonts 4 §5.2 does rather than returning
+        // whichever face of the family happened to load first.
+        private sealed class LoadedFace
+        {
+            public int WeightMin;
+            public int WeightMax;
+            public SKFontStyleSlant Style;
+            public SKTypeface Typeface;
+        }
+
+        private static readonly Dictionary<string, List<LoadedFace>> _loadedFaces
+            = new Dictionary<string, List<LoadedFace>>(StringComparer.OrdinalIgnoreCase);
+
+        // family|weight|style -> the chosen face, instanced at that weight when variable.
+        private static readonly Dictionary<string, SKTypeface> _resolvedFaces
+            = new Dictionary<string, SKTypeface>(StringComparer.OrdinalIgnoreCase);
+
         private static readonly Dictionary<string, Task<SKTypeface>> _loadingTasks 
             = new Dictionary<string, Task<SKTypeface>>(StringComparer.Ordinal);
 
@@ -120,7 +138,8 @@ namespace FenBrowser.FenEngine.Rendering
             public string Family { get; set; }
             public string Source { get; set; }          // url() or local() value
             public string Format { get; set; }          // woff2, woff, truetype, etc.
-            public int Weight { get; set; } = 400;      // 100-900
+            public int Weight { get; set; } = 400;      // 100-900; the low end of a range
+            public int? WeightMax { get; set; }         // high end of a `font-weight: 200 900` range
             public SKFontStyleSlant Style { get; set; } = SKFontStyleSlant.Upright;
             public string UnicodeRange { get; set; }    // Optional unicode-range
             public string Display { get; set; } = "auto"; 
@@ -442,6 +461,7 @@ namespace FenBrowser.FenEngine.Rendering
                         // Also map family name directly if it's the first/only one
                         if (!_loadedFonts.ContainsKey(descriptor.Family))
                             _loadedFonts[descriptor.Family] = typeface;
+                        RecordLoadedFace(descriptor, typeface);
                     }
                     EngineLogCompat.Debug($"[FontRegistry] Loaded font: {descriptor.Family} ({typeface.FamilyName})", LogCategory.Rendering);
                     completion.TrySetResult(typeface);
@@ -652,12 +672,21 @@ namespace FenBrowser.FenEngine.Rendering
                 string weightVal = ExtractLastCssPropertyValue(fontFaceBlock, "font-weight");
                 if (!string.IsNullOrEmpty(weightVal))
                 {
-                    weightVal = weightVal.ToLowerInvariant();
-                    if (weightVal == "normal") descriptor.Weight = 400;
-                    else if (weightVal == "bold") descriptor.Weight = 700;
-                    else if (weightVal == "lighter") descriptor.Weight = 300;
-                    else if (weightVal == "bolder") descriptor.Weight = 700;
-                    else if (int.TryParse(weightVal, out var w)) descriptor.Weight = w;
+                    // CSS Fonts 4 §4.4: one weight, or a `min max` range a variable face spans.
+                    var weights = weightVal.ToLowerInvariant()
+                        .Split((char[])null, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(ParseFontFaceWeight)
+                        .Where(w => w.HasValue)
+                        .Select(w => w.Value)
+                        .ToList();
+                    if (weights.Count >= 1)
+                    {
+                        descriptor.Weight = Math.Min(weights[0], weights[weights.Count - 1]);
+                        if (weights.Count >= 2)
+                        {
+                            descriptor.WeightMax = Math.Max(weights[0], weights[1]);
+                        }
+                    }
                 }
 
                 // Parse font-style
@@ -681,6 +710,129 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        private static int? ParseFontFaceWeight(string token) => token switch
+        {
+            "normal" => 400,
+            "bold" => 700,
+            _ => double.TryParse(token, System.Globalization.NumberStyles.Float,
+                     System.Globalization.CultureInfo.InvariantCulture, out var w) && w >= 1 && w <= 1000
+                ? (int)Math.Round(w)
+                : null,
+        };
+
+        private static void RecordLoadedFace(FontFaceDescriptor descriptor, SKTypeface typeface)
+        {
+            var family = descriptor.Family.Trim().Trim('"', '\'');
+            if (!_loadedFaces.TryGetValue(family, out var faces))
+            {
+                faces = new List<LoadedFace>();
+                _loadedFaces[family] = faces;
+            }
+
+            int min = descriptor.Weight;
+            int max = Math.Max(min, descriptor.WeightMax ?? min);
+            if (!faces.Any(f => ReferenceEquals(f.Typeface, typeface) && f.WeightMin == min && f.WeightMax == max && f.Style == descriptor.Style))
+            {
+                faces.Add(new LoadedFace { WeightMin = min, WeightMax = max, Style = descriptor.Style, Typeface = typeface });
+            }
+
+            var prefix = family + "|";
+            foreach (var key in _resolvedFaces.Keys.Where(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                _resolvedFaces.Remove(key);
+            }
+        }
+
+        /// <summary>
+        /// CSS Fonts 4 §5.2 step 4: style first (italic falls back to oblique and back to
+        /// normal), then weight - a face whose range contains the desired weight wins;
+        /// otherwise 400-500 look first between the desired weight and 500, then lighter,
+        /// then heavier; below 400 look lighter first; above 500 look heavier first.
+        /// </summary>
+        private static LoadedFace SelectFace(List<LoadedFace> faces, int weight, SKFontStyleSlant style)
+        {
+            var styleOrder = style switch
+            {
+                SKFontStyleSlant.Italic => new[] { SKFontStyleSlant.Italic, SKFontStyleSlant.Oblique, SKFontStyleSlant.Upright },
+                SKFontStyleSlant.Oblique => new[] { SKFontStyleSlant.Oblique, SKFontStyleSlant.Italic, SKFontStyleSlant.Upright },
+                _ => new[] { SKFontStyleSlant.Upright, SKFontStyleSlant.Oblique, SKFontStyleSlant.Italic },
+            };
+
+            var candidates = faces;
+            foreach (var slant in styleOrder)
+            {
+                var matching = faces.Where(f => f.Style == slant).ToList();
+                if (matching.Count > 0)
+                {
+                    candidates = matching;
+                    break;
+                }
+            }
+
+            var inRange = candidates.FirstOrDefault(f => weight >= f.WeightMin && weight <= f.WeightMax);
+            if (inRange != null)
+            {
+                return inRange;
+            }
+
+            LoadedFace Nearest(IEnumerable<LoadedFace> set, bool lighter) => lighter
+                ? set.Where(f => f.WeightMax < weight).OrderByDescending(f => f.WeightMax).FirstOrDefault()
+                : set.Where(f => f.WeightMin > weight).OrderBy(f => f.WeightMin).FirstOrDefault();
+
+            if (weight >= 400 && weight <= 500)
+            {
+                var upTo500 = candidates.Where(f => f.WeightMin > weight && f.WeightMin <= 500)
+                    .OrderBy(f => f.WeightMin).FirstOrDefault();
+                return upTo500 ?? Nearest(candidates, lighter: true) ?? Nearest(candidates, lighter: false) ?? candidates[0];
+            }
+
+            return weight < 400
+                ? Nearest(candidates, lighter: true) ?? Nearest(candidates, lighter: false) ?? candidates[0]
+                : Nearest(candidates, lighter: false) ?? Nearest(candidates, lighter: true) ?? candidates[0];
+        }
+
+        /// <summary>
+        /// A variable face is drawn at the used weight (CSS Fonts 4 §7.1: font-weight drives
+        /// the 'wght' axis, clamped to the face's declared range). Without this every
+        /// variable web font rendered at its default instance - Mona Sans's is weight 200,
+        /// so github.com's headings and buttons came out hairline.
+        /// </summary>
+        private static SKTypeface InstanceAtWeight(LoadedFace face, int weight)
+        {
+            var typeface = face.Typeface;
+            try
+            {
+                var axes = typeface.VariationDesignParameters;
+                if (axes == null || axes.Length == 0)
+                {
+                    return typeface;
+                }
+
+                var wghtTag = SKFourByteTag.Parse("wght");
+                foreach (var axis in axes)
+                {
+                    if (axis.Tag != wghtTag)
+                    {
+                        continue;
+                    }
+
+                    float value = Math.Clamp(weight, face.WeightMin, face.WeightMax);
+                    value = Math.Clamp(value, axis.Min, axis.Max);
+                    var instance = typeface.Clone(new[]
+                    {
+                        new SKFontVariationPositionCoordinate { Axis = wghtTag, Value = value },
+                    });
+                    return instance ?? typeface;
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Warn($"[FontRegistry] Variable instance failed for '{typeface.FamilyName}': {ex.Message}", LogCategory.Rendering);
+            }
+
+            return typeface;
+        }
+
         /// <summary>
         /// Try to resolve a font-family name to a FontFamily object.
         /// </summary>
@@ -697,6 +849,16 @@ namespace FenBrowser.FenEngine.Rendering
                 var cacheKey = $"{familyName}|{weight}|{style}";
                 if (_loadedFonts.TryGetValue(cacheKey, out var cached))
                     return cached;
+
+                if (_resolvedFaces.TryGetValue(cacheKey, out cached))
+                    return cached;
+
+                if (_loadedFaces.TryGetValue(familyName, out var faces) && faces.Count > 0)
+                {
+                    var resolved = InstanceAtWeight(SelectFace(faces, weight, style), weight);
+                    _resolvedFaces[cacheKey] = resolved;
+                    return resolved;
+                }
 
                 // Check generic family name
                 if (_loadedFonts.TryGetValue(familyName, out cached))
@@ -772,6 +934,8 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _fontFaces.Clear();
                 _loadedFonts.Clear();
+                _loadedFaces.Clear();
+                _resolvedFaces.Clear();
                 _loadingTasks.Clear();
                 _failedFonts.Clear();
                 _typefacesByUrl.Clear();
