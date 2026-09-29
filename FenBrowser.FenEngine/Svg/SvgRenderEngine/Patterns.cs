@@ -26,7 +26,8 @@ namespace FenBrowser.FenEngine.Svg
             SKPath geometry,
             ContextPaintFrame context,
             InheritedStyle referencingStyle,
-            ViewportContext viewport)
+            ViewportContext viewport,
+            SKRect? paintedArea)
         {
             _activePatterns ??= new HashSet<SvgElement>();
             if (_activePatterns.Contains(server) ||
@@ -40,7 +41,7 @@ namespace FenBrowser.FenEngine.Svg
             try
             {
                 return BuildPatternShaderCore(
-                    server, geometry, context, referencingStyle, viewport);
+                    server, geometry, context, referencingStyle, viewport, paintedArea);
             }
             finally
             {
@@ -55,7 +56,8 @@ namespace FenBrowser.FenEngine.Svg
             SKPath geometry,
             ContextPaintFrame context,
             InheritedStyle referencingStyle,
-            ViewportContext viewport)
+            ViewportContext viewport,
+            SKRect? paintedArea)
         {
             if (!TryResolvePattern(server, referencingStyle, viewport, out var pattern))
             {
@@ -117,7 +119,24 @@ namespace FenBrowser.FenEngine.Svg
                 return null;
             }
 
+            // The recorded part of the tile. Normally the whole tile, repeated. A tile
+            // too large to rasterize is still paintable when everything the shape can
+            // paint lies inside a single tile instance: only that instance's visible
+            // part is recorded and nothing repeats.
+            SKRect recordRect = tile;
+            SKMatrix shaderMatrix = localMatrix;
+            var tileMode = SKShaderTileMode.Repeat;
             var mappedTile = localMatrix.MapRect(tile);
+            if (ExceedsRasterLimits(mappedTile) &&
+                context == null &&
+                paintedArea.HasValue &&
+                TryConfineToOneTile(localMatrix, tile, paintedArea.Value, out SKRect confined, out SKPoint offset))
+            {
+                recordRect = confined;
+                shaderMatrix = SKMatrix.Concat(localMatrix, SKMatrix.CreateTranslation(offset.X, offset.Y));
+                tileMode = SKShaderTileMode.Clamp;
+                mappedTile = shaderMatrix.MapRect(recordRect);
+            }
             if (!IsFinite(mappedTile) ||
                 Math.Ceiling(mappedTile.Width) > _limits.MaxRasterWidth ||
                 Math.Ceiling(mappedTile.Height) > _limits.MaxRasterHeight ||
@@ -149,8 +168,8 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             using var recorder = new SKPictureRecorder();
-            var canvas = recorder.BeginRecording(tile);
-            canvas.ClipRect(tile);
+            var canvas = recorder.BeginRecording(recordRect);
+            canvas.ClipRect(recordRect);
 
             if (!viewBoxDisablesRendering)
             {
@@ -206,10 +225,58 @@ namespace FenBrowser.FenEngine.Svg
             using var picture = recorder.EndRecording();
             return SKShader.CreatePicture(
                 picture,
-                SKShaderTileMode.Repeat,
-                SKShaderTileMode.Repeat,
-                localMatrix,
-                tile);
+                tileMode,
+                tileMode,
+                shaderMatrix,
+                recordRect);
+        }
+
+        private bool ExceedsRasterLimits(SKRect mapped) =>
+            !IsFinite(mapped) ||
+            Math.Ceiling(mapped.Width) > _limits.MaxRasterWidth ||
+            Math.Ceiling(mapped.Height) > _limits.MaxRasterHeight ||
+            (double)Math.Ceiling(mapped.Width) * Math.Ceiling(mapped.Height) > _limits.MaxRasterPixels;
+
+        /// <summary>
+        /// Maps the painted area into pattern space and, when it lies inside one
+        /// instance of the tile, returns that area in base-tile coordinates and the
+        /// instance's offset from the base tile. The instance is the one holding the
+        /// area's centre; up to one user unit beyond its edges is tolerated, since
+        /// that is only antialiasing fringe and the clamped shader extends the edge.
+        /// </summary>
+        private static bool TryConfineToOneTile(
+            SKMatrix localMatrix, SKRect tile, SKRect paintedArea, out SKRect confined, out SKPoint offset)
+        {
+            confined = default;
+            offset = default;
+            if (!localMatrix.TryInvert(out SKMatrix toPattern))
+            {
+                return false;
+            }
+
+            SKRect area = toPattern.MapRect(paintedArea);
+            if (!IsFinite(area) || area.IsEmpty)
+            {
+                return false;
+            }
+
+            double column = Math.Floor((area.MidX - tile.Left) / (double)tile.Width);
+            double row = Math.Floor((area.MidY - tile.Top) / (double)tile.Height);
+            float dx = (float)(column * tile.Width);
+            float dy = (float)(row * tile.Height);
+            SKPoint unit = toPattern.MapVector(1f, 1f);
+            float toleranceX = Math.Abs(unit.X);
+            float toleranceY = Math.Abs(unit.Y);
+            if (!float.IsFinite(dx) || !float.IsFinite(dy) ||
+                area.Left < tile.Left + dx - toleranceX || area.Right > tile.Right + dx + toleranceX ||
+                area.Top < tile.Top + dy - toleranceY || area.Bottom > tile.Bottom + dy + toleranceY)
+            {
+                return false;
+            }
+
+            confined = SKRect.Intersect(new SKRect(area.Left - dx, area.Top - dy, area.Right - dx, area.Bottom - dy), tile);
+            offset = new SKPoint(dx, dy);
+            return !confined.IsEmpty;
         }
 
         private bool TryResolvePattern(

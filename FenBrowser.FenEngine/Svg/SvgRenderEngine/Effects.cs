@@ -1013,6 +1013,7 @@ namespace FenBrowser.FenEngine.Svg
                 shader = BuildServerShader(
                     spec.Fragment, boundsPath, spec.Fallback, style, viewport,
                     ResolveContextPaintFrame(spec.ContextSource, target, viewport),
+                    paintedArea: null,
                     out SKColor? fallbackColor, out ownsShader);
                 if (shader == null && fallbackColor.HasValue)
                 {

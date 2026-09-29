@@ -22,11 +22,16 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
+        /// <param name="paintedArea">
+        /// When known, a user-space rect that contains every pixel this paint can
+        /// touch; lets an oversized pattern tile be recorded only where it shows.
+        /// </param>
         private SKPaint BuildFillPaint(
             SvgElement el,
             InheritedStyle style,
             SKPath path,
-            ViewportContext viewport)
+            ViewportContext viewport,
+            SKRect? paintedArea = null)
         {
             var spec = style.Fill;
             if (spec.Kind == SvgValues.PaintKind.None)
@@ -61,7 +66,7 @@ namespace FenBrowser.FenEngine.Svg
             // ServerRef
             var shader = BuildServerShader(
                 spec.Fragment, path, fallbackText: spec.Fallback, style, viewport,
-                ResolveContextPaintFrame(spec.ContextSource, el, viewport),
+                ResolveContextPaintFrame(spec.ContextSource, el, viewport), paintedArea,
                 out var fallbackColor, out bool disposeShaderAfterAssignment);
             if (fallbackColor.HasValue)
             {
@@ -95,7 +100,8 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement el,
             InheritedStyle style,
             SKPath geometry,
-            ViewportContext viewport)
+            ViewportContext viewport,
+            SKRect? paintedArea = null)
         {
             var spec = style.Stroke;
             if (spec.Kind == SvgValues.PaintKind.None)
@@ -174,7 +180,7 @@ namespace FenBrowser.FenEngine.Svg
 
             var shader = BuildServerShader(
                 spec.Fragment, geometry, fallbackText: spec.Fallback, style, viewport,
-                ResolveContextPaintFrame(spec.ContextSource, el, viewport),
+                ResolveContextPaintFrame(spec.ContextSource, el, viewport), paintedArea,
                 out var fallbackColor, out bool disposeShaderAfterAssignment);
             if (fallbackColor.HasValue)
             {
@@ -578,6 +584,7 @@ namespace FenBrowser.FenEngine.Svg
             InheritedStyle style,
             ViewportContext viewport,
             ContextPaintFrame context,
+            SKRect? paintedArea,
             out SKColor? fallbackColor,
             out bool disposeShaderAfterAssignment)
         {
@@ -593,7 +600,7 @@ namespace FenBrowser.FenEngine.Svg
                 else if (server.Name == "pattern")
                 {
                     var patternShader = BuildPatternShader(
-                        server, path, context, style, viewport);
+                        server, path, context, style, viewport, paintedArea);
                     if (patternShader != null)
                     {
                         disposeShaderAfterAssignment = true;

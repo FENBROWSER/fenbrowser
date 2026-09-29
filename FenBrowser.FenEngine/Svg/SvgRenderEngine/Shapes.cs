@@ -34,10 +34,11 @@ namespace FenBrowser.FenEngine.Svg
                 bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
                 try
                 {
+                    SKRect paintedArea = ShapePaintedArea(path, style);
                     using var fillPaint = ApplyInheritedFillOpacity(
-                        BuildFillPaint(el, style, path, viewport), style);
+                        BuildFillPaint(el, style, path, viewport, paintedArea), style);
                     using var strokePaint = ApplyInheritedStrokeOpacity(
-                        BuildStrokePaint(el, style, path, viewport), style);
+                        BuildStrokePaint(el, style, path, viewport, paintedArea), style);
                     bool nonScalingStroke =
                         SvgFeatureSupport.SupportsNonScalingStroke(
                             el, el.GetPresentationProperty("vector-effect"));
@@ -96,6 +97,24 @@ namespace FenBrowser.FenEngine.Svg
                     }
                 }
             }, style);
+        }
+
+        /// <summary>
+        /// A user-space rect containing everything a shape's fill and stroke can paint:
+        /// the geometry bounds grown by the worst-case stroke extent (miter joins or
+        /// square caps). Non-scaling strokes never use a paint server here (they fall
+        /// back), so user units are right.
+        /// </summary>
+        private static SKRect ShapePaintedArea(SKPath path, InheritedStyle style)
+        {
+            float margin = 0f;
+            if (style.Stroke.Kind != SvgValues.PaintKind.None && style.StrokeWidth > 0f)
+            {
+                margin += style.StrokeWidth / 2f * System.Math.Max(style.MiterLimit, 1.41421356f);
+            }
+            SKRect bounds = path.Bounds;
+            bounds.Inflate(margin, margin);
+            return bounds;
         }
 
         private SKPath BuildGeometry(SvgElement element, ViewportContext viewport)

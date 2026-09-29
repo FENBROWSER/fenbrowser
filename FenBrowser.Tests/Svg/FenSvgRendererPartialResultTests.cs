@@ -21,9 +21,11 @@ namespace FenBrowser.Tests.Svg
     [Collection(SvgRendererBackendStateCollection.Name)]
     public class FenSvgRendererPartialResultTests
     {
+        // A 5000x5000 tile whose instance edge crosses the rect: too large to rasterize.
         private const string OversizedPatternTile =
-            "<svg width='100' height='100'><pattern id='p' width='100' height='100'>" +
-            "<rect width='100' height='100' fill='red'/></pattern>" +
+            "<svg width='100' height='100'><pattern id='p' patternUnits='userSpaceOnUse' " +
+            "x='-4950' width='5000' height='5000'>" +
+            "<rect width='5000' height='5000' fill='red'/></pattern>" +
             "<rect width='100' height='100' fill='url(#p)'/></svg>";
 
         private const string UnsupportedElement =

@@ -265,11 +265,28 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void OversizedMappedPatternTile_FailsClosedAsExplicitUnsupported()
+        public void OversizedTileSeenThroughOneInstance_PaintsThatInstance()
         {
+            // 100x100 objectBoundingBox units on a 100x100 rect: a 10000x10000 tile of
+            // which only the corner under the rect can ever show.
             using var result = _renderer.Render(
                 "<svg width='100' height='100'><pattern id='p' width='100' height='100'>" +
-                "<rect width='100' height='100' fill='red'/></pattern>" +
+                "<rect width='100' height='100' fill='lime'/></pattern>" +
+                "<rect width='100' height='100' fill='url(#p)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(99, 99));
+        }
+
+        [Fact]
+        public void OversizedTileSpanningInstances_FailsClosedAsExplicitUnsupported()
+        {
+            // A 5000x5000 tile whose instance edge crosses the rect at x=50 would need
+            // two instances rasterized; that stays refused.
+            using var result = _renderer.Render(
+                "<svg width='100' height='100'><pattern id='p' patternUnits='userSpaceOnUse' " +
+                "x='-4950' width='5000' height='5000'>" +
+                "<rect width='5000' height='5000' fill='red'/></pattern>" +
                 "<rect width='100' height='100' fill='url(#p)'/></svg>");
 
             AssertFailsClosed(result);
