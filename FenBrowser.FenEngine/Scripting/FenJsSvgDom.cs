@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using FenBrowser.Core.Dom.V2;
@@ -309,6 +310,29 @@ public sealed partial class FenJsBrowserScriptEngine
                 return true;
             default:
                 return false;
+        }
+    }
+
+    /// <summary>
+    /// SVG load events (SVG 1.1 §18.4 SVGLoad, as SVG 2 engines still dispatch them):
+    /// once the document has loaded, every svg element receives a non-bubbling load
+    /// event, innermost first, before the window's load. This is what runs
+    /// &lt;svg onload&gt; handlers.
+    /// </summary>
+    private void DispatchSvgLoadEvents(Document document)
+    {
+        var svgElements = document.Descendants()
+            .OfType<Element>()
+            .Where(element => element.LocalName == "svg" && element.NamespaceUri == Namespaces.Svg)
+            .ToList();
+        for (int i = svgElements.Count - 1; i >= 0; i--)
+        {
+            DispatchEventForElement(svgElements[i], "load", new BrowserDomEventInit
+            {
+                Bubbles = false,
+                Cancelable = false,
+                Composed = false
+            });
         }
     }
 

@@ -12020,6 +12020,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         SetDocumentReadyState("complete");
         FireDocumentReadyStateChange(document);
+        DispatchSvgLoadEvents(document);
         InvokeBodyOnloadAttribute(document);
         DispatchWindowLoadHandlers();
         MarkEventLoopCompleted();
