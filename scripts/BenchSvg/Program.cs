@@ -12,6 +12,11 @@ using SkiaSharp.HarfBuzz;
 //   dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release [-- --report]
 //   dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release -- --corpus <directory> [--max-files N] [--gate]
 
+if (args.Length >= 2 && args[0] == "--wpt-documents")
+{
+    Environment.ExitCode = await WptDocumentRunner.RunAsync(args);
+    return;
+}
 if (args.Length >= 3 && args[0] == "--corpus-worker")
 {
     Environment.ExitCode = SvgCorpusRunner.RunWorker(

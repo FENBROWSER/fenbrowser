@@ -909,7 +909,7 @@ internal static class SvgCorpusRunner
         };
     }
 
-    private static void CompareWptPixels(
+    internal static void CompareWptPixels(
         SKBitmap actual,
         SKBitmap expected,
         out int maximumChannelDifference,
