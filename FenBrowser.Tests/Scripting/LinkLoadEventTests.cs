@@ -45,7 +45,7 @@ public sealed class LinkLoadEventTests : IDisposable
         return Task.FromResult(response);
     }
 
-    private static FenJsBrowserScriptEngine Load(string html)
+    private static FenJsBrowserScriptEngine Load(string html, long? inputEventTimeoutMs = null)
     {
         var baseUri = new Uri("https://links.test/page.html");
         var document = new HtmlParser(html, baseUri).Parse();
@@ -56,7 +56,8 @@ public sealed class LinkLoadEventTests : IDisposable
             log: _ => { }))
         {
             Sandbox = SandboxPolicy.AllowAll,
-            FetchHandler = Serve
+            FetchHandler = Serve,
+            InputEventTimeoutOverrideMs = inputEventTimeoutMs
         };
         engine.SetDomAsync(document.DocumentElement, baseUri).GetAwaiter().GetResult();
         return engine;
@@ -74,5 +75,22 @@ public sealed class LinkLoadEventTests : IDisposable
             <link rel=stylesheet href='data:text/css,@import url(missing.css);' onload=""log.push('bad-import-load')"" onerror=""log.push('bad-import')"">");
 
         Assert.Equal("good,missing,plain,import,bad-import,window", engine.Evaluate("log.join(',')")?.ToString());
+    }
+
+    [Fact]
+    public void WindowLoadStillFires_WhenTheWorkerAnswersAfterTheInputEventDeadline()
+    {
+        // A link's load event is a networking task, not user input. Dispatching it on
+        // the input path gave it that path's deadline (2s by default); on github.com
+        // React kept the worker busy longer, the dispatch threw, and window load never
+        // fired - readyState stuck at "interactive". A zero deadline makes every
+        // worker hand-off late, so any dispatch still on the input path fails here.
+        var engine = Load(@"<!doctype html><script>window.log = [];
+            addEventListener('load', function () { log.push('window:' + document.readyState); });</script>
+            <link rel=stylesheet href='good.css' onload=""log.push('good')"">
+            <link rel=stylesheet href='missing.css' onerror=""log.push('missing')"">",
+            inputEventTimeoutMs: 0);
+
+        Assert.Equal("good,missing,window:complete", engine.Evaluate("log.join(',')")?.ToString());
     }
 }

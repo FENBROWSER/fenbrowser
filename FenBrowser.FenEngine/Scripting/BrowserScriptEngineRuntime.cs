@@ -1530,7 +1530,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     "iframe_diagnostics.txt",
                     $"{DateTimeOffset.UtcNow:O} DispatchEventForElement (local): element=<{tag}> id='{id}' class='{classAttr}' event={eventName}");
             }
-            var inputTimeoutMs = ResolveFenJsInputEventTimeoutMs();
+            var inputTimeoutMs = InputEventTimeoutOverrideMs ?? ResolveFenJsInputEventTimeoutMs();
             return RunFenJsWithLargeStack(() =>
             {
                 using (ScriptEngineLockProbe.Hold(_fenJsLock))
@@ -1612,7 +1612,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         try
         {
-            var inputTimeoutMs = ResolveFenJsInputEventTimeoutMs();
+            var inputTimeoutMs = InputEventTimeoutOverrideMs ?? ResolveFenJsInputEventTimeoutMs();
             return await RunFenJsWithLargeStackAsync(() =>
             {
                 using (ScriptEngineLockProbe.Hold(_fenJsLock))
@@ -2116,6 +2116,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         return defaultTimeoutMs;
     }
+
+    /// <summary>
+    /// Per-engine replacement for the input-event deadline
+    /// (<c>FEN_FENJS_INPUT_EVENT_TIMEOUT_MS</c>, default 2000ms), so a test can make the
+    /// worker "late" deterministically without touching process-wide state.
+    /// </summary>
+    internal long? InputEventTimeoutOverrideMs { get; set; }
 
     private static long ResolveFenJsInputEventTimeoutMs()
     {

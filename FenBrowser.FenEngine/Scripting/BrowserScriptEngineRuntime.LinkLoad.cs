@@ -521,12 +521,32 @@ public sealed partial class FenJsBrowserScriptEngine
         foreach (var (link, token, fetch) in loads)
         {
             var succeeded = await fetch.ConfigureAwait(false);
-            if (IsCurrentLinkRequest(link, token) && link.IsConnected)
+            if (!IsCurrentLinkRequest(link, token) || !link.IsConnected)
             {
-                DispatchEventForElement(
-                    link,
-                    succeeded ? "load" : "error",
-                    new BrowserDomEventInit { Bubbles = false, Cancelable = false, Composed = false });
+                continue;
+            }
+
+            // A link's load/error is a networking task (HTML 4.6.7), queued behind
+            // whatever the worker is already running - not user input with the
+            // input path's 2s deadline. With that deadline a busy worker (github.com
+            // hydrating React after DOMContentLoaded) threw here, and the throw
+            // skipped the window load event altogether. A failed dispatch is
+            // reported and the document still finishes loading (HTML 8.4 "the end").
+            var type = succeeded ? "load" : "error";
+            try
+            {
+                await RunFenJsWithLargeStackAsync(
+                    () => DispatchEventForElement(
+                        link,
+                        type,
+                        new BrowserDomEventInit { Bubbles = false, Cancelable = false, Composed = false }),
+                    workKind: "LinkLoadEvent").ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] Link {type} event failed during startup: {ex.GetType().Name}: {ex.Message}",
+                    LogCategory.JavaScript);
             }
         }
     }
