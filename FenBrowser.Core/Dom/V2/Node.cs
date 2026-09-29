@@ -525,7 +525,22 @@ namespace FenBrowser.Core.Dom.V2
 
         private void UpdateTreeScopeRecursive(TreeScope newScope)
         {
+            var oldScope = _treeScope;
             _treeScope = newScope;
+
+            // An element's ID belongs to the tree it is in: moving between trees moves
+            // it between ID indexes, so getElementById finds inserted elements and no
+            // longer finds removed ones (DOM Standard §4.2.4, "get an element by ID").
+            if (this is Element element)
+            {
+                string id = element.Id;
+                if (!string.IsNullOrEmpty(id))
+                {
+                    oldScope?.UnregisterId(id, element);
+                    newScope?.RegisterId(id, element);
+                }
+            }
+
             for (var child = FirstChild; child != null; child = child._nextSibling)
             {
                 child.UpdateTreeScopeRecursive(newScope);

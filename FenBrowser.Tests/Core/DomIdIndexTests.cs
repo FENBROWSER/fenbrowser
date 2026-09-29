@@ -24,4 +24,42 @@ public sealed class DomIdIndexTests
         Assert.Same(first, document.GetElementById("other"));
         Assert.Equal(1, document.IdIndexFullRebuildCount);
     }
+
+    [Fact]
+    public void ElementInsertedAfterTheIndexIsBuilt_IsFound()
+    {
+        var document = Document.CreateHtmlDocument();
+        Assert.Null(document.GetElementById("late"));
+
+        var late = document.CreateElement("div");
+        late.Id = "late";
+        var wrapper = document.CreateElement("section");
+        var nested = document.CreateElement("span");
+        nested.Id = "nested";
+        wrapper.AppendChild(nested);
+        document.Body.AppendChild(late);
+        document.Body.AppendChild(wrapper);
+
+        Assert.Same(late, document.GetElementById("late"));
+        Assert.Same(nested, document.GetElementById("nested"));
+        Assert.Equal(1, document.IdIndexFullRebuildCount);
+    }
+
+    [Fact]
+    public void RemovedSubtree_IsNoLongerFound()
+    {
+        var document = Document.CreateHtmlDocument();
+        var wrapper = document.CreateElement("section");
+        wrapper.Id = "wrapper";
+        var nested = document.CreateElement("span");
+        nested.Id = "nested";
+        wrapper.AppendChild(nested);
+        document.Body.AppendChild(wrapper);
+        Assert.Same(nested, document.GetElementById("nested"));
+
+        document.Body.RemoveChild(wrapper);
+
+        Assert.Null(document.GetElementById("wrapper"));
+        Assert.Null(document.GetElementById("nested"));
+    }
 }
