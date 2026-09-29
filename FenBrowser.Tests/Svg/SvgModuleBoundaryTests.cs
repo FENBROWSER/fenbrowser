@@ -181,7 +181,7 @@ public sealed partial class SvgModuleBoundaryTests
     }
 
     // Top-level declarations only: nested types are reachable only through their owner.
-    [GeneratedRegex(@"^(?: {4})?(?:(?:public|internal|static|sealed|abstract|partial|readonly)\s+)*(?:class|struct|enum|record|interface)\s+(?<name>[A-Z][A-Za-z0-9_]*)", RegexOptions.Multiline)]
+    [GeneratedRegex(@"^(?: {4})?(?:(?:public|internal|static|sealed|abstract|partial|readonly)\s+)*(?:record\s+(?:struct|class)|class|struct|enum|record|interface)\s+(?<name>[A-Z][A-Za-z0-9_]*)", RegexOptions.Multiline)]
     private static partial Regex TypeDeclaration();
 
     [GeneratedRegex(@"\bFenBrowser\.(?<name>FenEngine(?:\.[A-Za-z_][A-Za-z0-9_]*)*)")]
