@@ -379,7 +379,7 @@ internal sealed record BrowserHostLifetimeSnapshot(
 /// FenJS browser script engine — the sole JS runtime for the browser pipeline.
 /// All page scripts execute through FenJS; there is no legacy fallback.
 /// </summary>
-public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSource
+public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSource
 {
     private sealed class MessagePortEndpoint
     {
@@ -1497,6 +1497,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             await ExecutePageScriptsWithFenJsAsync(domRoot, baseUri).ConfigureAwait(false);
             ApplyScriptingEnabledSanitizer(domRoot);
             DispatchStartupLifecycleEvents();
+            BeginImageLoadTracking(domRoot);
         }
         finally
         {
