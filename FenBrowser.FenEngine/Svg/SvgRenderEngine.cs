@@ -27,6 +27,7 @@ namespace FenBrowser.FenEngine.Svg
         private readonly System.Uri _baseUri;
         private readonly ISvgResourceResolver _resourceResolver;
         private readonly double _documentTimeSeconds;
+        private readonly SvgZoomAndPan? _zoomAndPan;
         private readonly int _maxActiveLayers;
         private readonly int _maxReferenceDepth;
         private int _elementsVisited;
@@ -57,7 +58,8 @@ namespace FenBrowser.FenEngine.Svg
             int resourceDepth,
             System.Uri baseUri,
             ISvgResourceResolver resourceResolver,
-            double documentTimeSeconds)
+            double documentTimeSeconds,
+            SvgZoomAndPan? zoomAndPan = null)
         {
             _doc = doc;
             _report = doc.Report;
@@ -67,6 +69,7 @@ namespace FenBrowser.FenEngine.Svg
             _baseUri = baseUri;
             _resourceResolver = resourceResolver;
             _documentTimeSeconds = documentTimeSeconds;
+            _zoomAndPan = zoomAndPan;
             _maxActiveLayers = limits.MaxActiveLayers;
             _maxReferenceDepth = limits.MaxReferenceDepth;
         }
@@ -110,7 +113,8 @@ namespace FenBrowser.FenEngine.Svg
             out IReadOnlyList<string> resourceRejectionReasonCodes,
             out bool requiresFallback,
             out bool resourceRejected,
-            SvgRenderResources resources)
+            SvgRenderResources resources,
+            SvgZoomAndPan? zoomAndPan = null)
         {
             picture = null;
             width = 0f;
@@ -129,12 +133,12 @@ namespace FenBrowser.FenEngine.Svg
                     source, limits, baseUri, resourceResolver, documentTimeSeconds,
                     out picture, out width, out height, out error, out warnings,
                     out fallbackReasonCodes, out resourceRejectionReasonCodes,
-                    out requiresFallback, out resourceRejected, owned);
+                    out requiresFallback, out resourceRejected, owned, zoomAndPan);
             }
 
             return TryRenderInternal(
                 source, limits, resources, 0, baseUri, resourceResolver,
-                documentTimeSeconds,
+                documentTimeSeconds, zoomAndPan,
                 out picture, out width, out height, out _, out error, out warnings,
                 out fallbackReasonCodes, out resourceRejectionReasonCodes,
                 out requiresFallback, out resourceRejected);
@@ -148,6 +152,7 @@ namespace FenBrowser.FenEngine.Svg
             System.Uri baseUri,
             ISvgResourceResolver resourceResolver,
             double documentTimeSeconds,
+            SvgZoomAndPan? zoomAndPan,
             out SKPicture picture,
             out float width,
             out float height,
@@ -179,7 +184,7 @@ namespace FenBrowser.FenEngine.Svg
 
             var engine = new SvgRenderEngine(
                 doc, limits, resources, resourceDepth, baseUri, resourceResolver,
-                documentTimeSeconds);
+                documentTimeSeconds, zoomAndPan);
             try
             {
                 engine.ApplySmilSnapshot(doc.Root);
@@ -332,6 +337,14 @@ namespace FenBrowser.FenEngine.Svg
                 // transform the clip rectangle too (e.g. a large-negative
                 // vbY would push the clip entirely off-content).
                 canvas.ClipRect(new SKRect(0f, 0f, width, height));
+                // The zoom-and-pan transform (SVG 2 §5.1.1, currentScale and
+                // currentTranslate) acts on the root's user space inside the fixed
+                // viewport clip, so zooming out reveals content beyond the viewport.
+                if (_zoomAndPan is { IsIdentity: false } zoom)
+                {
+                    canvas.Concat(SKMatrix.CreateScaleTranslation(
+                        zoom.Scale, zoom.Scale, zoom.TranslateX, zoom.TranslateY));
+                }
                 if (viewBoxDisablesRendering)
                 {
                     picture = recorder.EndRecording();

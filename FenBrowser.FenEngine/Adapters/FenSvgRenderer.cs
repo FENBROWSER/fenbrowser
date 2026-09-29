@@ -184,6 +184,16 @@ namespace FenBrowser.FenEngine.Adapters
                 };
             }
 
+            if (request.ZoomAndPan is { IsValid: false })
+            {
+                return new SvgRenderResult
+                {
+                    Success = false,
+                    ErrorMessage = "SVG zoom-and-pan transform is outside the supported finite range",
+                    Backend = SvgRendererBackend.FirstParty
+                };
+            }
+
             limits = SvgRenderLimits.Normalize(limits);
 
             // Source admission control (parity message).
@@ -215,7 +225,8 @@ namespace FenBrowser.FenEngine.Adapters
                         out string error, out var warnings,
                         out var fallbackReasonCodes, out var resourceRejectionReasonCodes,
                         out bool requiresFallback, out bool resourceRejected,
-                        resources))
+                        resources,
+                        request.ZoomAndPan))
                 {
                     return new SvgRenderResult
                     {

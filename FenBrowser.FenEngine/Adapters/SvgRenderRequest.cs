@@ -30,6 +30,32 @@ namespace FenBrowser.FenEngine.Adapters
         /// before it is logged.
         /// </summary>
         public string? DiagnosticSource { get; init; }
+        /// <summary>
+        /// The zoom-and-pan transform of a standalone SVG document (SVG 2 §5.1.1,
+        /// SVGSVGElement currentScale and currentTranslate), applied in viewport
+        /// space when the picture is rasterized. Null is the identity.
+        /// </summary>
+        public SvgZoomAndPan? ZoomAndPan { get; init; }
+    }
+
+    /// <summary>
+    /// A zoom-and-pan transform: content maps to <c>translate + scale * point</c> in
+    /// viewport space.
+    /// </summary>
+    public readonly record struct SvgZoomAndPan(float Scale, float TranslateX, float TranslateY)
+    {
+        /// <summary>Bound on |scale|, so a script cannot request an absurd magnification.</summary>
+        public const float MaxScale = 10_000f;
+
+        /// <summary>Bound on the translation, in CSS pixels.</summary>
+        public const float MaxTranslate = 1_000_000f;
+
+        public bool IsIdentity => Scale == 1f && TranslateX == 0f && TranslateY == 0f;
+
+        public bool IsValid =>
+            float.IsFinite(Scale) && Math.Abs(Scale) <= MaxScale &&
+            float.IsFinite(TranslateX) && Math.Abs(TranslateX) <= MaxTranslate &&
+            float.IsFinite(TranslateY) && Math.Abs(TranslateY) <= MaxTranslate;
     }
 
     public enum SvgResourceKind
