@@ -113,6 +113,18 @@ namespace FenBrowser.FenEngine.Rendering
         
         private readonly HashSet<Element> _topLayerElements = new HashSet<Element>();
         private bool _renderingTopLayer = false;
+
+        // Set when a node's paint depends on the viewport scroll offset (fixed boxes,
+        // sticky against the viewport, background-attachment:fixed, top-layer
+        // backdrops). Nothing marks the DOM dirty when the viewport scrolls, so such a
+        // tree must be rebuilt when the offset moves; see ImmutablePaintTree.ReadsViewportScroll.
+        private bool _readsViewportScroll;
+
+        private (float x, float y) ReadViewportScroll()
+        {
+            _readsViewportScroll = true;
+            return _scrollManager?.GetScrollOffset(null) ?? (0f, 0f);
+        }
         
         /// <summary>
         /// Builds an immutable paint tree from layout and style data.
@@ -176,7 +188,7 @@ namespace FenBrowser.FenEngine.Rendering
                         // canvas is translated by -scrollY before rendering).
                         // We must offset the backdrop and dialog so they stay
                         // fixed in the viewport regardless of scroll.
-                        var scrollOffset = builder._scrollManager?.GetScrollOffset(null) ?? (0f, 0f);
+                        var scrollOffset = builder.ReadViewportScroll();
                         float scrollY = scrollOffset.y;
 
                         // Add Backdrop — covers the viewport in document space.
@@ -243,7 +255,10 @@ namespace FenBrowser.FenEngine.Rendering
                     ["normalizedClipRects"] = builder._normalizedClipRectCount
                 });
 
-            return new ImmutablePaintTree(rootNodes, frameId, nodeCount: CountPaintTreeNodes(rootNodes));
+            return new ImmutablePaintTree(rootNodes, frameId, nodeCount: CountPaintTreeNodes(rootNodes))
+            {
+                ReadsViewportScroll = builder._readsViewportScroll
+            };
         }
 
         /// <summary>
@@ -260,8 +275,21 @@ namespace FenBrowser.FenEngine.Rendering
             float viewportWidth,
             float viewportHeight,
             Interaction.ScrollManager scrollManager,
-            string baseUri = null)
+            string baseUri = null) =>
+            BuildSubtree(subtreeRoot, boxes, styles, viewportWidth, viewportHeight, scrollManager, baseUri, out _);
+
+        /// <param name="readsViewportScroll">Whether the subtree's paint depends on the viewport scroll offset.</param>
+        public static IReadOnlyList<PaintNodeBase> BuildSubtree(
+            Node subtreeRoot,
+            IReadOnlyDictionary<Node, Layout.BoxModel> boxes,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            float viewportWidth,
+            float viewportHeight,
+            Interaction.ScrollManager scrollManager,
+            string baseUri,
+            out bool readsViewportScroll)
         {
+            readsViewportScroll = false;
             if (subtreeRoot == null || boxes == null || boxes.Count == 0)
                 return Array.Empty<PaintNodeBase>();
 
@@ -275,6 +303,7 @@ namespace FenBrowser.FenEngine.Rendering
             builder.BuildRecursive(subtreeRoot, subtreeContext, 0, null, false);
             var flatNodes = subtreeContext.Flatten();
             builder._nodeCount = flatNodes.Count;
+            readsViewportScroll = builder._readsViewportScroll;
             return flatNodes;
         }
 
@@ -507,6 +536,7 @@ namespace FenBrowser.FenEngine.Rendering
                     // Currently we only support element scrolling via ScrollManager?
                     // If ScrollManager tracks root scroll, use keys like 'null' or Document?
                     // For now, assume element scrolling or nothing.
+                    _readsViewportScroll = true;
                     var rootState = _scrollManager?.GetScrollState(null); // Try get global scroll
                      if (rootState != null)
                     {
@@ -1638,7 +1668,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            var viewportOffset = _scrollManager.GetScrollOffset(null);
+            var viewportOffset = ReadViewportScroll();
             return new SKPoint(viewportOffset.x, viewportOffset.y);
         }
 
@@ -3500,7 +3530,7 @@ namespace FenBrowser.FenEngine.Rendering
             float fixedOriginY = 0;
             if (string.Equals(style?.BackgroundAttachment, "fixed", StringComparison.OrdinalIgnoreCase))
             {
-                var viewportScroll = _scrollManager?.GetScrollOffset(null) ?? (0f, 0f);
+                var viewportScroll = ReadViewportScroll();
                 fixedOriginX = viewportScroll.x;
                 fixedOriginY = viewportScroll.y;
             }
@@ -3587,7 +3617,7 @@ namespace FenBrowser.FenEngine.Rendering
             float fixedOriginY = 0;
             if (string.Equals(style.BackgroundAttachment, "fixed", StringComparison.OrdinalIgnoreCase))
             {
-                var viewportScroll = _scrollManager?.GetScrollOffset(null) ?? (0f, 0f);
+                var viewportScroll = ReadViewportScroll();
                 fixedOriginX = viewportScroll.x;
                 fixedOriginY = viewportScroll.y;
             }

@@ -16,6 +16,13 @@ namespace FenBrowser.FenEngine.Rendering
         public int NodeCount { get; }
         public long BuildTimestamp { get; }
 
+        /// <summary>
+        /// Some node's paint was computed from the viewport scroll offset (position:fixed
+        /// counter-translation, sticky offsets, background-attachment:fixed, top-layer
+        /// backdrops). The tree is only valid at the offset it was built for.
+        /// </summary>
+        public bool ReadsViewportScroll { get; init; }
+
         public ImmutablePaintTree(IReadOnlyList<PaintNodeBase> roots, int frameId = 0, int? nodeCount = null)
         {
             Roots = roots ?? throw new ArgumentNullException(nameof(roots));
@@ -66,7 +73,8 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public ImmutablePaintTree WithReplacedSubtree(
             Node sourceNode,
-            IReadOnlyList<PaintNodeBase> newSubtreeNodes)
+            IReadOnlyList<PaintNodeBase> newSubtreeNodes,
+            bool subtreeReadsViewportScroll = false)
         {
             if (sourceNode == null || newSubtreeNodes == null || Roots.Count == 0)
                 return null;
@@ -145,7 +153,10 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var newRoots = ReplaceRange(Roots, replaceIndex, replaceCount, replacement);
-            return new ImmutablePaintTree(newRoots, FrameId, CountNodes(newRoots));
+            return new ImmutablePaintTree(newRoots, FrameId, CountNodes(newRoots))
+            {
+                ReadsViewportScroll = ReadsViewportScroll || subtreeReadsViewportScroll
+            };
         }
 
         /// <summary>Whether <paramref name="node"/> is <paramref name="subtreeRoot"/> or inside it, across shadow and pseudo-element boundaries.</summary>

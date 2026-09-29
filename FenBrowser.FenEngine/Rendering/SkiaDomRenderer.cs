@@ -75,6 +75,8 @@ namespace FenBrowser.FenEngine.Rendering
         private IReadOnlyDictionary<Node, CssComputed> _lastStyles;
         private LayoutResult _lastLayout;
         private ImmutablePaintTree _lastPaintTree;
+        // The viewport scroll offset _lastPaintTree was built at.
+        private SKPoint _lastPaintTreeViewportScroll;
         private IReadOnlyList<CompositedLayer> _lastCompositedLayers = Array.Empty<CompositedLayer>();
         private IReadOnlyList<SKRect> _lastDamageRegions = Array.Empty<SKRect>();
         private float _viewportWidth;
@@ -824,7 +826,18 @@ namespace FenBrowser.FenEngine.Rendering
                     using var paintTimeline = TimelineTracer.Instance.Begin("RenderFrame.Paint", "render");
                     paintStageWatchdog.Restart();
                     RenderPipeline.EnterPaint(); // Checks LayoutFrozen
+                    // Nothing marks the DOM dirty when the viewport scrolls, yet a tree
+                    // with fixed boxes, viewport-sticky offsets, fixed backgrounds or a
+                    // top-layer backdrop baked the offset it was built at. Reusing it
+                    // after a scroll drew those at the old offset (github.com's header
+                    // drifting down the page on a frame where nothing else changed).
+                    var viewportScrollNow = _scrollManager.GetScrollOffset(null);
+                    bool viewportScrollStale =
+                        _lastPaintTree?.ReadsViewportScroll == true &&
+                        (Math.Abs(viewportScrollNow.x - _lastPaintTreeViewportScroll.X) > 0.01f ||
+                         Math.Abs(viewportScrollNow.y - _lastPaintTreeViewportScroll.Y) > 0.01f);
                     paintInvalidationSignal = isLayoutDirty
+                                              || viewportScrollStale
                                               || styleInvalidation
                                               || root.PaintDirty
                                               || root.ChildPaintDirty
@@ -873,7 +886,8 @@ namespace FenBrowser.FenEngine.Rendering
                             (AnimationUpdateKind.Paint | AnimationUpdateKind.Layout)) == 0 &&
                         !scrollAnimationActive &&
                         !root.PaintDirty && !root.ChildPaintDirty &&
-                        !root.LayoutDirty && !root.ChildLayoutDirty;
+                        !root.LayoutDirty && !root.ChildLayoutDirty &&
+                        !viewportScrollStale;
                     _frameWasCompositorOnly = compositorOnly;
                     bool isPaintDirty = !compositorOnly &&
                         (paintInvalidationSignal || requiresCompositePaintFallback ||
@@ -915,6 +929,7 @@ namespace FenBrowser.FenEngine.Rendering
                             paintDirtyRoots.Count > 0 &&
                             paintDirtyRoots.Count <= 16 &&
                             !isLayoutDirty &&
+                            !viewportScrollStale &&
                             (invalidationReason & (RenderFrameInvalidationReason.Navigation |
                                                    RenderFrameInvalidationReason.Dom |
                                                    RenderFrameInvalidationReason.Layout)) == 0;
@@ -931,10 +946,11 @@ namespace FenBrowser.FenEngine.Rendering
                                 var newSubtree = NewPaintTreeBuilder.BuildSubtree(
                                     dirtyRoot, _boxes, styles,
                                     _viewportWidth, _viewportHeight,
-                                    _scrollManager, baseUrl);
+                                    _scrollManager, baseUrl,
+                                    out bool subtreeReadsViewportScroll);
                                 // Null: the subtree's old nodes are not one splice-able
                                 // run, so only a full build is correct.
-                                mergedTree = mergedTree.WithReplacedSubtree(dirtyRoot, newSubtree);
+                                mergedTree = mergedTree.WithReplacedSubtree(dirtyRoot, newSubtree, subtreeReadsViewportScroll);
                                 if (mergedTree == null)
                                 {
                                     break;
@@ -955,6 +971,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
 
                         _lastPaintTree = paintTree;
+                        _lastPaintTreeViewportScroll = new SKPoint(viewportScrollNow.x, viewportScrollNow.y);
                         _paintTreeGeneration++;
                         // Phase 11: capture image-changed BEFORE updating the cached version.
                         bool imageChanged = _requestImageGenerationChanged ||
