@@ -19329,9 +19329,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var docHost = document == null ? JsValue.Undefined : ToHostOrNull(document, HostObjectKind.DomDocument);
         var windowTarget = GetActiveWindowEventTarget();
 
+        // DOM 2.9 "get the parent" for a Document: null when the event's type is "load".
+        // An <img>/<script>/<link> load never reaches Window, which has its own load
+        // event. Walking into Window let web-vitals' window capture `load` listener -
+        // which re-registers a fresh closure until readyState is "complete" - run on
+        // every image load, doubling the listener list each time: github.com spun a
+        // core in addEventListener once its React components actually mounted.
+        bool windowInPath = windowTarget.Tag != JsValueTag.Undefined &&
+                            !string.Equals(type, "load", StringComparison.Ordinal);
+
         // 1. CAPTURE PHASE â€” fire capture listeners on ancestors from root down to target's parent
         _interpreter.SetObjectProperty(eventValue, "eventPhase", JsValue.FromInt32(1)); // Event.CAPTURING_PHASE
-        if (windowTarget.Tag != JsValueTag.Undefined)
+        if (windowInPath)
         {
             DispatchBrowserEventWithState(
                 GetActiveWindowEventListeners(), type, windowTarget, eventValue, dispatchState, capture: true);
@@ -19390,7 +19399,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             }
 
             // Window listeners
-            if (!ReadPropagationStopped(eventValue, dispatchState))
+            if (windowInPath && !ReadPropagationStopped(eventValue, dispatchState))
             {
                 DispatchBrowserEventWithState(
                     GetActiveWindowEventListeners(), type, windowTarget, eventValue, dispatchState, capture: false);
