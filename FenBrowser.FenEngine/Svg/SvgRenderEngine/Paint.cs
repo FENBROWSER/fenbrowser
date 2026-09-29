@@ -296,7 +296,7 @@ namespace FenBrowser.FenEngine.Svg
             var entry = new CachedGradient();
             _gradientCache[key] = entry;
 
-            if (!TryResolveGradientDefinition(server, out var definition))
+            if (!TryResolveGradientDefinition(server, style, viewport, out var definition))
             {
                 return entry;
             }
@@ -396,6 +396,8 @@ namespace FenBrowser.FenEngine.Svg
 
         private bool TryResolveGradientDefinition(
             SvgElement server,
+            InheritedStyle style,
+            ViewportContext viewport,
             out GradientDefinition definition)
         {
             definition = new GradientDefinition();
@@ -425,7 +427,7 @@ namespace FenBrowser.FenEngine.Svg
                 definition.SpreadMethod ??= InheritedAttribute(current, "spreadMethod");
                 if (definition.TransformOwner == null)
                 {
-                    switch (ResolveServerTransform(current, "gradientTransform", out var candidate))
+                    switch (ResolveServerTransform(current, "gradientTransform", style, viewport, out var candidate))
                     {
                         case ServerTransformStatus.NotSpecified:
                             break;
@@ -474,9 +476,17 @@ namespace FenBrowser.FenEngine.Svg
             Unresolved
         }
 
+        /// <summary>
+        /// A paint server's transform. gradientTransform and patternTransform are
+        /// presentation attributes for the transform property (CSS Transforms 1 §6,
+        /// SVG 2 §14.2.2), so a CSS declaration wins and uses CSS syntax (units,
+        /// transform-origin); only the attribute uses the SVG list grammar.
+        /// </summary>
         private static ServerTransformStatus ResolveServerTransform(
             SvgElement element,
             string attributeName,
+            InheritedStyle style,
+            ViewportContext viewport,
             out SKMatrix transform)
         {
             transform = SKMatrix.Identity;
@@ -488,6 +498,27 @@ namespace FenBrowser.FenEngine.Svg
             if (string.IsNullOrWhiteSpace(raw))
             {
                 return ServerTransformStatus.NotSpecified;
+            }
+            if (fromCss)
+            {
+                // Paint servers have no CSS layout box: the reference box is the
+                // nearest viewport (view-box) and transform-origin defaults to 0 0.
+                return SvgCssTransform.TryResolve(
+                        raw,
+                        element.GetPresentationProperty("transform-origin"),
+                        element.GetPresentationProperty("transform-box"),
+                        viewport.Width,
+                        viewport.Height,
+                        style.FontSize,
+                        style.RootFontSize,
+                        fillBox: null,
+                        out transform,
+                        out _) switch
+                    {
+                        SvgCssTransformStatus.None => ServerTransformStatus.NotSpecified,
+                        SvgCssTransformStatus.Identity or SvgCssTransformStatus.Matrix => ServerTransformStatus.Resolved,
+                        _ => ServerTransformStatus.Unresolved
+                    };
             }
             if (string.Equals(raw.Trim(), "none", StringComparison.OrdinalIgnoreCase))
             {

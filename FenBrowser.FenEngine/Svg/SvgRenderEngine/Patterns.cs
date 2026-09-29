@@ -57,7 +57,7 @@ namespace FenBrowser.FenEngine.Svg
             InheritedStyle referencingStyle,
             ViewportContext viewport)
         {
-            if (!TryResolvePattern(server, out var pattern))
+            if (!TryResolvePattern(server, referencingStyle, viewport, out var pattern))
             {
                 return null;
             }
@@ -212,7 +212,11 @@ namespace FenBrowser.FenEngine.Svg
                 tile);
         }
 
-        private bool TryResolvePattern(SvgElement server, out ResolvedPattern resolved)
+        private bool TryResolvePattern(
+            SvgElement server,
+            InheritedStyle style,
+            ViewportContext viewport,
+            out ResolvedPattern resolved)
         {
             resolved = new ResolvedPattern();
             var visited = new HashSet<SvgElement>();
@@ -237,7 +241,7 @@ namespace FenBrowser.FenEngine.Svg
                 resolved.ContentUnits ??= InheritedAttribute(current, "patternContentUnits");
                 if (!resolved.HasTransform)
                 {
-                    switch (ResolveServerTransform(current, "patternTransform", out var transform))
+                    switch (ResolveServerTransform(current, "patternTransform", style, viewport, out var transform))
                     {
                         case ServerTransformStatus.NotSpecified:
                             break;
