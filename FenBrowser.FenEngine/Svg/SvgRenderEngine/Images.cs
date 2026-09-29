@@ -436,6 +436,27 @@ namespace FenBrowser.FenEngine.Svg
             return prefix.IndexOf("<svg", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        /// <summary>
+        /// Sampling for a raster image from the inherited image-rendering property:
+        /// nearest-neighbour for pixelated / crisp-edges / optimizeSpeed, the default
+        /// smooth filtering otherwise.
+        /// </summary>
+        private static SKSamplingOptions ResolveImageSampling(SvgElement element)
+        {
+            for (var current = element; current != null; current = current.Parent)
+            {
+                string value = current.GetPresentationProperty("image-rendering")?.Trim();
+                if (string.IsNullOrEmpty(value) || value.Equals("inherit", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                return SvgCssCascade.IsPixelatedImageRendering("image-rendering", value)
+                    ? new SKSamplingOptions(SKFilterMode.Nearest, SKMipmapMode.None)
+                    : SKSamplingOptions.Default;
+            }
+            return SKSamplingOptions.Default;
+        }
+
         private void DrawBorrowedImage(
             SvgElement el,
             SKCanvas canvas,
@@ -461,7 +482,7 @@ namespace FenBrowser.FenEngine.Svg
                     el.GetAttribute("preserveAspectRatio"));
                 if (destination.IsEmpty) return;
                 canvas.ClipRect(imageViewport);
-                canvas.DrawImage(image, source, destination, SKSamplingOptions.Default, paint);
+                canvas.DrawImage(image, source, destination, ResolveImageSampling(el), paint);
             }
             finally
             {

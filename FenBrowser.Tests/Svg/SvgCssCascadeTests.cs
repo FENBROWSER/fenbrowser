@@ -1287,7 +1287,6 @@ namespace FenBrowser.Tests.Svg
 
         [Theory]
         [InlineData("rect { shape-rendering: crispEdges }")]
-        [InlineData("rect { image-rendering: pixelated }")]
         [InlineData("svg { overflow: bogus }")]
         [InlineData("marker { overflow: bogus }")]
         public void HintPropertiesThatChangePixels_StillFailClosed(string rule)

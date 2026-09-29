@@ -1062,6 +1062,7 @@ namespace FenBrowser.FenEngine.Svg
                 property.Equals("vector-effect", StringComparison.OrdinalIgnoreCase) &&
                 SvgFeatureSupport.SupportsNonScalingStroke(element, value);
             bool rootCanvasBackground = IsRootCanvasBackground(element, property, value);
+            bool pixelatedImageRendering = IsPixelatedImageRendering(property, value);
             if (!isCustomProperty && IsInertBoxProperty(element, property))
             {
                 if (SvgFeatureSupport.HasExternalUrlReference(value))
@@ -1078,7 +1079,8 @@ namespace FenBrowser.FenEngine.Svg
                 property.Equals("white-space", StringComparison.OrdinalIgnoreCase);
             if (!isCustomProperty && !isFontShorthand && !SupportedProperties.Contains(property) &&
                 !supportedViewportOverflow && !inertOverflow && !supportedNonScalingStroke &&
-                !singleLineWhiteSpace && !rootCanvasBackground && !IsNoEffectProperty(property, value))
+                !singleLineWhiteSpace && !rootCanvasBackground && !pixelatedImageRendering &&
+                !IsNoEffectProperty(property, value))
             {
                 if (EmbeddingOnlyProperties.Contains(property)) return;
                 // Single-line text layout drops the area properties: they have no effect.
@@ -1174,6 +1176,17 @@ namespace FenBrowser.FenEngine.Svg
             (property.Equals("background-color", StringComparison.OrdinalIgnoreCase) ||
              property.Equals("background", StringComparison.OrdinalIgnoreCase)) &&
             SvgValues.TryParseColor(value.AsSpan(), out _);
+
+        /// <summary>
+        /// image-rendering values that ask for pixel-art scaling (CSS Images 3 §7.1;
+        /// optimizeSpeed is the SVG 1.1 spelling). Raster images honour them with
+        /// nearest-neighbour sampling; the smooth values have no effect.
+        /// </summary>
+        internal static bool IsPixelatedImageRendering(string property, string value) =>
+            property.Equals("image-rendering", StringComparison.OrdinalIgnoreCase) &&
+            (value.Equals("pixelated", StringComparison.OrdinalIgnoreCase) ||
+             value.Equals("crisp-edges", StringComparison.OrdinalIgnoreCase) ||
+             value.Equals("optimizeSpeed", StringComparison.OrdinalIgnoreCase));
 
         private static bool IsInertBoxProperty(SvgElement element, string property) =>
             InertBoxProperties.Contains(property) &&
