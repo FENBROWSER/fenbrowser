@@ -2995,52 +2995,19 @@ namespace FenBrowser.FenEngine.Rendering
             double angleDeg = 180; // default "to bottom"
             int colorStartIndex = 0;
 
-            if (first.Contains("deg", StringComparison.OrdinalIgnoreCase))
-            {
-                if (double.TryParse(first.Replace("deg", "").Trim(), out var deg))
-                {
-                    angleDeg = deg;
-                    colorStartIndex = 1;
-                }
-            }
-            else if (first.StartsWith("to ", StringComparison.OrdinalIgnoreCase))
+            if (first.StartsWith("to ", StringComparison.OrdinalIgnoreCase))
             {
                 colorStartIndex = 1;
-                angleDeg = DirectionToAngle(first);
+                angleDeg = DirectionToAngle(first, bounds);
             }
-
-            var colors = new List<SKColor>();
-            var positions = new List<float>();
-
-            for (int i = colorStartIndex; i < parts.Count; i++)
+            else if (TryParseGradientAngle(first, out var parsedAngle))
             {
-                var stop = parts[i].Trim();
-                if (string.IsNullOrEmpty(stop)) continue;
-
-                string colorPart = stop;
-                float? pos = null;
-
-                int split = FindLastTopLevelSpace(stop);
-                if (split > 0 && split < stop.Length - 1)
-                {
-                    var posStr = stop.Substring(split + 1).Trim();
-                    colorPart = stop.Substring(0, split).Trim();
-                    if (posStr.EndsWith("%") && float.TryParse(posStr.TrimEnd('%'), out var pct))
-                    {
-                        pos = Math.Clamp(pct / 100f, 0f, 1f);
-                    }
-                }
-
-                if (TryParseGradientColor(colorPart, out var color))
-                {
-                    colors.Add(color);
-                    if (pos.HasValue) positions.Add(pos.Value);
-                }
+                angleDeg = parsedAngle;
+                colorStartIndex = 1;
             }
 
-            if (colors.Count == 0) return null;
-            float[] posArr = positions.Count == colors.Count ? positions.ToArray() : null;
-
+            // CSS Images 3 §3.4.1: the gradient line runs through the centre at the
+            // angle, long enough that its ends' perpendiculars touch the box corners.
             double rad = angleDeg * Math.PI / 180.0;
             var dir = new SKPoint((float)Math.Sin(rad), -(float)Math.Cos(rad)); // CSS 0deg = to top
             float gradientLength = Math.Abs(bounds.Width * dir.X) + Math.Abs(bounds.Height * dir.Y);
@@ -3048,12 +3015,47 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 gradientLength = Math.Max(bounds.Width, bounds.Height);
             }
+
+            if (!TryBuildGradientStops(parts, colorStartIndex, gradientLength, out var colors, out var positions))
+            {
+                return null;
+            }
+
             float half = gradientLength / 2f;
             var center = new SKPoint(bounds.MidX, bounds.MidY);
-            var startPt = new SKPoint(center.X - dir.X * half, center.Y - dir.Y * half);
-            var endPt = new SKPoint(center.X + dir.X * half, center.Y + dir.Y * half);
+            var lineStart = new SKPoint(center.X - dir.X * half, center.Y - dir.Y * half);
 
-            return SKShader.CreateLinearGradient(startPt, endPt, colors.ToArray(), posArr, SKShaderTileMode.Clamp);
+            // Stops outside 0..100% (github.com's `#000 117%`) are real positions on the
+            // extended line; Skia wants 0..1, so the shader's line is stretched to the
+            // first and last stop and the positions are rescaled onto it.
+            float first01 = positions[0];
+            float last01 = positions[positions.Length - 1];
+            float span = last01 - first01;
+            bool repeating = css.StartsWith("repeating-", StringComparison.OrdinalIgnoreCase);
+            if (span <= 1e-6f)
+            {
+                // All stops at one point: a hard edge there (or the last colour when repeating).
+                if (repeating)
+                {
+                    return SKShader.CreateColor(colors[colors.Length - 1]);
+                }
+
+                span = 1e-4f;
+                last01 = first01 + span;
+                positions[positions.Length - 1] = last01;
+            }
+
+            var startPt = new SKPoint(lineStart.X + dir.X * gradientLength * first01, lineStart.Y + dir.Y * gradientLength * first01);
+            var endPt = new SKPoint(lineStart.X + dir.X * gradientLength * last01, lineStart.Y + dir.Y * gradientLength * last01);
+            var normalized = new float[positions.Length];
+            for (int i = 0; i < positions.Length; i++)
+            {
+                normalized[i] = Math.Clamp((positions[i] - first01) / span, 0f, 1f);
+            }
+
+            return SKShader.CreateLinearGradient(
+                startPt, endPt, colors, normalized,
+                repeating ? SKShaderTileMode.Repeat : SKShaderTileMode.Clamp);
         }
 
         private SKShader CreateRadialGradientShader(string css, SKRect bounds)
@@ -3069,38 +3071,208 @@ namespace FenBrowser.FenEngine.Rendering
             var center = new SKPoint(bounds.MidX, bounds.MidY);
             float radius = Math.Max(bounds.Width, bounds.Height) / 2f;
 
-            var colors = new List<SKColor>();
-            var positions = new List<float>();
+            // The shape/size/position prelude is not modelled; skip it rather than
+            // reading it as a colour stop.
+            int colorStartIndex = TryParseGradientColor(FirstStopColorToken(parts[0]), out _) ? 0 : 1;
+            if (!TryBuildGradientStops(parts, colorStartIndex, radius, out var colors, out var positions))
+            {
+                return null;
+            }
 
-            for (int i = 0; i < parts.Count; i++)
+            // Stops past the ending shape lengthen the ray; stops before the centre clamp.
+            float last = Math.Max(positions[positions.Length - 1], 1e-4f);
+            var normalized = new float[positions.Length];
+            for (int i = 0; i < positions.Length; i++)
+            {
+                normalized[i] = Math.Clamp(positions[i] / last, 0f, 1f);
+            }
+
+            bool repeating = css.StartsWith("repeating-", StringComparison.OrdinalIgnoreCase);
+            return SKShader.CreateRadialGradient(
+                center, radius * last, colors, normalized,
+                repeating ? SKShaderTileMode.Repeat : SKShaderTileMode.Clamp);
+        }
+
+        private static string FirstStopColorToken(string stop)
+        {
+            var trimmed = stop.Trim();
+            int split = FindLastTopLevelSpace(trimmed);
+            return split > 0 ? trimmed.Substring(0, split).Trim() : trimmed;
+        }
+
+        /// <summary>
+        /// CSS Images 3 §3.5 color stops for a gradient line of <paramref name="lineLength"/>
+        /// px: each stop may carry zero, one or two positions (% or px); §3.5.3 fixup then
+        /// puts an unpositioned first/last stop at 0%/100%, lifts a position below an earlier
+        /// one up to it, and spaces runs of unpositioned stops evenly. Positions come back as
+        /// fractions of the line and may lie outside 0..1. Fully transparent stops take their
+        /// neighbours' colour so interpolation behaves as premultiplied (§3.4.3): navy to
+        /// `transparent` fades the navy out instead of passing through grey.
+        /// </summary>
+        private static bool TryBuildGradientStops(
+            List<string> parts,
+            int startIndex,
+            float lineLength,
+            out SKColor[] colors,
+            out float[] positions)
+        {
+            var stopColors = new List<SKColor>();
+            var stopPositions = new List<float?>();
+            for (int i = startIndex; i < parts.Count; i++)
             {
                 var stop = parts[i].Trim();
-                if (string.IsNullOrEmpty(stop)) continue;
+                if (stop.Length == 0) continue;
 
+                // Up to two trailing positions: `red 10% 20%`.
+                var trailing = new List<float>();
                 string colorPart = stop;
-                float? pos = null;
-                int split = FindLastTopLevelSpace(stop);
-                if (split > 0 && split < stop.Length - 1)
+                for (int k = 0; k < 2; k++)
                 {
-                    var posStr = stop.Substring(split + 1).Trim();
-                    colorPart = stop.Substring(0, split).Trim();
-                    if (posStr.EndsWith("%") && float.TryParse(posStr.TrimEnd('%'), out var pct))
+                    int split = FindLastTopLevelSpace(colorPart);
+                    if (split <= 0 || !TryParseStopPosition(colorPart.Substring(split + 1).Trim(), lineLength, out var position))
                     {
-                        pos = Math.Clamp(pct / 100f, 0f, 1f);
+                        break;
                     }
+
+                    trailing.Insert(0, position);
+                    colorPart = colorPart.Substring(0, split).Trim();
                 }
 
-                if (TryParseGradientColor(colorPart, out var color))
+                if (!TryParseGradientColor(colorPart, out var color))
                 {
-                    colors.Add(color);
-                    if (pos.HasValue) positions.Add(pos.Value);
+                    // A lone position is a colour hint; interpolation hints are not modelled.
+                    continue;
+                }
+
+                if (trailing.Count == 0)
+                {
+                    stopColors.Add(color);
+                    stopPositions.Add(null);
+                }
+                else
+                {
+                    foreach (var position in trailing)
+                    {
+                        stopColors.Add(color);
+                        stopPositions.Add(position);
+                    }
                 }
             }
 
-            if (colors.Count == 0) return null;
-            float[] posArr = positions.Count == colors.Count ? positions.ToArray() : null;
+            colors = null;
+            positions = null;
+            if (stopColors.Count == 0) return false;
+            if (stopColors.Count == 1)
+            {
+                stopColors.Add(stopColors[0]);
+                stopPositions.Add(null);
+            }
 
-            return SKShader.CreateRadialGradient(center, radius, colors.ToArray(), posArr, SKShaderTileMode.Clamp);
+            // §3.5.3 step 1: default first and last.
+            stopPositions[0] ??= 0f;
+            stopPositions[stopPositions.Count - 1] ??= 1f;
+
+            // Step 2: never below an earlier stop.
+            float highest = stopPositions[0].Value;
+            for (int i = 1; i < stopPositions.Count; i++)
+            {
+                if (stopPositions[i].HasValue)
+                {
+                    if (stopPositions[i].Value < highest) stopPositions[i] = highest;
+                    highest = stopPositions[i].Value;
+                }
+            }
+
+            // Step 3: space unpositioned runs evenly between their neighbours.
+            for (int i = 1; i < stopPositions.Count; i++)
+            {
+                if (stopPositions[i].HasValue) continue;
+                int runEnd = i;
+                while (!stopPositions[runEnd].HasValue) runEnd++;
+                float from = stopPositions[i - 1].Value;
+                float to = stopPositions[runEnd].Value;
+                int steps = runEnd - (i - 1);
+                for (int k = i; k < runEnd; k++)
+                {
+                    stopPositions[k] = from + (to - from) * (k - (i - 1)) / steps;
+                }
+
+                i = runEnd;
+            }
+
+            var outColors = new List<SKColor>();
+            var outPositions = new List<float>();
+            for (int i = 0; i < stopColors.Count; i++)
+            {
+                var color = stopColors[i];
+                float position = stopPositions[i].Value;
+                if (color.Alpha != 0)
+                {
+                    outColors.Add(color);
+                    outPositions.Add(position);
+                    continue;
+                }
+
+                SKColor? before = i > 0 ? stopColors[i - 1] : null;
+                SKColor? after = i + 1 < stopColors.Count ? stopColors[i + 1] : null;
+                var left = before ?? after ?? color;
+                var right = after ?? before ?? color;
+                outColors.Add(left.WithAlpha(0));
+                outPositions.Add(position);
+                if (right != left)
+                {
+                    outColors.Add(right.WithAlpha(0));
+                    outPositions.Add(position);
+                }
+            }
+
+            colors = outColors.ToArray();
+            positions = outPositions.ToArray();
+            return true;
+        }
+
+        private static bool TryParseStopPosition(string token, float lineLength, out float position)
+        {
+            position = 0f;
+            if (string.IsNullOrEmpty(token)) return false;
+            if (token.EndsWith("%", StringComparison.Ordinal) &&
+                float.TryParse(token.AsSpan(0, token.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
+            {
+                position = pct / 100f;
+                return true;
+            }
+
+            if (token.EndsWith("px", StringComparison.OrdinalIgnoreCase) &&
+                float.TryParse(token.AsSpan(0, token.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out var px))
+            {
+                position = lineLength > 0f ? px / lineLength : 0f;
+                return true;
+            }
+
+            if (token == "0")
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryParseGradientAngle(string token, out double degrees)
+        {
+            degrees = 0;
+            token = token.Trim().ToLowerInvariant();
+            (string Unit, double Scale)[] units = { ("deg", 1), ("grad", 0.9), ("rad", 180 / Math.PI), ("turn", 360) };
+            foreach (var (unit, scale) in units)
+            {
+                if (token.EndsWith(unit, StringComparison.Ordinal) &&
+                    double.TryParse(token.AsSpan(0, token.Length - unit.Length), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+                {
+                    degrees = value * scale;
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private SKShader CreateConicGradientShader(string css, SKRect bounds)
@@ -3187,18 +3359,33 @@ namespace FenBrowser.FenEngine.Rendering
             return SKColor.TryParse(value, out color);
         }
 
-        private static double DirectionToAngle(string dir)
+        /// <summary>
+        /// CSS Images 3 §3.4.1 `to <side-or-corner>`. Sides are the four right angles; a
+        /// corner's angle depends on the box, chosen so the 50% line joins the two
+        /// neighbouring corners (45deg only for a square).
+        /// </summary>
+        private static double DirectionToAngle(string direction, SKRect bounds)
         {
-            dir = dir.ToLowerInvariant().Replace("to", "").Trim();
-            bool up = dir.Contains("top");
-            bool down = dir.Contains("bottom");
-            bool left = dir.Contains("left");
-            bool right = dir.Contains("right");
+            var words = direction.ToLowerInvariant()
+                .Split((char[])null, StringSplitOptions.RemoveEmptyEntries)
+                .Skip(1) // "to"
+                .ToHashSet(StringComparer.Ordinal);
+            bool up = words.Contains("top");
+            bool down = words.Contains("bottom");
+            bool left = words.Contains("left");
+            bool right = words.Contains("right");
 
-            if (up && right) return 45;
-            if (down && right) return 135;
-            if (down && left) return 225;
-            if (up && left) return 315;
+            if ((up || down) && (left || right))
+            {
+                double corner = bounds.Width > 0 && bounds.Height > 0
+                    ? Math.Atan2(bounds.Height, bounds.Width) * 180.0 / Math.PI
+                    : 45.0;
+                if (up && right) return corner;
+                if (down && right) return 180 - corner;
+                if (down && left) return 180 + corner;
+                return 360 - corner;
+            }
+
             if (right) return 90;
             if (down) return 180;
             if (left) return 270;
