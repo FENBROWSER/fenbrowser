@@ -662,6 +662,89 @@ public sealed class ImageLoaderSvgResourceTests
     }
 
     [Fact]
+    public async Task InlineSvg_PreloadsSameOriginImagesThenRendersThem()
+    {
+        var baseUri = new Uri("https://example.test/page.html");
+        var imageUri = new Uri("https://example.test/red.png");
+        byte[] png = Png(SKColors.Red);
+        int fetches = 0;
+        var repainted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var context = new ImageLoader.ImageLoaderRequestContext
+        {
+            OwnerId = Guid.NewGuid().ToString("N"),
+            RequestRepaint = () => repainted.TrySetResult(),
+            FetchDetailedAsync = async uri =>
+            {
+                Interlocked.Increment(ref fetches);
+                Assert.Equal(imageUri, uri);
+                await released.Task;
+                return new BinaryFetchResult
+                {
+                    Body = png,
+                    ContentType = "image/png",
+                    FinalUri = uri,
+                    FailureReason = BinaryFetchFailureReason.None
+                };
+            }
+        };
+        const string svg =
+            "<svg width='16' height='16'><image href='red.png' width='16' height='16'/></svg>";
+        ImageLoader.ClearCache();
+        try
+        {
+            using var scope = ImageLoader.EnterRequestContext(context);
+
+            // Nothing paints until the image is preloaded: the render fails closed.
+            Assert.Null(ImageLoader.GetInlineSvgImage(svg, 16, 16, baseUri));
+            Assert.Null(ImageLoader.GetInlineSvgImage(svg, 16, 16, baseUri));
+            released.SetResult();
+            await repainted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            SKBitmap? bitmap = ImageLoader.GetInlineSvgImage(svg, 16, 16, baseUri);
+            Assert.NotNull(bitmap);
+            Assert.True(bitmap.GetPixel(8, 8).Red > 200);
+
+            // Another frame of the same document reuses the snapshot.
+            Assert.NotNull(ImageLoader.GetInlineSvgImage(svg, 16, 16, baseUri, documentTimeSeconds: 2));
+            Assert.Equal(1, fetches);
+        }
+        finally
+        {
+            ImageLoader.ClearCache();
+        }
+    }
+
+    [Fact]
+    public void InlineSvg_CrossOriginImagesAreNeverFetched()
+    {
+        int fetches = 0;
+        var context = new ImageLoader.ImageLoaderRequestContext
+        {
+            OwnerId = Guid.NewGuid().ToString("N"),
+            FetchDetailedAsync = uri =>
+            {
+                Interlocked.Increment(ref fetches);
+                return Task.FromResult(new BinaryFetchResult { FailureReason = BinaryFetchFailureReason.BodyReadFailed });
+            }
+        };
+        ImageLoader.ClearCache();
+        try
+        {
+            using var scope = ImageLoader.EnterRequestContext(context);
+
+            Assert.Null(ImageLoader.GetInlineSvgImage(
+                "<svg width='16' height='16'><image href='https://other.test/red.png' width='16' height='16'/></svg>",
+                16, 16, new Uri("https://example.test/page.html")));
+            Assert.Equal(0, fetches);
+        }
+        finally
+        {
+            ImageLoader.ClearCache();
+        }
+    }
+
+    [Fact]
     public void InlineSvg_ExternalResourceRejectionFailsClosed()
     {
         const string svg =

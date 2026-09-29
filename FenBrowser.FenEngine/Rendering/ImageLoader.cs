@@ -105,6 +105,19 @@ namespace FenBrowser.FenEngine.Rendering
         private const int MaxSvgResourcePreloadMilliseconds = 5_000;
         private const int MaxAnimatedGifFrameCount = 512;
 
+        /// <summary>Bound on retained inline-SVG resource snapshots; the least recently used go first.</summary>
+        private const int MaxInlineSvgResourceSnapshots = 32;
+
+        private sealed class InlineSvgResourceEntry
+        {
+            public Task<SvgResourceSnapshot> Snapshot;
+            public long LastUse;
+        }
+
+        private static readonly ConcurrentDictionary<string, InlineSvgResourceEntry> _inlineSvgResources =
+            new(StringComparer.Ordinal);
+        private static long _inlineSvgResourceClock;
+
         private sealed class SvgResourceSnapshot : ISvgResourceResolver
         {
             private readonly Dictionary<Uri, SvgResolvedResource> _resources = new();
@@ -1014,6 +1027,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             _lastLoadResults.Clear();
             _svgRequestMetadata.Clear();
+            _inlineSvgResources.Clear();
             _failedDataUriCache.Clear();
             DrainFailedDataUriOrder();
 
@@ -2873,12 +2887,19 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             RegisterCacheMiss();
+            var resources = ResolveInlineSvgResources(svgContent, baseUri, context, limits, out bool resourcesPending);
+            if (resourcesPending)
+            {
+                // Fail closed until the same-origin resources arrive; a repaint follows.
+                return null;
+            }
+
             var bitmap = RenderSvgToBitmap(
                 svgContent,
                 targetWidth,
                 targetHeight,
                 baseUri,
-                null,
+                resources,
                 limits,
                 "inline-svg",
                 zoomAndPan,
@@ -2902,6 +2923,99 @@ namespace FenBrowser.FenEngine.Rendering
 
             DisposeBitmap(bitmap);
             return null;
+        }
+
+        /// <summary>
+        /// The same-origin images an inline SVG references, preloaded through the
+        /// document's fetch pipeline exactly as an SVG image's nested resources are
+        /// (<see cref="BuildSvgResourceSnapshotAsync"/>): the synchronous render may only
+        /// read what that snapshot authorized. Null when nothing needs preloading;
+        /// <paramref name="pending"/> while the preload is still running. Snapshots are
+        /// keyed by the resource set, so animation frames and zoom levels share one.
+        /// </summary>
+        private static SvgResourceSnapshot ResolveInlineSvgResources(
+            string svgContent,
+            Uri baseUri,
+            ImageLoaderRequestContext context,
+            SvgRenderLimits limits,
+            out bool pending)
+        {
+            pending = false;
+            if (baseUri == null || !baseUri.IsAbsoluteUri)
+            {
+                return null;
+            }
+
+            IReadOnlyList<Uri> resources = SvgResourceDiscovery.DiscoverImages(svgContent, baseUri, limits);
+            if (resources.Count == 0)
+            {
+                return null;
+            }
+
+            string key = (context?.OwnerId ?? "_default") + "\n" + baseUri.AbsoluteUri + "\n" +
+                         string.Join("\n", resources.Select(uri => uri.AbsoluteUri));
+            bool started = false;
+            var entry = _inlineSvgResources.GetOrAdd(key, _ =>
+            {
+                started = true;
+                return new InlineSvgResourceEntry
+                {
+                    Snapshot = BuildSvgResourceSnapshotAsync(
+                        svgContent,
+                        baseUri,
+                        context?.FetchDetailedAsync ?? FetchDetailedAsync,
+                        context?.FetchBytesAsync ?? FetchBytesAsync,
+                        context)
+                };
+            });
+            Volatile.Write(ref entry.LastUse, Interlocked.Increment(ref _inlineSvgResourceClock));
+
+            if (started)
+            {
+                TrimInlineSvgResources();
+                // The preload counts as an in-flight image load, like any other.
+                string pendingKey = "inline-svg-resources:" + entry.GetHashCode().ToString(CultureInfo.InvariantCulture);
+                TryRegisterPendingLoad(pendingKey);
+                entry.Snapshot.ContinueWith(
+                    task =>
+                    {
+                        if (!task.IsCompletedSuccessfully)
+                        {
+                            _inlineSvgResources.TryRemove(key, out _);
+                        }
+                        CompletePendingLoad(pendingKey);
+                        InvokeRepaint(new List<ImageLoaderRequestContext> { context });
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+
+            if (entry.Snapshot.IsCompletedSuccessfully)
+            {
+                return entry.Snapshot.Result;
+            }
+
+            pending = !entry.Snapshot.IsCompleted;
+            return null;
+        }
+
+        private static void TrimInlineSvgResources()
+        {
+            int excess = _inlineSvgResources.Count - MaxInlineSvgResourceSnapshots;
+            if (excess <= 0)
+            {
+                return;
+            }
+
+            foreach (var stale in _inlineSvgResources
+                         .Where(pair => pair.Value.Snapshot.IsCompleted)
+                         .OrderBy(pair => Volatile.Read(ref pair.Value.LastUse))
+                         .Take(excess)
+                         .ToList())
+            {
+                _inlineSvgResources.TryRemove(stale.Key, out _);
+            }
         }
 
         private static string CreateInlineSvgCacheKey(
