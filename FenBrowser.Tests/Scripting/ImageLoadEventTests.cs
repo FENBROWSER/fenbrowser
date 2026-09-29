@@ -19,6 +19,21 @@ namespace FenBrowser.Tests.Scripting
             "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'/%3E";
 
         [Fact]
+        public async Task SvgImage_FiresLoadToItsContentAttributeHandlerAndListeners()
+        {
+            string xml =
+                "<svg xmlns='http://www.w3.org/2000/svg'>" +
+                $"<image id='i' width='4' height='4' href=\"{Pixel}\" onload=\"globalThis.__attr = (globalThis.__attr || 0) + 1\"/>" +
+                "<script>document.getElementById('i').addEventListener('load', function (e) {" +
+                " globalThis.__listener = e.type + ':' + e.bubbles; });</script></svg>";
+
+            var engine = await RunAsync(XmlDomParser.Parse(xml, "image/svg+xml").DocumentElement);
+
+            await WaitForAsync(engine, "globalThis.__attr === 1 && globalThis.__listener !== undefined");
+            Assert.Equal("load:false", engine.Evaluate("globalThis.__listener")?.ToString());
+        }
+
+        [Fact]
         public async Task HtmlImage_FiresLoadAgainWhenItsSourceChanges()
         {
             var document = new HtmlParser(
@@ -46,6 +61,20 @@ namespace FenBrowser.Tests.Scripting
             var engine = await RunAsync(document.DocumentElement);
 
             await WaitForAsync(engine, "globalThis.__error === 'error'");
+        }
+
+        [Fact]
+        public async Task BodyOnload_StillRunsOnceAsTheWindowLoadHandler()
+        {
+            // Element onload attributes are wired now; body's stays the window's.
+            var document = new HtmlParser(
+                "<html><body onload=\"globalThis.__body = (globalThis.__body || 0) + 1\"></body></html>",
+                new Uri("https://fen.test/page")).Parse();
+
+            var engine = await RunAsync(document.DocumentElement);
+            await Task.Delay(200);
+
+            Assert.Equal("1", engine.Evaluate("String(globalThis.__body)")?.ToString());
         }
 
         private static async Task<FenJsBrowserScriptEngine> RunAsync(Element root)

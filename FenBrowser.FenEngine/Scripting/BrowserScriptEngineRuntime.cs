@@ -14633,8 +14633,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return;
         }
 
-        // Event handler attribute names that correspond to DOM events.
-        // Excludes onload (handled separately by InvokeBodyOnloadAttribute).
+        // Event handler attribute names that correspond to DOM events. onload is
+        // an element handler everywhere except body and frameset, where it is the
+        // window's load handler (HTML §8.1.8.2) and InvokeBodyOnloadAttribute owns it.
         var eventNames = new[]
         {
             "click", "dblclick", "contextmenu",
@@ -14643,7 +14644,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             "submit", "reset", "change", "input",
             "focus", "blur", "focusin", "focusout",
             "scroll", "wheel",
-            "error", "abort",
+            "error", "abort", "load",
             "touchstart", "touchend", "touchmove", "touchcancel"
         };
 
@@ -14652,6 +14653,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         {
             foreach (var eventName in eventNames)
             {
+                if (eventName == "load" && IsWindowReflectingBodyElement(element))
+                {
+                    continue;
+                }
+
                 var attrName = "on" + eventName;
                 var attrValue = element.GetAttribute(attrName);
                 if (string.IsNullOrWhiteSpace(attrValue))
@@ -14688,6 +14694,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             }
         }
     }
+
+    private static bool IsWindowReflectingBodyElement(Element element) =>
+        (element.NamespaceUri == null || element.NamespaceUri == Namespaces.Html) &&
+        (string.Equals(element.LocalName, "body", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(element.LocalName, "frameset", StringComparison.OrdinalIgnoreCase));
 
     private void DispatchBrowserEvent(
         List<BrowserEventListener> listeners,
