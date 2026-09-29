@@ -301,7 +301,7 @@ public class AddressBarWidget : Widget
     // characters in a paste, etc.). The address bar runs every frame on the UI
     // thread, so a bubble-up here takes down the entire host process. The engine
     // constitution in CLAUDE.md is explicit about this: "Wrap risky dependencies
-    // (RichTextKit, Svg.Skia) behind interfaces. All new hot-path code must
+    // (RichTextKit) behind interfaces. All new hot-path code must
     // survive the dependency dying." Until that adapter exists on this widget,
     // catch broadly and degrade to an empty block so the rest of the chrome and
     // the page itself keep rendering.

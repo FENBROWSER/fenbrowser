@@ -167,24 +167,32 @@ namespace FenBrowser.FenEngine.Rendering
         // HTML 7.5.1 step 9 hands an XML MIME type (MIME Sniffing 4.6: text/xml,
         // application/xml, or any +xml subtype) to the XML parser. A file has no
         // Content-Type, so its extension stands in for one.
-        private static bool IsXmlDocument(string contentType, Uri baseUri)
+        /// <summary>
+        /// The XML content type a document is parsed with, or null for HTML. A served
+        /// XML type is kept as is (an SVG document stays image/svg+xml, which scripts and
+        /// the SVG document path depend on); with no type at all, the file extension
+        /// decides (.xhtml/.xht, .xml, .svg).
+        /// </summary>
+        private static string ResolveXmlDocumentContentType(string contentType, Uri baseUri)
         {
             if (!string.IsNullOrWhiteSpace(contentType))
             {
-                var essence = contentType.Split(';')[0].Trim();
-                // An SVG document still goes through the HTML parser, which renders
-                // it as inline SVG; layout has no path for an <svg> document element.
-                return essence.Equals("text/xml", StringComparison.OrdinalIgnoreCase) ||
-                       essence.Equals("application/xml", StringComparison.OrdinalIgnoreCase) ||
-                       (essence.EndsWith("+xml", StringComparison.OrdinalIgnoreCase) &&
-                        !essence.Equals("image/svg+xml", StringComparison.OrdinalIgnoreCase));
+                return XmlDomParser.IsXmlMimeType(contentType) ? contentType : null;
             }
 
             var path = baseUri?.AbsolutePath ?? string.Empty;
-            return path.EndsWith(".xhtml", StringComparison.OrdinalIgnoreCase) ||
-                   path.EndsWith(".xht", StringComparison.OrdinalIgnoreCase) ||
-                   path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase);
+            if (path.EndsWith(".xhtml", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith(".xht", StringComparison.OrdinalIgnoreCase))
+            {
+                return "application/xhtml+xml";
+            }
+            if (path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+            {
+                return "application/xml";
+            }
+            return path.EndsWith(".svg", StringComparison.OrdinalIgnoreCase) ? "image/svg+xml" : null;
         }
+
         public Document CurrentDocument
         {
             get
@@ -1700,25 +1708,36 @@ public void Dispose()
             _eventLoopCoordinator.NotifyLayoutDirty();
         }
 
-        private async Task<DomParseResult> RunDomParseAsync(string html, Uri baseUri, long renderGeneration)
+        private async Task<DomParseResult> RunDomParseAsync(
+            string html,
+            Uri baseUri,
+            long renderGeneration,
+            string documentContentType)
         {
             var parseInput = html ?? string.Empty;
-            if (IsXmlDocument(DocumentContentType, baseUri))
+            string xmlContentType = ResolveXmlDocumentContentType(documentContentType ?? DocumentContentType, baseUri);
+            if (xmlContentType != null)
             {
-                var xmlDoc = XmlDomParser.ParseWithErrorDocument(parseInput, "application/xhtml+xml");
+                EngineLogCompat.Info(
+                    $"[RenderAsync] XML document parse started contentType={xmlContentType} chars={parseInput.Length}",
+                    LogCategory.Rendering);
+                var xmlDocument = await Task.Run(() =>
+                    XmlDomParser.ParseWithErrorDocument(parseInput, xmlContentType)).ConfigureAwait(false);
                 if (baseUri != null)
                 {
-                    string absoluteBase = baseUri.AbsoluteUri;
-                    xmlDoc.URL = absoluteBase;
-                    xmlDoc.BaseURI = absoluteBase;
+                    xmlDocument.URL = baseUri.AbsoluteUri;
+                    xmlDocument.BaseURI = baseUri.AbsoluteUri;
                 }
-                Node xmlRoot = (Node)xmlDoc.DocumentElement ?? xmlDoc;
+                if (IsCurrentRenderGeneration(renderGeneration))
+                {
+                    EmitDocumentCreatedTrace(xmlDocument, baseUri, null, null);
+                }
+                EngineLogCompat.Info(
+                    $"[RenderAsync] XML document parse completed root={xmlDocument.DocumentElement?.NodeName ?? "<none>"}",
+                    LogCategory.Rendering);
                 return new DomParseResult
                 {
-                    Dom = xmlRoot,
-                    TokenizingMs = 0,
-                    ParsingMs = 0,
-                    TokenCount = 0
+                    Dom = (Node)xmlDocument.DocumentElement ?? xmlDocument
                 };
             }
             var interleavedBatchSize = ResolveInterleavedTokenBatchSize(EnableInterleavedPrimaryParse, parseInput.Length);
@@ -2974,7 +2993,8 @@ private void FlushPendingLayoutForScript(Element element)
             double? viewportHeight = null,
             Action<object>? onFixedBackground = null,
             bool? forceJavascript = null,
-            bool disableAutoFallback = false)
+            bool disableAutoFallback = false,
+            string documentContentType = null)
         {
             // Ensure we are on the UI thread. If not, marshal the call.
             var uiDisp = _uiDispatcher ?? UiThreadHelper.TryGetDispatcher();
@@ -2985,7 +3005,7 @@ private void FlushPendingLayoutForScript(Element element)
                 {
                     try
                     {
-                        var result = await RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, viewportHeight, onFixedBackground, forceJavascript, disableAutoFallback);
+                        var result = await RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, viewportHeight, onFixedBackground, forceJavascript, disableAutoFallback, documentContentType);
                         tcs.SetResult(result);
                     }
                     catch (Exception ex)
@@ -3069,7 +3089,7 @@ private void FlushPendingLayoutForScript(Element element)
                 }
 
                 // 1. Helper: Parse DOM
-                var parseResult = await RunDomParseAsync(html, baseUri, renderGeneration);
+                var parseResult = await RunDomParseAsync(html, baseUri, renderGeneration, documentContentType);
                 cancellationToken.ThrowIfCancellationRequested();
                 var dom = parseResult?.Dom;
                 if (dom == null) return null;

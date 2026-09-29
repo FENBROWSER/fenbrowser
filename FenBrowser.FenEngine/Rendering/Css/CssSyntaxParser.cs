@@ -69,6 +69,49 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return sheet;
         }
 
+        /// <summary>
+        /// Parses a CSS declaration list such as the contents of a style attribute.
+        /// This deliberately shares tokenization, value recovery, !important handling,
+        /// and declaration limits with stylesheet parsing.
+        /// </summary>
+        public List<CssDeclaration> ParseDeclarationList()
+        {
+            var declarations = new List<CssDeclaration>();
+            ConsumeToken();
+            ConsumeWhitespace();
+
+            while (_currentToken.Type != CssTokenType.EOF &&
+                   _currentToken.Type != CssTokenType.RightBrace)
+            {
+                if (_currentToken.Type == CssTokenType.Whitespace ||
+                    _currentToken.Type == CssTokenType.Semicolon)
+                {
+                    ConsumeToken();
+                    continue;
+                }
+
+                if (declarations.Count >= MaxDeclarationsPerBlock)
+                {
+                    if (!_declarationLimitLogged)
+                    {
+                        _declarationLimitLogged = true;
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[CssSyntaxParser] Declaration block limit reached ({MaxDeclarationsPerBlock}). Remaining declarations were skipped.",
+                            FenBrowser.Core.Logging.LogCategory.CSS);
+                    }
+                    break;
+                }
+
+                var declaration = ConsumeDeclaration();
+                if (declaration != null)
+                {
+                    declarations.Add(declaration);
+                }
+            }
+
+            return declarations;
+        }
+
         private CssRule ConsumeAtRule(int nestingDepth)
         {
             string name = _currentToken.Value;

@@ -53,7 +53,13 @@ namespace FenBrowser.FenEngine.Typography
         /// Create normalized metrics from raw Skia metrics.
         /// This is where we take control away from Skia.
         /// </summary>
-        public static NormalizedFontMetrics FromSkia(SKFontMetrics skMetrics, float fontSize, float? cssLineHeight = null)
+        /// <param name="roundToPixels">
+        /// Round ascent and descent to whole pixels, as CSS line boxes need. SVG text
+        /// passes false: its metrics are in user units, which a viewBox can scale by
+        /// any factor, so rounding there would erase whole baselines at small sizes.
+        /// </param>
+        public static NormalizedFontMetrics FromSkia(
+            SKFontMetrics skMetrics, float fontSize, float? cssLineHeight = null, bool roundToPixels = true)
         {
             // Skia's ascent is negative (above baseline), we normalize to positive
             float rawAscent = -skMetrics.Ascent;
@@ -81,8 +87,11 @@ namespace FenBrowser.FenEngine.Typography
             // SimpleFontData. Fractional content metrics leak into line-box heights
             // (a 2px/4px inline under a 12px strut made Acid2's chin row 12.29px and
             // shifted every row below it); integer metrics keep lines on pixel rows.
-            rawAscent = MathF.Round(rawAscent);
-            rawDescent = MathF.Round(rawDescent);
+            if (roundToPixels)
+            {
+                rawAscent = MathF.Round(rawAscent);
+                rawDescent = MathF.Round(rawDescent);
+            }
 
             float contentHeight = rawAscent + rawDescent;
             

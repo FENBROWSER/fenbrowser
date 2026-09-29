@@ -155,6 +155,7 @@ activation_command_timeout: 180.0
 #   - For C, use cpp
 #   - For JavaScript, use typescript
 #   - For Angular projects, use angular (subsumes typescript+html; requires `npm install` in the project root)
+#   - For Astro projects, use astro (subsumes typescript/javascript for .astro projects; requires npm)
 #   - For Svelte projects, use svelte (subsumes typescript/javascript for .svelte projects; requires npm)
 #   - For Deno projects, use deno (serves the same .ts/.js files as typescript; requires the deno CLI on PATH)
 #   - For SCSS / Sass / plain CSS, use scss (some-sass-language-server handles all three)

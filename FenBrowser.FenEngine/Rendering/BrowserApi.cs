@@ -1159,6 +1159,7 @@ namespace FenBrowser.FenEngine.Rendering
             return new ImageLoader.ImageLoaderRequestContext
             {
                 OwnerId = _imageLoaderContextId,
+                OwnerRootId = _imageLoaderContextId,
                 FetchDetailedAsync = async uri =>
                 {
                     if (uri == null)
@@ -1760,7 +1761,15 @@ pre {{
                         ["url"] = uri.AbsoluteUri
                     }))
                     {
-                        elem = await _engine.RenderAsync(htmlToRender, uri, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); }, viewportHint.Width, viewportHint.Height);
+                        elem = await _engine.RenderAsync(
+                            htmlToRender,
+                            uri,
+                            trackedCssFetcher,
+                            trackedImageFetcher,
+                            u => { _ = NavigateAsync(u.AbsoluteUri); },
+                            viewportHint.Width,
+                            viewportHint.Height,
+                            documentContentType: result.ContentType);
                     }
                 }
                 finally
@@ -12679,6 +12688,17 @@ pre {{
         public void Dispose()
         {
             if (_disposed) return;
+            _disposed = true;
+
+            if (_imageLoaderContext != null)
+            {
+                _imageLoaderContext.IsDisposed = true;
+                ImageLoader.ReleaseOwner(_imageLoaderContextId);
+                if (_current != null && _current.IsAbsoluteUri)
+                {
+                    ImageLoader.ReleaseOwner(_current.AbsoluteUri);
+                }
+            }
 
             ElementStateManager.Instance.OnStateChanged -= _elementStateChangedHandler;
             FenBrowser.Core.Dom.V2.Element.StyleAttributeChanged -= _styleAttributeChangedHandler;
@@ -12721,7 +12741,6 @@ pre {{
                 FontRegistry.FetchDetailedForDocumentAsync = null;
             }
 
-            _disposed = true;
             try { _engine.Dispose(); }
             catch (Exception ex) { TryLogWarn($"[BrowserHost] Engine dispose failed: {ex.Message}", LogCategory.General); }
         }

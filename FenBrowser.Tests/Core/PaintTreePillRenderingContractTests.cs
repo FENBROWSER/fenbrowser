@@ -14,6 +14,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.Core
 {
+    [Collection(ImageLoaderTestCollection.Name)]
     public sealed class PaintTreePillRenderingContractTests
     {
         [Fact]
@@ -427,6 +428,118 @@ namespace FenBrowser.Tests.Core
 
             Assert.True(bluePixels > 100, $"Expected computed blue child fill pixels, got {bluePixels}.");
             Assert.True(whitePixels > 100, $"Expected computed white child fill pixels, got {whitePixels}.");
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task InlineSvgAttributeVar_ResolvesAgainstHtmlAncestorCustomProperty()
+        {
+            using var bitmap = await RenderInlineSvgAsync(
+                "<div style='--brand: #00ff00'><svg id='icon' width='120' height='20'><rect width='20' height='20' fill='var(--brand)'></rect></svg></div>");
+
+            Assert.Equal(SKColors.Lime, bitmap.GetPixel(10, 10));
+        }
+
+        [Theory]
+        [InlineData("var(--x)")]
+        [InlineData("currentColor")]
+        public async System.Threading.Tasks.Task InlineSvgTextContent_IsPaintedAsWritten(string word)
+        {
+            // Text is content, not a value: a word that looks like var() or currentColor
+            // must reach the SVG engine unchanged instead of being replaced by a color.
+            const string template =
+                "<svg id='icon' width='120' height='20' style='font-size: 16px'><text x='0' y='16' fill='black'>{0}</text></svg>";
+            using var written = await RenderInlineSvgAsync(string.Format(template, word));
+            using var substituted = await RenderInlineSvgAsync(string.Format(template, "#000000"));
+
+            Assert.NotEqual(Ink(substituted), Ink(written));
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task InlineSvgWithoutSizeAttributes_UsesItsCssBoxAsTheViewport()
+        {
+            // The outer svg's viewport is its 120x20 CSS box, so the 20x20 rect draws
+            // at 1:1 and is clipped to the box height; it used to be laid out in a
+            // 300x150 default and squeezed into the box.
+            using var bitmap = await RenderInlineSvgAsync(
+                "<svg id='icon'><rect width='20' height='20' fill='lime'></rect></svg>");
+
+            Assert.Equal(120, bitmap.Width);
+            Assert.Equal(20, bitmap.Height);
+            Assert.Equal(SKColors.Lime, bitmap.GetPixel(19, 19));
+            Assert.Equal(0, bitmap.GetPixel(21, 10).Alpha);
+        }
+
+        private static async System.Threading.Tasks.Task<SKBitmap> RenderInlineSvgAsync(string body)
+        {
+            ImageLoader.ClearCache();
+            string html =
+                "<!doctype html><html><head><style>body { margin: 0; } " +
+                "svg { display: block; width: 120px; height: 20px; }</style></head><body>" +
+                body + "</body></html>";
+
+            var doc = new HtmlParser(html).Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var computer = new LayoutEngineComputer(styles, 160, 40);
+            computer.Measure(doc, new SKSize(160, 40));
+            computer.Arrange(doc, new SKRect(0, 0, 160, 40));
+
+            var boxes = new ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
+            var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 160, 40, null);
+            var icon = doc.GetElementById("icon");
+            var image = Flatten(tree.Roots)
+                .OfType<ImagePaintNode>()
+                .FirstOrDefault(n => ReferenceEquals(n.SourceNode, icon));
+
+            Assert.NotNull(image);
+            Assert.NotNull(image.Bitmap);
+            SKBitmap copy = image.Bitmap.Copy();
+            ImageLoader.ClearCache();
+            return copy;
+        }
+
+        private static int Ink(SKBitmap bitmap)
+        {
+            int ink = 0;
+            for (int y = 0; y < bitmap.Height; y++)
+            for (int x = 0; x < bitmap.Width; x++)
+                if (bitmap.GetPixel(x, y).Alpha > 0)
+                    ink++;
+            return ink;
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task InlineSvgLowercaseViewbox_IsAdjustedByTheHtmlParser()
+        {
+            // HTML §13.2.6.5 "adjust SVG attributes" turns 'viewbox' into 'viewBox' on
+            // foreign content, so the rasterizer scales the 10x10 rect to the full box
+            // without any textual fix-up of the serialized markup.
+            ImageLoader.ClearCache();
+
+            const string html = @"
+<!doctype html>
+<html>
+<head><style>body { margin: 0; } svg { display: block; width: 20px; height: 20px; }</style></head>
+<body><svg id='icon' viewbox='0 0 10 10'><rect width='10' height='10' fill='lime'></rect></svg></body>
+</html>";
+
+            var doc = new HtmlParser(html).Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var computer = new LayoutEngineComputer(styles, 40, 40);
+            computer.Measure(doc, new SKSize(40, 40));
+            computer.Arrange(doc, new SKRect(0, 0, 40, 40));
+
+            var boxes = new ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
+            var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 40, 40, null);
+            var icon = doc.GetElementById("icon");
+            var image = Flatten(tree.Roots)
+                .OfType<ImagePaintNode>()
+                .FirstOrDefault(n => ReferenceEquals(n.SourceNode, icon));
+
+            Assert.NotNull(image);
+            Assert.NotNull(image.Bitmap);
+            Assert.Equal(SKColors.Lime, image.Bitmap.GetPixel(15, 15));
         }
 
         [Fact]

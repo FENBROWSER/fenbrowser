@@ -120,14 +120,17 @@
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>FenBrowser.Tooling</_Parameter1>
     </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FenBrowser.Svg.Fuzz</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="HarfBuzzSharp" Version="14.2.0" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.0" />
     <PackageReference Include="SkiaSharp" Version="4.148.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.148.0" />
     <PackageReference Include="SkiaSharp.HarfBuzz" Version="4.148.0" />
-    <PackageReference Include="Svg.Skia" Version="5.1.1" />
   </ItemGroup>
 
   <PropertyGroup>

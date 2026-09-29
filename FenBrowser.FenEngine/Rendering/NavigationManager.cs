@@ -182,8 +182,7 @@ namespace FenBrowser.FenEngine.Rendering
                 path.EndsWith(".jpeg", StringComparison.Ordinal) ||
                 path.EndsWith(".gif", StringComparison.Ordinal) ||
                 path.EndsWith(".bmp", StringComparison.Ordinal) ||
-                path.EndsWith(".webp", StringComparison.Ordinal) ||
-                path.EndsWith(".svg", StringComparison.Ordinal)))
+                path.EndsWith(".webp", StringComparison.Ordinal)))
             {
                 // This HTML becomes a privileged synthetic document. Encode every
                 // URI-derived value before placing it into markup rather than relying
@@ -276,7 +275,8 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 var mimeEssence = GetMimeEssence(contentType);
-                if (mimeEssence.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                if (mimeEssence.StartsWith("image/", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(mimeEssence, "image/svg+xml", StringComparison.OrdinalIgnoreCase))
                 {
                     var encodedSrc = WebUtility.HtmlEncode(serialized);
                     var syntheticHtml = $"<!DOCTYPE html><html style=\"width:100%;height:100%;background:#0e0e0e\"><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body style=\"margin:0;position:fixed;inset:0;background:#0e0e0e;overflow:hidden\"><img style=\"display:block;position:absolute;inset:0;margin:auto;max-width:100%;max-height:100%;object-fit:contain\" src=\"{encodedSrc}\" alt=\"\"></body></html>";

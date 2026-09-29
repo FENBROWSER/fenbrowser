@@ -55,31 +55,29 @@ public sealed class ImageDataUriPrewarmTests
         }
     }
 
-    private static Task InvokePrewarmImagesAsync(
+    private static async Task InvokePrewarmImagesAsync(
         Element root,
         Uri baseUri,
         Func<Uri, Task<Stream>> loader,
         double viewportWidth)
     {
-        // Prewarming belongs to a render's navigation lifetime (60baecce): it is an
-        // instance method that takes that navigation's cancellation and task group.
-        var method = typeof(CustomHtmlEngine).GetMethod(
-            "PrewarmImagesAsync",
-            BindingFlags.NonPublic | BindingFlags.Instance);
+        using var engine = new CustomHtmlEngine();
+        var method = typeof(CustomHtmlEngine)
+            .GetMethods(BindingFlags.NonPublic | BindingFlags.Instance)
+            .Single(candidate => candidate.Name == "PrewarmImagesAsync" &&
+                                 candidate.GetParameters().Length == 6);
+        using var taskGroup = new NavigationTaskGroup();
 
-        Assert.NotNull(method);
-        var engine = new CustomHtmlEngine { EnableJavaScript = false };
-        var taskGroup = new NavigationTaskGroup();
-        var prewarm = Assert.IsAssignableFrom<Task>(method!.Invoke(
+        await Assert.IsAssignableFrom<Task>(method.Invoke(
             engine,
-            new object[] { root, baseUri, loader, (double?)viewportWidth, taskGroup.Token, taskGroup }));
-        return prewarm.ContinueWith(
-            completed =>
+            new object[]
             {
-                taskGroup.Dispose();
-                engine.Dispose();
-                return completed;
-            },
-            TaskScheduler.Default).Unwrap();
+                root,
+                baseUri,
+                loader,
+                viewportWidth,
+                CancellationToken.None,
+                taskGroup
+            }));
     }
 }

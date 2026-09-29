@@ -1,6 +1,7 @@
+using System;
 using Xunit;
 using FenBrowser.FenEngine.Adapters;
-using SkiaSharp;
+using FenBrowser.Host.ProcessIsolation.Targets;
 
 namespace FenBrowser.Tests.Architecture
 {
@@ -18,7 +19,7 @@ namespace FenBrowser.Tests.Architecture
             
             // Assert
             Assert.Equal(32, limits.MaxRecursionDepth);
-            Assert.Equal(10, limits.MaxFilterCount);
+            Assert.Equal(16, limits.MaxFilterCount);
             Assert.Equal(250, limits.MaxRenderTimeMs);
             Assert.False(limits.AllowExternalReferences);
         }
@@ -37,120 +38,96 @@ namespace FenBrowser.Tests.Architecture
         }
         
         [Fact]
-        public void SvgSkiaRenderer_EmptyContent_ReturnsFailure()
+        public void TargetIpc_SvgDecodeResponseMetadata_IsBoundedBeforeSerialization()
         {
-            // Arrange
-            var renderer = new SvgSkiaRenderer();
-            
-            // Act
-            var result = renderer.Render("");
-            
-            // Assert
-            Assert.False(result.Success);
-            Assert.Contains("Empty", result.ErrorMessage);
-        }
-        
-        [Fact]
-        public void SvgSkiaRenderer_ValidSvg_ReturnsSuccessOrGracefulFailure()
-        {
-            // Arrange
-            var renderer = new SvgSkiaRenderer();
-            // Full SVG with namespace
-            var simpleSvg = @"<?xml version=""1.0"" encoding=""UTF-8""?>
-<svg xmlns=""http://www.w3.org/2000/svg"" width=""100"" height=""100"">
-    <circle cx=""50"" cy=""50"" r=""40"" fill=""red""/>
-</svg>";
-            
-            // Act
-            var result = renderer.Render(simpleSvg);
-            
-            // Assert - Either succeeds or fails gracefully (no crash)
-            // In headless/CI environments, SVG rendering may not be available
-            if (result.Success)
+            // Arrange - renderer diagnostics that reached the transport unbounded.
+            var payload = new SvgDecodeResponsePayload
             {
-                Assert.True(result.Width > 0);
-                Assert.True(result.Height > 0);
-            }
-            else
-            {
-                // Graceful failure - just verify no null error message
-                Assert.NotNull(result.ErrorMessage);
-            }
-        }
-        
-        [Fact]
-        public void SvgSkiaRenderer_TooManyFilters_RejectsWithError()
-        {
-            // Arrange
-            var renderer = new SvgSkiaRenderer();
-            var limits = new SvgRenderLimits
-            {
-                MaxFilterCount = 2,
-                MaxRecursionDepth = 32,
-                MaxRenderTimeMs = 100,
-                MaxElementCount = 1000,
-                AllowExternalReferences = false
+                Success = false,
+                ErrorMessage = new string('e', 400_000),
+                BitmapBytes = Array.Empty<byte>()
             };
-            
-            // SVG with 5 filters
-            var svgWithManyFilters = @"
-                <svg width=""100"" height=""100"">
-                    <defs>
-                        <filter id=""f1""><feGaussianBlur/></filter>
-                        <filter id=""f2""><feGaussianBlur/></filter>
-                        <filter id=""f3""><feGaussianBlur/></filter>
-                        <filter id=""f4""><feGaussianBlur/></filter>
-                        <filter id=""f5""><feGaussianBlur/></filter>
-                    </defs>
-                    <rect width=""100"" height=""100""/>
-                </svg>";
-            
-            // Act
-            var result = renderer.Render(svgWithManyFilters, limits);
-            
-            // Assert - Should fail due to filter limit or complexity validation
-            Assert.False(result.Success);
-            Assert.NotNull(result.ErrorMessage);
-            // Error message should mention filter or validation issue
-            Assert.True(
-                result.ErrorMessage.ToLower().Contains("filter") ||
-                result.ErrorMessage.ToLower().Contains("limit") ||
-                result.ErrorMessage.ToLower().Contains("count"),
-                $"Expected filter-related error but got: {result.ErrorMessage}");
+
+            // Assert - metadata is bounded at the payload itself.
+            Assert.InRange(payload.ErrorMessage.Length, 1, TargetIpc.MaxResponseMetadataChars);
+
+            var envelope = new TargetIpcEnvelope
+            {
+                Type = TargetIpcMessageType.SvgDecodeResponse.ToString(),
+                RequestId = Guid.NewGuid().ToString("N"),
+                Payload = TargetIpc.SerializePayload(payload),
+                TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            };
+
+            Assert.InRange(envelope.Payload.Length, 1, 100_000);
+
+            var accepted = TargetIpc.TryValidateInboundEnvelope(envelope, out var messageType, out var reason);
+            Assert.True(accepted, reason);
+            Assert.Equal(TargetIpcMessageType.SvgDecodeResponse, messageType);
+
+            var decoded = TargetIpc.DeserializePayload<SvgDecodeResponsePayload>(envelope);
+            Assert.NotNull(decoded);
+            Assert.InRange(decoded.ErrorMessage.Length, 1, TargetIpc.MaxResponseMetadataChars);
         }
 
         [Fact]
-        public void SvgSkiaRenderer_NegativeViewBoxOrigin_RendersVisiblePixels()
+        public void TargetIpc_ImageDecodeResponseMetadata_IsBounded()
         {
-            // Arrange
-            var renderer = new SvgSkiaRenderer();
-            var svg = @"<svg xmlns=""http://www.w3.org/2000/svg"" viewBox=""0 -960 960 960"">
-    <path fill=""#000000"" d=""M440 -120v-123q-104-14-172-93t-68-184h80q0 83 58.5 141.5T480-320q83 0 141.5-58.5T680-520h80q0 105-68 184t-172 93v123h-80Z""/>
-</svg>";
+            var payload = new ImageDecodeResponsePayload
+            {
+                Success = true,
+                ErrorMessage = new string('e', 200_000),
+                Format = new string('p', 4_000),
+                BitmapBytes = new byte[] { 1, 2, 3 }
+            };
 
-            // Act
-            var result = renderer.Render(svg);
-
-            // Assert
-            Assert.True(result.Success, result.ErrorMessage);
-            Assert.NotNull(result.Bitmap);
-            Assert.True(BitmapHasVisiblePixels(result.Bitmap));
+            Assert.InRange(payload.ErrorMessage.Length, 1, TargetIpc.MaxResponseMetadataChars);
+            Assert.InRange(payload.Format.Length, 1, TargetIpc.MaxFormatMetadataChars);
+            Assert.InRange(TargetIpc.SerializePayload(payload).Length, 1, 100_000);
         }
 
-        private static bool BitmapHasVisiblePixels(SKBitmap bitmap)
+        [Fact]
+        public void TargetIpc_OversizedOutboundPayload_IsRejectedBeforeSerialization()
         {
-            for (int y = 0; y < bitmap.Height; y++)
+            var envelope = new TargetIpcEnvelope
             {
-                for (int x = 0; x < bitmap.Width; x++)
-                {
-                    if (bitmap.GetPixel(x, y).Alpha > 0)
-                    {
-                        return true;
-                    }
-                }
-            }
+                Type = TargetIpcMessageType.SvgDecodeResponse.ToString(),
+                RequestId = Guid.NewGuid().ToString("N"),
+                Payload = new string('x', 100_000),
+                TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            };
 
-            return false;
+            var ok = TargetIpc.TrySerializeEnvelope(envelope, out var line, out var rejectionReason);
+
+            Assert.False(ok);
+            Assert.Null(line);
+            Assert.Equal("payload-too-large", rejectionReason);
+        }
+
+        [Fact]
+        public void TargetIpc_BoundedOutboundEnvelope_RoundTrips()
+        {
+            var envelope = new TargetIpcEnvelope
+            {
+                Type = TargetIpcMessageType.SvgDecodeResponse.ToString(),
+                RequestId = Guid.NewGuid().ToString("N"),
+                Payload = TargetIpc.SerializePayload(new SvgDecodeResponsePayload
+                {
+                    Success = false,
+                    ErrorMessage = "SVG source length (9000000) exceeds limit (8000000)",
+                    BitmapBytes = Array.Empty<byte>()
+                }),
+                TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            };
+
+            var ok = TargetIpc.TrySerializeEnvelope(envelope, out var line, out var rejectionReason);
+
+            Assert.True(ok, rejectionReason);
+            Assert.NotNull(line);
+            Assert.True(TargetIpc.TryDeserialize(line, out var decoded));
+            Assert.Equal(TargetIpcMessageType.SvgDecodeResponse.ToString(), decoded.Type);
+            var payload = TargetIpc.DeserializePayload<SvgDecodeResponsePayload>(decoded);
+            Assert.Equal("SVG source length (9000000) exceeds limit (8000000)", payload.ErrorMessage);
         }
     }
 }

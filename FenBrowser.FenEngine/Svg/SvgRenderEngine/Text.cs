@@ -1,0 +1,1363 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Text;
+using FenBrowser.FenEngine.Typography;
+using SkiaSharp;
+
+namespace FenBrowser.FenEngine.Svg
+{
+    internal sealed partial class SvgRenderEngine
+    {
+        private const int MaxTextRenderCharsPerElement = 4096;
+        private const int MaxTextGlyphsPerDocument = 16384;
+        private const int MaxTextPositionListValues = 4096;
+        private const int MaxTextDecorationTokens = 4;
+        private const int MaxStyledSheetScanElements = 4096;
+        private const int MaxStyledSheetsPerDocument = 256;
+        private const int MaxStyledSheetChars = 512 * 1024;
+        private int _documentTextGlyphCount;
+        private int _documentStyleSheetsInspected;
+        private int _documentStyleSheetCharsInspected;
+        private bool? _documentStylesByLanguage;
+
+        private void DrawTextElement(SvgElement el, SKCanvas canvas, ViewportContext viewport, InheritedStyle inherited)
+        {
+            if (IsInsideExplicitlyRotatedMarker(el))
+            {
+                _report.RequireFallback(
+                    "SVG text inside an explicitly rotated marker requires compatibility fallback");
+                return;
+            }
+            var state = new TextLayoutState();
+            var runs = new List<TextPaintRun>();
+            var chunks = new List<TextChunk>();
+            RequireLanguageStyleSupport();
+            LayoutTextElement(el, viewport, inherited, ResolveAncestorTextStyle(el), state, runs, chunks, true);
+            ApplyParagraphDirection(runs, chunks, state);
+            ApplyTextLengthAdjustments(runs, state.LengthAdjustments);
+            ApplyTextAnchors(runs, chunks, _chunkLevels);
+            ApplyTextRotations(runs);
+            if (runs.Count == 0) return;
+
+            bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
+            try
+            {
+                foreach (var run in runs)
+                {
+                    CheckDeadline();
+                    PaintGlyphRun(canvas, run);
+                }
+            }
+            finally
+            {
+                if (layered)
+                {
+                    canvas.Restore();
+                    _activeLayers--;
+                    layerPaint.Dispose();
+                }
+            }
+        }
+
+        private void LayoutTextElement(
+            SvgElement element,
+            ViewportContext viewport,
+            InheritedStyle inheritedPaint,
+            TextStyle inheritedText,
+            TextLayoutState state,
+            List<TextPaintRun> runs,
+            List<TextChunk> chunks,
+            bool isRoot)
+        {
+            CheckDeadline();
+            if (IsDisplayNone(element)) return;
+            if (!isRoot &&
+                (!string.IsNullOrWhiteSpace(element.GetAttribute("transform")) ||
+                 !string.IsNullOrWhiteSpace(element.GetPresentationProperty("clip-path"))))
+            {
+                _report.RequireFallback("transformed or clipped tspan requires compatibility fallback");
+            }
+            if ((element.TextContent?.Length ?? 0) > MaxTextRenderCharsPerElement)
+            {
+                _report.RequireFallback("SVG text exceeds first-party render length budget");
+                return;
+            }
+
+            var paintStyle = inheritedPaint.ResolveOverrides(element, _report);
+            if (!paintStyle.Visibility) return;
+            var textStyle = ResolveTextStyle(element, inheritedText);
+            RotationScope rotation = PushRotationScope(element, state);
+            try
+            {
+                bool hasX = TryResolveTextLengthList(element.GetAttribute("x"), viewport.Width, textStyle.FontSize, out var xList);
+                bool hasY = TryResolveTextLengthList(element.GetAttribute("y"), viewport.Height, textStyle.FontSize, out var yList);
+                bool hasDx = TryResolveTextLengthList(element.GetAttribute("dx"), viewport.Width, textStyle.FontSize, out var dxList);
+                bool hasDy = TryResolveTextLengthList(element.GetAttribute("dy"), viewport.Height, textStyle.FontSize, out var dyList);
+                bool hasAbsolute = hasX || hasY;
+
+                if (hasX) state.X = FirstPosition(xList, state.X);
+                else if (hasDx) state.X += FirstPosition(dxList, 0f);
+                if (hasY) state.Y = FirstPosition(yList, state.Y);
+                else if (hasDy) state.Y += FirstPosition(dyList, 0f);
+
+                if (isRoot || hasAbsolute || state.CurrentChunk < 0)
+                {
+                    state.CurrentChunk = chunks.Count;
+                    chunks.Add(TextChunk.At(textStyle, state.X));
+                }
+
+                // A declared textLength governs the horizontal layout of the whole
+                // element, so it takes precedence over a per-character x list; the
+                // list still opens the chunk at its first value.
+                TextLengthAdjustment? lengthAdjust = ResolveTextLengthDeclaration(element, textStyle, viewport);
+                if (lengthAdjust.HasValue) xList = null;
+
+                var positions = new TextPositionLists(xList, yList, dxList, dyList);
+                int startRun = runs.Count;
+                bool applyOwnOpacity = !isRoot;
+
+                if (element.Content.Count == 0 && !string.IsNullOrEmpty(element.TextContent))
+                {
+                    ShapeTextPart(
+                        element.TextContent, element, paintStyle, textStyle, viewport,
+                        state, runs, applyOwnOpacity, positions);
+                    RegisterTextLength(lengthAdjust, runs, startRun, state);
+                    return;
+                }
+
+                foreach (var part in element.Content)
+                {
+                    if (part.IsText)
+                    {
+                        ShapeTextPart(
+                            part.Text, element, paintStyle, textStyle, viewport,
+                            state, runs, applyOwnOpacity, positions);
+                    }
+                    else if (part.Element?.Name == "tspan")
+                    {
+                        LayoutTextElement(part.Element, viewport, paintStyle, textStyle, state, runs, chunks, false);
+                    }
+                    else if (part.Element?.Name == "textPath")
+                    {
+                        LayoutTextPathElement(part.Element, viewport, paintStyle, textStyle, state, runs);
+                    }
+                    else if (part.Element?.Name == "a")
+                    {
+                        LayoutTextAnchorElement(part.Element, viewport, paintStyle, textStyle, state, runs, chunks);
+                    }
+                    else if (part.Element != null && !PaintableInTextContent(part.Element))
+                    {
+                        continue;
+                    }
+                    else if (part.Element != null)
+                    {
+                        _report.RequireFallback("unknown element in SVG text content requires compatibility fallback");
+                    }
+                }
+
+                RegisterTextLength(lengthAdjust, runs, startRun, state);
+            }
+            finally
+            {
+                state.RotationList = rotation.List;
+                state.RotationIndex = rotation.Index;
+            }
+        }
+
+        private void LayoutTextAnchorElement(
+            SvgElement element,
+            ViewportContext viewport,
+            InheritedStyle inheritedPaint,
+            TextStyle inheritedText,
+            TextLayoutState state,
+            List<TextPaintRun> runs,
+            List<TextChunk> chunks)
+        {
+            CheckDeadline();
+            if (IsDisplayNone(element)) return;
+            if (!string.IsNullOrWhiteSpace(element.GetAttribute("transform")) ||
+                !string.IsNullOrWhiteSpace(element.GetPresentationProperty("clip-path")))
+            {
+                _report.RequireFallback("transformed or clipped tspan requires compatibility fallback");
+            }
+            if ((element.TextContent?.Length ?? 0) > MaxTextRenderCharsPerElement)
+            {
+                _report.RequireFallback("SVG text exceeds first-party render length budget");
+                return;
+            }
+            var paintStyle = inheritedPaint.ResolveOverrides(element, _report);
+            if (!paintStyle.Visibility) return;
+            var textStyle = ResolveTextStyle(element, inheritedText);
+
+            float previous = state.ContainerOpacity;
+            state.ContainerOpacity = previous * ReadClampedOpacity(element, "opacity", 1f);
+            RotationScope rotation = PushRotationScope(element, state);
+            try
+            {
+                foreach (var part in element.Content)
+                {
+                    if (part.IsText)
+                    {
+                        ShapeTextPart(
+                            part.Text, element, paintStyle, textStyle, viewport,
+                            state, runs, applyOwnOpacity: false, TextPositionLists.None);
+                    }
+                    else if (part.Element?.Name == "tspan")
+                    {
+                        LayoutTextElement(part.Element, viewport, paintStyle, textStyle, state, runs, chunks, false);
+                    }
+                    else if (part.Element?.Name == "textPath")
+                    {
+                        LayoutTextPathElement(part.Element, viewport, paintStyle, textStyle, state, runs);
+                    }
+                    else if (part.Element?.Name == "a")
+                    {
+                        LayoutTextAnchorElement(part.Element, viewport, paintStyle, textStyle, state, runs, chunks);
+                    }
+                    else if (part.Element != null && PaintableInTextContent(part.Element))
+                    {
+                        _report.RequireFallback(
+                            "unknown element in SVG text content requires compatibility fallback");
+                    }
+                }
+            }
+            finally
+            {
+                state.ContainerOpacity = previous;
+                state.RotationList = rotation.List;
+                state.RotationIndex = rotation.Index;
+            }
+        }
+
+        /// <summary>
+        /// True when an element nested in text content would paint something the
+        /// text layout pass cannot honour. Definition, descriptive and other
+        /// never-rendered containers are inert and are skipped; anything that
+        /// produces geometry in the render tree is routed to the fallback instead
+        /// of being silently dropped.
+        /// </summary>
+        private static bool PaintableInTextContent(SvgElement element) =>
+            element.Name is "rect" or "circle" or "ellipse" or "line" or "polyline" or
+                "polygon" or "path" or "image" or "use" or "text" or "switch" or
+                "marker" or "foreignObject" or "video" or "audio" or "canvas" or "iframe";
+
+        /// <summary>
+        /// True when the run sits inside a <c>marker</c> that asks for an
+        /// explicit rotation of its own content. The marker angle and the glyph
+        /// angle are two independent rotations about two different points, and
+        /// the single pass cannot establish that composition against an oracle,
+        /// so such a run is reported rather than painted at a composed position
+        /// the engine has not verified. A marker that follows the path tangent
+        /// (<c>auto</c>, the default) lays its content out in the same
+        /// orientation the shapes already use, so it stays admitted.
+        /// </summary>
+        private static bool IsInsideExplicitlyRotatedMarker(SvgElement element)
+        {
+            for (var ancestor = element?.Parent; ancestor != null; ancestor = ancestor.Parent)
+            {
+                if (ancestor.Name != "marker") continue;
+                string orient = ancestor.GetAttribute("orient");
+                if (string.IsNullOrWhiteSpace(orient)) return false;
+                var keyword = orient.AsSpan().Trim();
+                return !(IsCssWideKeyword(keyword) ||
+                         keyword.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+                         keyword.Equals("0", StringComparison.OrdinalIgnoreCase) ||
+                         keyword.Equals("0deg", StringComparison.OrdinalIgnoreCase) ||
+                         keyword.Equals("0turn", StringComparison.OrdinalIgnoreCase) ||
+                         keyword.Equals("0rad", StringComparison.OrdinalIgnoreCase) ||
+                         keyword.Equals("0grad", StringComparison.OrdinalIgnoreCase));
+            }
+            return false;
+        }
+
+        private float[] TryResolveRotationList(SvgElement element)
+        {
+            string raw = element.GetPresentationProperty("rotate");
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            var tokenizer = SvgValues.CreateTokenizer(raw.AsSpan().Trim());
+            var resolved = new List<float>();
+            while (tokenizer.Next(out var token))
+            {
+                if (resolved.Count >= MaxTextPositionListValues)
+                {
+                    _report.RequireFallback(
+                        "per-glyph SVG text rotation list exceeds the first-party value budget");
+                    return null;
+                }
+                if (IsCssWideKeyword(token) ||
+                    token.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+                    token.Equals("normal", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (tokenizer.Next(out _))
+                    {
+                        _report.RequireFallback(
+                            "per-glyph SVG text rotation keyword must be the only value");
+                        return null;
+                    }
+                    return null;
+                }
+                if (!SvgValues.TryParseNumber(token, out float degrees) || !SvgValues.IsFinite(degrees))
+                {
+                    _report.RequireFallback("per-glyph SVG text rotation requires compatibility fallback");
+                    return null;
+                }
+                resolved.Add(SvgValues.ClampCoord(degrees));
+            }
+            return resolved.Count == 0 ? null : resolved.ToArray();
+        }
+
+        /// <summary>
+        /// Binds the element's own <c>rotate</c> list to the character cursor for
+        /// the duration of its subtree. A descendant that declares no list keeps
+        /// the ancestor's list and its running index, so a nested element that
+        /// contributes characters is addressed by the list declared above it, and
+        /// the ancestor resumes at the index it had reached before descending.
+        /// </summary>
+        private RotationScope PushRotationScope(SvgElement element, TextLayoutState state)
+        {
+            var scope = new RotationScope(state.RotationList, state.RotationIndex);
+            float[] declared = TryResolveRotationList(element);
+            if (declared != null)
+            {
+                state.RotationList = declared;
+                state.RotationIndex = 0;
+            }
+            return scope;
+        }
+
+        private readonly record struct RotationScope(float[] List, int Index);
+
+        /// <summary>
+        /// A <c>:lang()</c> rule paints a run from the language tag on the
+        /// element or an ancestor, so the paint a static render produces is only
+        /// final while the DOM is. A document that both styles text by language
+        /// and carries a script has not reached that state here: the first-party
+        /// renderer never executes the script, so it cannot observe the language
+        /// the script installs and would paint the run in the inherited fill while
+        /// reporting success. The guard is read once per document, and only the
+        /// conjunction is routed to the compatibility fallback: a document with a
+        /// language rule and no script has a paint the cascade really does decide,
+        /// and a scripted document with no language rule never depends on the
+        /// missing mutation.
+        /// </summary>
+        private void RequireLanguageStyleSupport()
+        {
+            // Only a script that could still change lang makes language styling
+            // unsafe to paint; inert script never runs.
+            if (!_limits.TreatScriptsAsInert && DocumentStylesByLanguage())
+            {
+                _report.RequireFallback(
+                    "language-styled SVG text under a scripted DOM requires compatibility fallback");
+            }
+        }
+
+        private bool DocumentStylesByLanguage()
+        {
+            if (_documentStylesByLanguage.HasValue) return _documentStylesByLanguage.Value;
+            _documentStylesByLanguage = false;
+            if (_doc?.Root == null) return false;
+
+            bool script = false;
+            bool language = false;
+            var pending = new Stack<SvgElement>();
+            pending.Push(_doc.Root);
+            int scanned = 0;
+            while (pending.Count > 0 && scanned < MaxStyledSheetScanElements)
+            {
+                if ((scanned & 0x3F) == 0) CheckDeadline();
+                scanned++;
+                var element = pending.Pop();
+                if (IsScriptElement(element.Name))
+                {
+                    script = true;
+                }
+                else if (element.Name == "style" && MentionsLanguageSelector(element.TextContent))
+                {
+                    language = true;
+                }
+                if (script && language)
+                {
+                    _documentStylesByLanguage = true;
+                    return true;
+                }
+                for (int i = element.Children.Count - 1; i >= 0; i--)
+                    pending.Push(element.Children[i]);
+            }
+            return false;
+        }
+
+        private static bool IsScriptElement(string name) =>
+            name.Equals("script", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(":script", StringComparison.OrdinalIgnoreCase);
+
+        private bool MentionsLanguageSelector(string sheet)
+        {
+            if (!TryAccountStyleSheet(sheet)) return false;
+
+            int index = 0;
+            while ((index = sheet.IndexOf("lang(", index, StringComparison.OrdinalIgnoreCase)) >= 0)
+            {
+                // A functional pseudo-class can only be spelled with a leading
+                // colon, so the character before the name is what distinguishes a
+                // selector from any other mention of the same text.
+                for (int i = index - 1; i >= 0; i--)
+                {
+                    if (char.IsWhiteSpace(sheet[i])) continue;
+                    if (sheet[i] == ':') return true;
+                    break;
+                }
+                index += "lang(".Length;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Charges one sheet against the per-document style budget, shared by
+        /// every document-level sheet guard so a document cannot buy unbounded
+        /// scanning by naming the same sheet twice.
+        /// </summary>
+        private bool TryAccountStyleSheet(string sheet)
+        {
+            if (string.IsNullOrWhiteSpace(sheet)) return false;
+            if (++_documentStyleSheetsInspected > MaxStyledSheetsPerDocument) return false;
+            if (_documentStyleSheetCharsInspected + sheet.Length > MaxStyledSheetChars) return false;
+            _documentStyleSheetCharsInspected += sheet.Length;
+            return true;
+        }
+
+        private TextLengthAdjustment? ResolveTextLengthDeclaration(
+            SvgElement element,
+            TextStyle textStyle,
+            ViewportContext viewport)
+        {
+            CheckDeadline();
+            string lengthRaw = element.GetPresentationProperty("textLength");
+            if (string.IsNullOrWhiteSpace(lengthRaw)) return null;
+
+            if (!TryResolveTextLengthTargets(lengthRaw, textStyle.FontSize, viewport, out float[] targets))
+            {
+                _report.RequireFallback("SVG textLength value requires compatibility fallback");
+                return null;
+            }
+
+            bool glyphScale = false;
+            string adjustRaw = element.GetPresentationProperty("lengthAdjust");
+            if (!string.IsNullOrWhiteSpace(adjustRaw))
+            {
+                if (!SvgFeatureSupport.IsSupportedLengthAdjust(adjustRaw))
+                {
+                    _report.RequireFallback("SVG lengthAdjust value requires compatibility fallback");
+                    return null;
+                }
+                glyphScale = adjustRaw.AsSpan().Trim()
+                    .Equals("spacingAndGlyphs", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return new TextLengthAdjustment(0, 0, targets, glyphScale, -1);
+        }
+
+        private void RegisterTextLength(
+            TextLengthAdjustment? declaration,
+            List<TextPaintRun> runs,
+            int startRun,
+            TextLayoutState state)
+        {
+            if (!declaration.HasValue) return;
+            if (runs.Count <= startRun) return;
+            var adjustment = declaration.Value;
+            state.LengthAdjustments.Add(
+                adjustment with
+                {
+                    StartRun = startRun,
+                    EndRun = runs.Count,
+                    Chunk = state.CurrentChunk
+                });
+        }
+
+        private static bool TryResolveTextLengthTargets(
+            string raw,
+            float fontSize,
+            ViewportContext viewport,
+            out float[] targets)
+        {
+            targets = null;
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            double squared = (double)viewport.Width * viewport.Width +
+                             (double)viewport.Height * viewport.Height;
+            float diagonal = SvgValues.IsFinite((float)squared) && squared > 0d
+                ? (float)Math.Sqrt(squared)
+                : 1f;
+
+            var values = new List<float>();
+            var tokenizer = SvgValues.CreateTokenizer(raw.AsSpan().Trim());
+            while (tokenizer.Next(out var token))
+            {
+                if (values.Count >= MaxTextPositionListValues) return false;
+                if (!SvgValues.TryParseLength(token, out float parsed, out var unit)) return false;
+                float resolved = SvgValues.ResolveUnits(parsed, unit, fontSize, diagonal);
+                if (!SvgValues.IsFinite(resolved) || resolved < 0f) return false;
+                values.Add(resolved);
+            }
+            if (values.Count == 0) return false;
+            targets = values.ToArray();
+            return true;
+        }
+
+        private void ApplyTextLengthAdjustments(List<TextPaintRun> runs, List<TextLengthAdjustment> adjustments)
+        {
+            for (int i = 0; i < adjustments.Count; i++)
+            {
+                CheckDeadline();
+                ApplyTextLengthAdjustment(runs, adjustments[i]);
+            }
+        }
+
+        private void ApplyTextLengthAdjustment(List<TextPaintRun> runs, TextLengthAdjustment adjustment)
+        {
+            int start = adjustment.StartRun;
+            int end = adjustment.EndRun;
+            if (end <= start || end > runs.Count) return;
+
+            int glyphCount = 0;
+            float natural = 0f;
+            for (int k = start; k < end; k++)
+            {
+                if (runs[k].PathTransforms != null)
+                {
+                    _report.RequireFallback("SVG textLength on textPath requires compatibility fallback");
+                    return;
+                }
+                glyphCount += runs[k].GlyphRun.Count;
+                natural += runs[k].AdvanceExtent;
+            }
+            if (glyphCount == 0) return;
+
+            float[] targets = adjustment.Targets;
+            if (targets.Length > 1 && targets.Length != glyphCount)
+            {
+                _report.RequireFallback("SVG textLength list requires compatibility fallback");
+                return;
+            }
+
+            float target = adjustment.GlyphScale || targets.Length == 1
+                ? targets[0]
+                : targets.Sum();
+            if (!SvgValues.IsFinite(target) || target < 0f)
+            {
+                _report.RequireFallback("SVG textLength value requires compatibility fallback");
+                return;
+            }
+
+            if (adjustment.GlyphScale)
+            {
+                if (!SvgValues.IsFinite(natural) || !(natural > 0f))
+                {
+                    if (target > 0f)
+                    {
+                        _report.RequireFallback(
+                            "SVG textLength cannot be applied to a zero-extent run");
+                    }
+                    return;
+                }
+                float scale = target / natural;
+                if (!SvgValues.IsFinite(scale) || MathF.Abs(scale - 1f) <= 0.0001f) return;
+                for (int k = start; k < end; k++)
+                {
+                    TextPaintRun run = runs[k];
+                    if (run.HorizontalScale != 1f)
+                    {
+                        _report.RequireFallback("SVG textLength on textPath requires compatibility fallback");
+                        return;
+                    }
+                    // The glyph outlines are scaled at paint time about the run
+                    // origin, so the positioned glyphs stay in natural units and
+                    // only the layout advance is scaled here.
+                    run.AdvanceScale = scale;
+                    run.HorizontalScale = scale;
+                }
+                return;
+            }
+
+            float delta = target - natural;
+            if (!SvgValues.IsFinite(delta) || MathF.Abs(delta) <= 0.0001f) return;
+            if (glyphCount == 1)
+            {
+                PositionedGlyph[] only = runs[start].GlyphRun.Glyphs;
+                if (only.Length == 1) only[0].X += delta * 0.5f;
+                return;
+            }
+
+            float perGap = delta / (glyphCount - 1);
+            if (!SvgValues.IsFinite(perGap)) return;
+            float offset = 0f;
+            int seen = 0;
+            for (int k = start; k < end; k++)
+            {
+                if ((seen & 255) == 0) CheckDeadline();
+                PositionedGlyph[] glyphs = runs[k].GlyphRun.Glyphs;
+                for (int i = 0; i < glyphs.Length; i++)
+                {
+                    if (seen > 0) offset += perGap;
+                    glyphs[i].X += offset;
+                    seen++;
+                }
+            }
+        }
+
+        private TextPaintRun ShapeTextPart(
+            string rawText,
+            SvgElement element,
+            InheritedStyle paintStyle,
+            TextStyle textStyle,
+            ViewportContext viewport,
+            TextLayoutState state,
+            List<TextPaintRun> runs,
+            bool applyOwnOpacity,
+            TextPositionLists positions)
+        {
+            string text = NormalizeText(rawText, textStyle.PreserveWhitespace, state);
+            if (text.Length == 0) return null;
+
+            bool rotated = state.RotationList != null;
+
+            var typeface = SvgTypefaceResolver.Resolve(
+                textStyle.Family, PaintedCharacters(text), textStyle.Language,
+                textStyle.Weight, textStyle.Slant);
+            if (typeface == null)
+            {
+                _report.RequireFallback("SVG text has no available typeface");
+                return null;
+            }
+
+            float usedFontSize = textStyle.FontSize;
+            if (textStyle.FontSizeAdjust != 0f &&
+                !TryResolveAdjustedFontSize(
+                    typeface, usedFontSize, textStyle.FontSizeAdjust, out usedFontSize))
+            {
+                _report.RequireFallback(
+                    "SVG font-size-adjust x-height ratio requires compatibility fallback");
+                return null;
+            }
+
+            var glyphRun = SkiaFontService.ShapeWithTypeface(text, typeface, usedFontSize);
+            if (glyphRun.Count == 0)
+            {
+                _report.RequireFallback("SVG text shaping produced no glyphs");
+                return null;
+            }
+            if (!glyphRun.WasShaped && ContainsComplexText(text))
+            {
+                _report.RequireFallback("complex SVG text requires an available HarfBuzz shaper");
+                return null;
+            }
+            if (_documentTextGlyphCount + glyphRun.Count > MaxTextGlyphsPerDocument)
+            {
+                _report.RequireFallback("SVG text exceeds first-party glyph budget");
+                return null;
+            }
+
+            if (textStyle.LetterSpacing != 0f && glyphRun.Count > 1)
+            {
+                for (int i = 1; i < glyphRun.Glyphs.Length; i++) glyphRun.Glyphs[i].X += textStyle.LetterSpacing * i;
+                glyphRun.Width += textStyle.LetterSpacing * (glyphRun.Count - 1);
+            }
+
+            ApplyWordSpacing(glyphRun, text, textStyle.WordSpacing);
+
+            float[] rotations = null;
+            if (rotated)
+            {
+                if (glyphRun.Count != text.Length)
+                {
+                    _report.RequireFallback("per-glyph SVG text rotation requires compatibility fallback");
+                    return null;
+                }
+                rotations = ConsumeRotations(state.RotationList, ref state.RotationIndex, glyphRun.Count);
+            }
+
+            float runX = state.X;
+            float runY = state.Y;
+            if (positions.HasPerCharacterLists)
+            {
+                ApplyPerCharacterPositions(glyphRun, text, runX, runY, positions, out float nextX, out float nextY);
+                state.X = nextX;
+                state.Y = nextY;
+            }
+            else
+            {
+                state.X += glyphRun.Width;
+            }
+
+            float baselineOffset = -textStyle.BaselineShift;
+            if (textStyle.Baseline != BaselineKind.Alphabetic)
+            {
+                baselineOffset += ResolveBaselineShift(textStyle.Baseline, glyphRun.Metrics);
+            }
+
+            var run = new TextPaintRun(
+                element, paintStyle, glyphRun, viewport, runX, runY + baselineOffset,
+                state.CurrentChunk, applyOwnOpacity, state.ContainerOpacity, textStyle.Decorations);
+            run.GlyphRotations = rotations;
+            run.LogicalText = text;
+            run.Font = textStyle.Font;
+            run.FontSizeAdjust = textStyle.FontSizeAdjust;
+            run.Frame = textStyle.Frame;
+            run.PerCharacterPositioned = positions.HasPerCharacterLists;
+            runs.Add(run);
+            _documentTextGlyphCount += glyphRun.Count;
+            state.GlyphCount += glyphRun.Count;
+            state.HasRenderedText = true;
+            return run;
+        }
+
+        /// <summary>
+        /// Takes the next <paramref name="count"/> angles from the current
+        /// <c>rotate</c> list, advancing the cursor once per character. A list
+        /// shorter than the run keeps its final angle for the remaining
+        /// characters, which is the propagation rule SVG 1.1 defines for both
+        /// trailing characters and trailing list entries. Returns null when no
+        /// angle in the run is non-zero, so an inert list never reaches the
+        /// per-glyph transform path.
+        /// </summary>
+        private static float[] ConsumeRotations(float[] list, ref int index, int count)
+        {
+            int last = list.Length - 1;
+            bool any = false;
+            for (int i = 0; i < count; i++)
+            {
+                int at = index + i;
+                if (MathF.Abs(list[at > last ? last : at]) > 0.0001f)
+                {
+                    any = true;
+                    break;
+                }
+            }
+            if (!any)
+            {
+                index += count;
+                return null;
+            }
+            var rotations = new float[count];
+            for (int i = 0; i < count; i++)
+            {
+                int at = index + i;
+                rotations[i] = list[at > last ? last : at];
+            }
+            index += count;
+            return rotations;
+        }
+
+        private void ApplyWordSpacing(GlyphRun glyphRun, string text, float wordSpacing)
+        {
+            if (wordSpacing == 0f || text.IndexOf(' ') < 0) return;
+            if (glyphRun.Count != text.Length)
+            {
+                _report.RequireFallback("shaped SVG word-spacing requires compatibility fallback");
+                return;
+            }
+            float extra = 0f;
+            for (int i = 0; i < glyphRun.Count; i++)
+            {
+                if (text[i] == ' ') extra += wordSpacing;
+                if (extra != 0f) glyphRun.Glyphs[i].X += extra;
+            }
+            glyphRun.Width += extra;
+        }
+
+        private void ApplyPerCharacterPositions(
+            GlyphRun glyphRun,
+            string text,
+            float runX,
+            float runY,
+            TextPositionLists positions,
+            out float nextX,
+            out float nextY)
+        {
+            int count = glyphRun.Count;
+            if (count != text.Length)
+            {
+                _report.RequireFallback("per-glyph SVG text positioning requires compatibility fallback");
+                nextX = runX + glyphRun.Width;
+                nextY = runY;
+                return;
+            }
+
+            float[] xs = positions.X;
+            float[] ys = positions.Y;
+            float[] dxs = positions.Dx;
+            float[] dys = positions.Dy;
+
+            float originX = runX;
+            float originY = runY;
+            for (int i = 0; i < count; i++)
+            {
+                if ((i & 255) == 0) CheckDeadline();
+                float shiftX = dxs != null && i < dxs.Length ? dxs[i] : 0f;
+                float shiftY = dys != null && i < dys.Length ? dys[i] : 0f;
+
+                if (xs != null && i < xs.Length)
+                {
+                    originX = xs[i] + shiftX;
+                    glyphRun.Glyphs[i].X = originX - runX;
+                }
+                else if (dxs != null)
+                {
+                    glyphRun.Glyphs[i].X += shiftX;
+                    originX += glyphRun.Glyphs[i].X;
+                }
+                else
+                {
+                    originX += glyphRun.Glyphs[i].X;
+                }
+
+                if (ys != null && i < ys.Length)
+                {
+                    originY = ys[i] + shiftY;
+                    glyphRun.Glyphs[i].Y = originY - runY;
+                }
+                else if (dys != null)
+                {
+                    glyphRun.Glyphs[i].Y += shiftY;
+                    originY += glyphRun.Glyphs[i].Y;
+                }
+                else
+                {
+                    originY += glyphRun.Glyphs[i].Y;
+                }
+            }
+
+            nextX = originX + Math.Max(0f, glyphRun.Glyphs[count - 1].AdvanceX);
+            nextY = originY;
+        }
+
+        /// <summary>
+        /// Baseline table for the horizontal writing mode, in user units, positive
+        /// downwards. The metrics are the engine's normalized (positive-up ascent,
+        /// positive-down descent) values, so a before-edge baseline sits one ascent
+        /// below the resolved y and an after-edge baseline one descent above it.
+        /// </summary>
+        private static float ResolveBaselineShift(BaselineKind baseline, NormalizedFontMetrics metrics)
+        {
+            float ascent = SvgValues.IsFinite(metrics.Ascent) ? metrics.Ascent : 0f;
+            float descent = SvgValues.IsFinite(metrics.Descent) ? metrics.Descent : 0f;
+            float xHeight = SvgValues.IsFinite(metrics.XHeight) ? metrics.XHeight : 0f;
+            switch (baseline)
+            {
+                case BaselineKind.BeforeEdge: return ascent;
+                case BaselineKind.AfterEdge: return -descent;
+                case BaselineKind.Central: return (ascent - descent) * 0.5f;
+                case BaselineKind.Middle: return xHeight * 0.5f;
+                default: return 0f;
+            }
+        }
+
+        private void PaintGlyphRun(SKCanvas canvas, TextPaintRun run)
+        {
+            SKPaint containerLayer = null;
+            bool containerLayered = false;
+            SKPaint layerPaint = null;
+            bool layered = false;
+            try
+            {
+                if (run.ContainerOpacity < 1f && TryBeginOpacityLayer(run.ContainerOpacity, canvas, out containerLayer))
+                {
+                    containerLayered = true;
+                }
+                if (run.ApplyOwnOpacity) layered = TryBeginGroupOpacity(run.Element, canvas, out layerPaint);
+
+                using var font = new SKFont(run.GlyphRun.Typeface, run.GlyphRun.FontSize)
+                {
+                    Edging = SKFontEdging.Antialias,
+                    Subpixel = true
+                };
+                using var blobBuilder = new SKTextBlobBuilder();
+                if (run.PathTransforms != null)
+                {
+                    var pathRun = blobBuilder.AllocateRotationScaleRun(font, run.PathGlyphIds.Length);
+                    for (int i = 0; i < run.PathGlyphIds.Length; i++)
+                    {
+                        pathRun.Glyphs[i] = run.PathGlyphIds[i];
+                        pathRun.Positions[i] = run.PathTransforms[i];
+                    }
+                }
+                else
+                {
+                    var positioned = blobBuilder.AllocatePositionedRun(font, run.GlyphRun.Count);
+                    for (int i = 0; i < run.GlyphRun.Count; i++)
+                    {
+                        positioned.Glyphs[i] = run.GlyphRun.Glyphs[i].GlyphId;
+                        positioned.Positions[i] = new SKPoint(run.X + run.GlyphRun.Glyphs[i].X, run.Y + run.GlyphRun.Glyphs[i].Y);
+                    }
+                }
+                using var blob = blobBuilder.Build();
+                if (blob == null) return;
+
+                var metrics = font.Metrics;
+                SKRect objectBounds = blob.Bounds;
+                if (!float.IsFinite(objectBounds.Left) || !float.IsFinite(objectBounds.Top) ||
+                    !float.IsFinite(objectBounds.Right) || !float.IsFinite(objectBounds.Bottom) ||
+                    objectBounds.Width <= 0f || objectBounds.Height <= 0f)
+                {
+                    objectBounds = run.PathTransforms == null
+                        ? new SKRect(run.X, run.Y + metrics.Ascent,
+                            run.X + Math.Max(1f, run.NaturalExtent), run.Y + metrics.Descent)
+                        : ResolvePathTextBounds(run, font);
+                }
+                using var boundsBuilder = new SKPathBuilder();
+                boundsBuilder.AddRect(objectBounds);
+                using var boundsPath = boundsBuilder.Detach();
+                using var fillPaint = ApplyInheritedFillOpacity(
+                    BuildFillPaint(run.Element, run.PaintStyle, boundsPath, run.Viewport),
+                    run.PaintStyle);
+                using var strokePaint = ApplyInheritedStrokeOpacity(
+                    BuildStrokePaint(run.Element, run.PaintStyle, boundsPath, run.Viewport),
+                    run.PaintStyle);
+
+                bool scaled = false;
+                if (run.HorizontalScale != 1f)
+                {
+                    canvas.Save();
+                    canvas.Translate(run.X, 0f);
+                    canvas.Scale(run.HorizontalScale, 1f);
+                    canvas.Translate(-run.X, 0f);
+                    scaled = true;
+                }
+
+                TextDecoration underOrOver = run.Decorations &
+                    (TextDecoration.Underline | TextDecoration.Overline);
+                if (underOrOver != TextDecoration.None)
+                    PaintTextDecorations(canvas, run, metrics, fillPaint, strokePaint, underOrOver);
+
+                for (int i = 0; i < 3; i++)
+                {
+                    switch (run.PaintStyle.PaintOrder.At(i))
+                    {
+                        case PaintPhase.Fill when fillPaint != null:
+                            canvas.DrawText(blob, 0f, 0f, fillPaint);
+                            break;
+                        case PaintPhase.Stroke when strokePaint != null:
+                            canvas.DrawText(blob, 0f, 0f, strokePaint);
+                            break;
+                    }
+                }
+
+                if ((run.Decorations & TextDecoration.LineThrough) != 0)
+                {
+                    PaintTextDecorations(
+                        canvas, run, metrics, fillPaint, strokePaint, TextDecoration.LineThrough);
+                }
+
+                if (scaled) canvas.Restore();
+            }
+            finally
+            {
+                if (layered)
+                {
+                    canvas.Restore();
+                    _activeLayers--;
+                    layerPaint.Dispose();
+                }
+                if (containerLayered)
+                {
+                    canvas.Restore();
+                    _activeLayers--;
+                    containerLayer.Dispose();
+                }
+            }
+        }
+
+        private bool TryBeginOpacityLayer(float opacity, SKCanvas canvas, out SKPaint layerPaint)
+        {
+            if (opacity >= 1f)
+            {
+                layerPaint = null;
+                return false;
+            }
+            if (_activeLayers >= _maxActiveLayers)
+            {
+                _report.RequireFallback(
+                    "layer budget exceeded; compatibility fallback required for isolated opacity");
+                layerPaint = null;
+                return false;
+            }
+            layerPaint = new SKPaint
+            {
+                Color = SKColors.Black.WithAlpha((byte)Math.Clamp((int)(opacity * 255f), 0, 255))
+            };
+            canvas.SaveLayer(layerPaint);
+            _activeLayers++;
+            return true;
+        }
+
+        private void PaintTextDecorations(
+            SKCanvas canvas,
+            TextPaintRun run,
+            SKFontMetrics metrics,
+            SKPaint fillPaint,
+            SKPaint strokePaint,
+            TextDecoration bands)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                SKPaint paint = run.PaintStyle.PaintOrder.At(i) switch
+                {
+                    PaintPhase.Fill => fillPaint,
+                    PaintPhase.Stroke => strokePaint,
+                    _ => null
+                };
+                if (paint == null) continue;
+                PaintDecorationBands(canvas, run, metrics, paint, bands);
+            }
+        }
+
+        private void PaintDecorationBands(
+            SKCanvas canvas,
+            TextPaintRun run,
+            SKFontMetrics metrics,
+            SKPaint paint,
+            TextDecoration bands)
+        {
+            float fontSize = run.GlyphRun.FontSize;
+            float defaultThickness = Math.Max(1f, fontSize / 16f);
+            bool rotated = run.GlyphRotations != null && run.PathTransforms != null;
+
+            if ((bands & TextDecoration.Underline) != 0)
+            {
+                float thickness = metrics.UnderlineThickness ?? defaultThickness;
+                if (!(thickness > 0f) || !SvgValues.IsFinite(thickness)) thickness = defaultThickness;
+                float y = metrics.UnderlinePosition ?? fontSize * 0.1f;
+                PaintDecorationBand(canvas, run, paint, y, thickness, rotated);
+            }
+            if ((bands & TextDecoration.Overline) != 0)
+            {
+                float thickness = metrics.UnderlineThickness ?? defaultThickness;
+                if (!(thickness > 0f) || !SvgValues.IsFinite(thickness)) thickness = defaultThickness;
+                PaintDecorationBand(canvas, run, paint, metrics.Ascent, thickness, rotated);
+            }
+            if ((bands & TextDecoration.LineThrough) != 0)
+            {
+                float thickness = metrics.StrikeoutThickness ?? defaultThickness;
+                if (!(thickness > 0f) || !SvgValues.IsFinite(thickness)) thickness = defaultThickness;
+                float y = metrics.StrikeoutPosition ?? -fontSize * 0.25f;
+                PaintDecorationBand(canvas, run, paint, y, thickness, rotated);
+            }
+        }
+
+        /// <summary>
+        /// Paints one decoration band at <paramref name="offset"/> from the
+        /// baseline. Drawn inside the run's own canvas state, so the natural
+        /// extent is the correct span even when lengthAdjust scaled the
+        /// outlines. A rotated run has no single span to cover, so the band is
+        /// emitted per glyph and turned by that glyph's own rotation.
+        /// </summary>
+        private void PaintDecorationBand(
+            SKCanvas canvas,
+            TextPaintRun run,
+            SKPaint paint,
+            float offset,
+            float thickness,
+            bool rotated)
+        {
+            if (!SvgValues.IsFinite(offset) || !SvgValues.IsFinite(thickness)) return;
+            if (rotated)
+            {
+                for (int i = 0; i < run.PathTransforms.Length && i < run.GlyphRun.Count; i++)
+                {
+                    if ((i & 255) == 0) CheckDeadline();
+                    float advance = Math.Max(0f, run.GlyphRun.Glyphs[i].AdvanceX);
+                    if (!(advance > 0f) || !SvgValues.IsFinite(advance)) continue;
+                    using var bandBuilder = new SKPathBuilder();
+                    bandBuilder.AddRect(new SKRect(0f, offset, advance, offset + thickness));
+                    using var band = bandBuilder.Detach();
+                    band.Transform(run.PathTransforms[i].ToMatrix());
+                    canvas.DrawPath(band, paint);
+                }
+                return;
+            }
+            float width = run.NaturalExtent;
+            if (!(width > 0f) || !SvgValues.IsFinite(width)) return;
+            canvas.DrawRect(run.X, run.Y + offset, run.X + width, run.Y + offset + thickness, paint);
+        }
+
+        private SKRect ResolvePathTextBounds(TextPaintRun run, SKFont font)
+        {
+            if (run.PathTransforms == null || run.PathTransforms.Length == 0)
+                return run.PathBounds;
+
+            bool hasBounds = false;
+            SKRect bounds = default;
+            for (int i = 0; i < run.PathTransforms.Length; i++)
+            {
+                if ((i & 255) == 0) CheckDeadline();
+                using var glyphPath = font.GetGlyphPath(run.PathGlyphIds[i]);
+                if (glyphPath == null || glyphPath.IsEmpty) continue;
+                using var transformed = new SKPath();
+                glyphPath.Transform(run.PathTransforms[i].ToMatrix(), transformed);
+                SKRect glyphBounds = transformed.TightBounds;
+                if (!float.IsFinite(glyphBounds.Left) || !float.IsFinite(glyphBounds.Top) ||
+                    !float.IsFinite(glyphBounds.Right) || !float.IsFinite(glyphBounds.Bottom) ||
+                    glyphBounds.Width <= 0f || glyphBounds.Height <= 0f)
+                {
+                    continue;
+                }
+                bounds = hasBounds ? SKRect.Union(bounds, glyphBounds) : glyphBounds;
+                hasBounds = true;
+            }
+            return hasBounds ? bounds : run.PathBounds;
+        }
+
+        /// <summary>
+        /// Turns the per-glyph angles captured during layout into the rotation
+        /// transforms the paint pass already uses for path-positioned glyphs.
+        /// Each glyph is turned about its own origin on the baseline, which is
+        /// the point the SVG rotation is defined around, and the advance is left
+        /// untouched because a rotation does not change how far the run travels.
+        /// The pass runs after the anchor and textLength passes so the baked
+        /// origin is the final one.
+        /// </summary>
+        private void ApplyTextRotations(List<TextPaintRun> runs)
+        {
+            for (int k = 0; k < runs.Count; k++)
+            {
+                CheckDeadline();
+                TextPaintRun run = runs[k];
+                float[] rotations = run.GlyphRotations;
+                if (rotations == null || run.PathTransforms != null) continue;
+
+                int count = Math.Min(rotations.Length, run.GlyphRun.Count);
+                if (count == 0) continue;
+                var glyphIds = new ushort[count];
+                var transforms = new SKRotationScaleMatrix[count];
+                for (int i = 0; i < count; i++)
+                {
+                    PositionedGlyph glyph = run.GlyphRun.Glyphs[i];
+                    glyphIds[i] = glyph.GlyphId;
+                    transforms[i] = SKRotationScaleMatrix.CreateDegrees(
+                        1f, rotations[i],
+                        run.X + glyph.X, run.Y + glyph.Y,
+                        0f, 0f);
+                }
+                run.PathGlyphIds = glyphIds;
+                run.PathTransforms = transforms;
+                float ascent = SvgValues.IsFinite(run.GlyphRun.Metrics.Ascent)
+                    ? run.GlyphRun.Metrics.Ascent : 0f;
+                float descent = SvgValues.IsFinite(run.GlyphRun.Metrics.Descent)
+                    ? run.GlyphRun.Metrics.Descent : 0f;
+                run.PathBounds = new SKRect(
+                    run.X, run.Y - ascent,
+                    run.X + run.NaturalExtent, run.Y + descent);
+            }
+        }
+
+        private void ApplyTextAnchors(
+            List<TextPaintRun> runs,
+            List<TextChunk> chunks,
+            IReadOnlyList<int> paragraphLevels)
+        {
+            for (int chunkIndex = 0; chunkIndex < chunks.Count; chunkIndex++)
+            {
+                TextChunk chunk = chunks[chunkIndex];
+                float right = chunk.StartX;
+                for (int i = 0; i < runs.Count; i++)
+                {
+                    if (runs[i].Chunk == chunkIndex) right = Math.Max(right, runs[i].X + runs[i].AdvanceExtent);
+                }
+                float width = Math.Max(0f, right - chunk.StartX);
+                // The start and end of a text chunk follow the base direction the
+                // paragraph resolved, so a right-to-left chunk anchors its start
+                // edge on the right and its end edge on the left.
+                TextAnchor anchor = chunk.Anchor;
+                int level = chunkIndex < paragraphLevels.Count ? paragraphLevels[chunkIndex] : 0;
+                if ((level & 1) == 1)
+                {
+                    anchor = anchor switch
+                    {
+                        TextAnchor.Start => TextAnchor.End,
+                        TextAnchor.End => TextAnchor.Start,
+                        _ => anchor
+                    };
+                }
+                float shift = anchor == TextAnchor.Middle ? -width / 2f : anchor == TextAnchor.End ? -width : 0f;
+                if (shift == 0f) continue;
+                for (int i = 0; i < runs.Count; i++)
+                {
+                    if (runs[i].Chunk == chunkIndex) runs[i].X += shift;
+                }
+            }
+        }
+
+        private enum TextAnchor { Start, Middle, End }
+
+        private enum BaselineKind { Alphabetic, BeforeEdge, AfterEdge, Central, Middle }
+
+        [Flags]
+        private enum TextDecoration { None = 0, Underline = 1, Overline = 2, LineThrough = 4 }
+
+        private sealed class TextLayoutState
+        {
+            public float X;
+            public float Y;
+            public float ContainerOpacity = 1f;
+            public float[] RotationList;
+            public int RotationIndex;
+            public int CurrentChunk = -1;
+            public int GlyphCount;
+            public bool HasRenderedText;
+            public bool PendingSpace;
+            public int PoisonedChunk = -1;
+            public readonly List<TextLengthAdjustment> LengthAdjustments = new List<TextLengthAdjustment>();
+        }
+
+        private readonly record struct TextLengthAdjustment(
+            int StartRun,
+            int EndRun,
+            float[] Targets,
+            bool GlyphScale,
+            int Chunk);
+
+        private readonly struct TextPositionLists
+        {
+            public readonly float[] X;
+            public readonly float[] Y;
+            public readonly float[] Dx;
+            public readonly float[] Dy;
+
+            public TextPositionLists(float[] x, float[] y, float[] dx, float[] dy)
+            {
+                X = x;
+                Y = y;
+                Dx = dx;
+                Dy = dy;
+            }
+
+            public static TextPositionLists None => default;
+
+            /// <summary>
+            /// True only when a position attribute carries more than one value.
+            /// Single-valued positions are the ordinary absolute-placement case
+            /// and never need per-character addressing, so complex shaping keeps
+            /// its natural run geometry.
+            /// </summary>
+            public bool HasPerCharacterLists =>
+                (X?.Length ?? 0) > 1 || (Y?.Length ?? 0) > 1 ||
+                (Dx?.Length ?? 0) > 1 || (Dy?.Length ?? 0) > 1;
+        }
+
+        private readonly record struct TextStyle(
+            string Family,
+            float FontSize,
+            float FontSizeAdjust,
+            int Weight,
+            SKFontStyleSlant Slant,
+            TextAnchor Anchor,
+            float LetterSpacing,
+            bool PreserveWhitespace,
+            BaselineKind Baseline,
+            float BaselineShift,
+            float WordSpacing,
+            TextDecoration Decorations,
+            string Language,
+            bool RightToLeft,
+            UnicodeBidi Bidi,
+            BidiFrame Frame)
+        {
+            public static TextStyle Default => new(null, DefaultFontSize, 0f, 400, SKFontStyleSlant.Upright, TextAnchor.Start, 0f, false, BaselineKind.Alphabetic, 0f, 0f, TextDecoration.None, null, false, UnicodeBidi.Normal, null);
+
+            /// <summary>
+            /// The properties that pick a face, kept on the run so a piece cut out
+            /// of it can resolve a typeface for its own characters without
+            /// re-running the style resolution the run already went through.
+            /// </summary>
+            public RunFont Font => new(Family, Language, Weight, Slant);
+        }
+
+        /// <summary>
+        /// The font properties of one run, and the typeface they resolve to for a
+        /// given piece of text. The size is not carried because a piece is never
+        /// shaped at another size than the run it came from.
+        /// </summary>
+        private readonly record struct RunFont(
+            string Family,
+            string Language,
+            int Weight,
+            SKFontStyleSlant Slant)
+        {
+            public SKTypeface ResolveTypeface(string text) =>
+                SvgTypefaceResolver.Resolve(Family, text, Language, Weight, Slant);
+        }
+
+        private sealed class TextPaintRun
+        {
+            public TextPaintRun(
+                SvgElement element,
+                InheritedStyle paintStyle,
+                GlyphRun glyphRun,
+                ViewportContext viewport,
+                float x,
+                float y,
+                int chunk,
+                bool applyOwnOpacity,
+                float containerOpacity,
+                TextDecoration decorations)
+            {
+                Element = element;
+                PaintStyle = paintStyle;
+                GlyphRun = glyphRun;
+                Viewport = viewport;
+                X = x;
+                Y = y;
+                Chunk = chunk;
+                ApplyOwnOpacity = applyOwnOpacity;
+                ContainerOpacity = containerOpacity;
+                Decorations = decorations;
+            }
+            public SvgElement Element { get; }
+            public InheritedStyle PaintStyle { get; }
+            public GlyphRun GlyphRun { get; }
+            public ViewportContext Viewport { get; }
+            public float X { get; set; }
+            public float Y { get; }
+            public int Chunk { get; set; }
+            public bool ApplyOwnOpacity { get; }
+            public float ContainerOpacity { get; }
+            public TextDecoration Decorations { get; }
+            public float[] GlyphRotations { get; set; }
+            public RunFont Font { get; set; }
+            public float FontSizeAdjust { get; set; }
+            public ushort[] PathGlyphIds { get; set; }
+            public SKRotationScaleMatrix[] PathTransforms { get; set; }
+            public SKRect PathBounds { get; set; }
+            public float HorizontalScale { get; set; } = 1f;
+            public float AdvanceScale { get; set; } = 1f;
+            public string LogicalText { get; set; }
+            public BidiFrame Frame { get; set; }
+            public bool PerCharacterPositioned { get; set; }
+
+            public float NaturalExtent
+            {
+                get
+                {
+                    PositionedGlyph[] glyphs = GlyphRun?.Glyphs;
+                    if (glyphs == null || glyphs.Length == 0) return 0f;
+                    PositionedGlyph last = glyphs[glyphs.Length - 1];
+                    return last.X + Math.Max(0f, last.AdvanceX);
+                }
+            }
+
+            public float AdvanceExtent => NaturalExtent * AdvanceScale;
+        }
+
+        private readonly record struct TextChunk(
+            float StartX,
+            TextAnchor Anchor,
+            bool RightToLeft,
+            UnicodeBidi Bidi,
+            BidiFrame Frame)
+        {
+            public static TextChunk At(TextStyle style, float startX) =>
+                new(startX, style.Anchor, style.RightToLeft, style.Bidi, style.Frame);
+        }
+    }
+}

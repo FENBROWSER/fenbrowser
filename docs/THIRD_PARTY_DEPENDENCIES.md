@@ -1,7 +1,7 @@
 # FenBrowser Third-Party Dependencies
 
 > **Comprehensive Technical Reference**
-> Last Updated: January 20, 2026
+> Last Updated: September 26, 2026
 
 This document provides an exhaustive analysis of every third-party library used in FenBrowser, organized by project module. Each entry includes technical details, integration rationale, security considerations, licensing, and honest assessment of trade-offs.
 
@@ -27,11 +27,56 @@ This document provides an exhaustive analysis of every third-party library used 
 
 | Metric                        | Value                             |
 | ----------------------------- | --------------------------------- |
-| **Total Direct Dependencies** | 14 packages                       |
-| **Unique Libraries**          | 8 distinct libraries              |
-| **Runtime Dependencies**      | 10 packages                       |
+| **Total Direct Dependencies** | 13 packages                       |
+| **Unique Libraries**          | 7 distinct libraries              |
+| **Runtime Dependencies**      | 9 packages                        |
 | **Test-Only Dependencies**    | 4 packages                        |
-| **Target Framework**          | .NET 8.0 (host), .NET 9.0 (tests) |
+| **Target Framework**          | .NET 10.0 (engine), .NET 9.0 (tests) |
+
+> NOTE: Version pins below reflect the historical audit. Current csproj pins:
+> SkiaSharp 4.148.0 (+ HarfBuzzSharp 14.2.0, SkiaSharp.HarfBuzz 4.148.0) in
+> FenBrowser.FenEngine. Trust the csproj / packages.lock.json as source of
+> truth for exact versions.
+> FenEngine directly pins `HarfBuzzSharp.NativeAssets.Linux` 14.2.0 so the
+> published Linux native ABI matches the managed HarfBuzzSharp 14.2.0 assembly.
+> Host and DevTools lock files carry the same 14.2.0 transitive resolution, so
+> a clean locked restore cannot reintroduce an older Linux native package.
+> The Linux no-dependencies Skia package does not guarantee system-font
+> discovery in headless images. First-party SVG text accepts an operator-owned
+> fallback font through `FEN_SVG_FONT_PATH`; document content cannot set it.
+
+### SVG rendering backend status
+
+No third-party SVG package remains. The first-party sandboxed renderer
+(`FenBrowser.FenEngine.Adapters.FenSvgRenderer`, module `Svg/`) is the only SVG
+backend in the product; there is no package, legacy, compatibility, or hybrid
+path left to select. `FenBrowser.FenEngine/FenBrowser.FenEngine.csproj` carries
+no SVG `PackageReference`, and no lock file resolves an external SVG package or
+its `ShimSkiaSharp` compatibility shim.
+
+`SvgRendererConfiguration` still reads the cross-platform `FEN_SVG_RENDERER`
+variable so existing deployments keep starting, but every value resolves to
+`SvgRendererBackend.FirstParty`: `first-party` and `fen` are the canonical
+spellings, `legacy` and `svg-skia` are accepted only as deprecated aliases, and
+absent, blank, and unrecognized values resolve to first-party. The environment
+variable is a compatibility surface, not a backend switch.
+
+Because the first-party engine is the only backend, an unsupported declared
+feature is terminal. `SvgRenderResult.IsAdmissible(...)` is the shared
+fail-closed admission predicate for every consumer of a render result (image
+loader, target-process decode entry points, tooling): pixels are admissible only
+when the render succeeded and neither requires fallback nor carries a resource
+rejection flag or reason code. `SvgRenderResult.DescribeRejection(...)` returns
+a bounded, source-free reason. Resource-bearing render requests still use a
+caller-owned `ISvgResourceResolver`; no ambient file or network I/O is part of
+the renderer request contract.
+
+Remaining conformance gaps are visible rather than routed elsewhere: remaining
+SMIL timing, cascade and filter gaps, vertical/per-glyph text, scripted pattern
+mutation, unsupported properties and elements, and unresolved local WPT
+failures are still open work (see VOLUME_III 2.121-2.177 for the matrix and
+VOLUME_VI 6.193-6.243 for the evidence). An unsupported construct now means no
+pixels, not second-hand pixels from a removed package.
 
 ### Dependency Philosophy
 
@@ -53,7 +98,6 @@ FenBrowser follows these principles when selecting dependencies:
 | SkiaSharp.HarfBuzz           | 2.88.9  |      |     ✓     |  ✓   |          |       |
 | SkiaSharp.NativeAssets.Linux | 2.88.9  |      |     ✓     |      |          |       |
 | SkiaSharp.NativeAssets.Win32 | 2.88.9  |      |           |  ✓   |          |       |
-| Svg.Skia                     | 3.2.1   |      |     ✓     |      |          |       |
 | Silk.NET.Windowing           | 2.21.0  |      |           |  ✓   |          |       |
 | Silk.NET.Input               | 2.21.0  |      |           |  ✓   |          |       |
 | Silk.NET.OpenGL              | 2.21.0  |      |           |  ✓   |          |       |
@@ -216,58 +260,47 @@ HarfBuzz is the industry-standard text shaping engine used by Chrome, Firefox, L
 | ICU LayoutEngine | Deprecated, less maintained |
 | No shaping | Would break non-Latin web content |
 
-### Svg.Skia (v3.2.1)
+### SVG rendering (no package)
 
-```xml
-<PackageReference Include="Svg.Skia" Version="3.2.1" />
-```
+FenBrowser has no third-party SVG dependency. SVG is parsed and rasterized by
+first-party code:
 
-**Description:**
-A library for parsing and rendering SVG (Scalable Vector Graphics) images using SkiaSharp as the rendering backend.
+- `FenBrowser.FenEngine/Svg/` — bounded XML-subset parser, strict SVG value and
+  path grammars, and the Skia-backed render engine.
+- `FenBrowser.FenEngine/Adapters/FenSvgRenderer.cs` — the only `ISvgRenderer`
+  implementation, reached through the thread-safe
+  `SvgRendererConfiguration` / `SvgRendererFactory` seam.
+- Parsing rejects DOCTYPE input, has no external-entity or remote-reference
+  fetch path, and enforces source, element, nesting, attribute, path-segment,
+  coordinate, elapsed-time, and raster budgets.
+- Text uses the same canonical HarfBuzz path as the rest of FenEngine.
 
-**Why We Use It:**
+**Why the package was removed:**
 
-- Web pages frequently use SVG for logos, icons, and illustrations
-- SVG is resolution-independent (crisp at any zoom level)
-- Google, GitHub, and most modern sites use SVG extensively
-
-**Technical Details:**
-
-- Parses SVG XML into an internal DOM representation
-- Converts SVG elements to Skia drawing commands
-- Supports SVG 1.1 specification (partial SVG 2.0)
-- Returns `SKPicture` for efficient cached rendering
-
-**Pros:**
-
-- ✅ Native SkiaSharp integration – seamless rendering pipeline
-- ✅ Good coverage of SVG 1.1 specification
-- ✅ Handles paths, shapes, gradients, patterns, masks
-- ✅ Text rendering support
-- ✅ CSS styling within SVG
-- ✅ Resolution-independent output
-
-**Cons:**
-
-- ⚠️ Incomplete SVG 2.0 support
-- ⚠️ Limited SVG animation (SMIL) support
-- ⚠️ Some filter effects not implemented (feConvolveMatrix)
-- ⚠️ CSS animations within SVG not supported
-- ⚠️ Foreign object embedding limited
-- ⚠️ Less maintained than core SkiaSharp
+- The first-party renderer reached parity on the gated subset, so the
+  compatibility backend only existed to cover gaps that are now visible as
+  absent pixels.
+- Two SVG parsers behind one seam meant a resource-policy decision in the
+  first-party engine could be bypassed by a second parser. A single renderer
+  makes admission fail closed by construction.
+- The package pulled a legacy managed/native SkiaSharp and HarfBuzzSharp pair
+  that had to be pinned and lock-managed against the engine's own native ABI.
 
 **Security Assessment:**
 
-- 🟡 Medium Risk – Parses untrusted SVG from web pages
-- XML parsing could theoretically be exploited (billion laughs, XXE)
-- Mitigations: Use secure XML parser settings, sanitize input
+- 🟢 Low Risk for the dependency surface — the remaining native surface is
+  SkiaSharp and HarfBuzz, both widely audited, and the highest-risk parser in
+  the product is first-party code under `SvgRenderLimits.Normalize`.
+- SVG is still attacker-controlled input. The hostile-input ceilings in
+  `NATIVE_INTEROP_MODEL.md` continue to apply.
 
 **Alternatives Considered:**
+
 | Alternative | Why Rejected |
 |-------------|--------------|
+| Keeping a compatibility renderer for gaps | Second parser could re-interpret a document after a first-party admission rejection |
 | Svg.NET | Returns System.Drawing objects, not Skia-compatible |
-| Rendering as raster | Loses resolution independence |
-| Browser's native SVG | We're building the browser! |
+| Rendering SVG as raster only | Loses resolution independence and CSS semantics |
 
 ---
 
@@ -624,7 +657,6 @@ These libraries are pulled in automatically by our direct dependencies:
 | System.Memory  | SkiaSharp          | Span<T> support         |
 | System.Buffers | SkiaSharp          | Array pooling           |
 | HarfBuzzSharp  | SkiaSharp.HarfBuzz | Native HarfBuzz         |
-| ShimSkiaSharp  | Svg.Skia           | SVG compatibility layer |
 | Silk.NET.Core  | Silk.NET.\*        | Core abstractions       |
 | Silk.NET.GLFW  | Silk.NET.Windowing | Window backend          |
 
@@ -639,7 +671,7 @@ These libraries are pulled in automatically by our direct dependencies:
 | **Network Access**     | None of our dependencies make network calls          |
 | **File System Access** | Limited to resource loading                          |
 | **Native Code**        | SkiaSharp, HarfBuzz, GLFW (all widely audited)       |
-| **Input Parsing**      | SVG parsing is the highest risk area                 |
+| **Input Parsing**      | First-party SVG parsing is the highest risk area     |
 | **Telemetry**          | Zero - no analytics in any dependency                |
 | **Supply Chain**       | All packages from NuGet.org with verified publishers |
 
@@ -658,7 +690,6 @@ These libraries are pulled in automatically by our direct dependencies:
 | ------------------ | ---------- | -------------- |
 | SkiaSharp          | MIT        | ✅ Allowed     |
 | SkiaSharp.HarfBuzz | MIT        | ✅ Allowed     |
-| Svg.Skia           | MIT        | ✅ Allowed     |
 | Silk.NET           | MIT        | ✅ Allowed     |
 | Topten.RichTextKit | Apache 2.0 | ✅ Allowed     |
 | xunit              | Apache 2.0 | ✅ Allowed     |

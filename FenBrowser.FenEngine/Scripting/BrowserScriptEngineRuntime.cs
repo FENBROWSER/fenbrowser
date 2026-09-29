@@ -32,9 +32,11 @@ using FenBrowser.Js.Parser;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Rendering.Css;
 using SkiaSharp;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Storage;
+using FenBrowser.FenEngine.Svg;
 using DomRange = FenBrowser.Core.Dom.V2.Range;
 
 namespace FenBrowser.FenEngine.Scripting;
@@ -3013,7 +3015,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private BrowserScriptLoadingRecord AddScriptLoadingRecord(Element scriptElement, int ordinal, bool isModule, bool isAsync, bool isDefer)
     {
-        var src = scriptElement?.GetAttribute("src") ?? string.Empty;
+        var src = ScriptSourceOf(scriptElement) ?? string.Empty;
         var record = new BrowserScriptLoadingRecord
         {
             Ordinal = ordinal,
@@ -3045,7 +3047,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private BrowserScriptLoadingRecord AddDynamicScriptLoadingRecord(Element scriptElement)
     {
         var ordinal = Interlocked.Increment(ref _dynamicScriptTraceCounter);
-        var src = scriptElement?.GetAttribute("src") ?? string.Empty;
+        var src = ScriptSourceOf(scriptElement) ?? string.Empty;
         var type = scriptElement?.GetAttribute("type")?.ToLowerInvariant() ?? string.Empty;
         var isModule = type == "module";
         var record = new BrowserScriptLoadingRecord
@@ -3112,6 +3114,26 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             fields);
     }
 
+    /// <summary>
+    /// The external source of a script element: <c>src</c> for an HTML script,
+    /// <c>href</c> (or the legacy <c>xlink:href</c>) for an SVG script (SVG 2 §15.2
+    /// "The script element"). Null when the script is inline.
+    /// </summary>
+    private static string ScriptSourceOf(Element scriptElement)
+    {
+        if (scriptElement == null)
+        {
+            return null;
+        }
+
+        if (string.Equals(scriptElement.NamespaceUri, Namespaces.Svg, StringComparison.Ordinal))
+        {
+            return scriptElement.GetAttribute("href") ?? scriptElement.GetAttribute("xlink:href");
+        }
+
+        return scriptElement.GetAttribute("src");
+    }
+
     private static string BuildScriptId(int ordinal)
     {
         return "script-" + Math.Max(0, ordinal).ToString(CultureInfo.InvariantCulture);
@@ -3120,7 +3142,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private static string BuildScriptSourceLabel(Element scriptElement, int ordinal)
     {
         var scriptId = BuildScriptId(ordinal);
-        var src = scriptElement?.GetAttribute("src");
+        var src = ScriptSourceOf(scriptElement);
         if (!string.IsNullOrWhiteSpace(src))
         {
             return "external:" + src.Trim();
@@ -3474,7 +3496,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             LogScriptLoading(
                 "ScriptDiscovered",
                 LogSeverity.Info,
-                "[FenJsBridge] Script elements discovered",
+                $"[FenJsBridge] Script elements discovered count={allScripts.Count}",
                 new Dictionary<string, object>
                 {
                     ["scriptElements"] = allScripts.Count
@@ -3489,7 +3511,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             {
                 var scriptElement = allScripts[i];
                 var type = scriptElement.GetAttribute("type")?.ToLowerInvariant() ?? string.Empty;
-                var src = scriptElement.GetAttribute("src");
+                var src = ScriptSourceOf(scriptElement);
                 bool isModule = type == "module";
                 bool isAsync = false;
                 bool isDefer = false;
@@ -3530,7 +3552,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 {
                     if (type != "application/ld+json")
                         FenBrowser.Core.EngineLogCompat.Debug(
-                            $"[FenJsBridge] Skipping script with unknown type '{type}': src={scriptElement.GetAttribute("src")}",
+                            $"[FenJsBridge] Skipping script with unknown type '{type}': src={ScriptSourceOf(scriptElement)}",
                             FenBrowser.Core.Logging.LogCategory.JavaScript);
                     MarkScriptSkipped(scriptRecord, $"unsupported-type:{type}");
                     continue;
@@ -3539,7 +3561,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 if (scriptElement.HasAttribute("nomodule"))
                 {
                     FenBrowser.Core.EngineLogCompat.Debug(
-                        $"[FenJsBridge] Skipping nomodule script: src={scriptElement.GetAttribute("src")}",
+                        $"[FenJsBridge] Skipping nomodule script: src={ScriptSourceOf(scriptElement)}",
                         FenBrowser.Core.Logging.LogCategory.JavaScript);
                     MarkScriptSkipped(scriptRecord, "nomodule");
                     continue;
@@ -3803,7 +3825,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             LogScriptLoading(
                 "ScriptLoadingCompleted",
                 LogSeverity.Info,
-                "[FenJsBridge] ExecutePageScriptsWithFenJsAsync DONE",
+                $"[FenJsBridge] ExecutePageScriptsWithFenJsAsync DONE discovered={allScripts.Count} eligible={items.Count} " +
+                $"blocking={blockingItems.Count} defer={deferItems.Count} async={asyncItems.Count}",
                 new Dictionary<string, object>
                 {
                     ["processedSync"] = blockingItems.Count + deferItems.Count,
@@ -4075,7 +4098,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     {
                         try { desc = _interpreter.DescribeThrownValue(jte.Value); } catch { }
                     }
-                    var srcAttr = item.ScriptElement?.GetAttribute("src");
+                    var srcAttr = ScriptSourceOf(item.ScriptElement);
                     var origin = string.IsNullOrEmpty(srcAttr)
                         ? $"inline script (first {Math.Min(code?.Length ?? 0, 120)} chars)"
                         : srcAttr;
@@ -4096,13 +4119,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     LogScriptLoading(
                         "ScriptExecutionFailed",
                         LogSeverity.Error,
-                        "[FenJsBridge] Script error",
+                        $"[FenJsBridge] Script error source={BoundScriptDiagnostic(origin)} error={BoundScriptDiagnostic(desc ?? jte.Message)}",
                         scriptFailedFields,
                         LogMarker.EngineBug);
                 }
                 catch (Exception ex)
                 {
-                    var srcAttr = item.ScriptElement?.GetAttribute("src");
+                    var srcAttr = ScriptSourceOf(item.ScriptElement);
                     var origin = string.IsNullOrEmpty(srcAttr)
                         ? $"inline script (first {Math.Min(code?.Length ?? 0, 120)} chars)"
                         : srcAttr;
@@ -4130,7 +4153,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     LogScriptLoading(
                         "ScriptExecutionFailed",
                         LogSeverity.Error,
-                        "[FenJsBridge] Non-JS script error",
+                        $"[FenJsBridge] Non-JS script error source={BoundScriptDiagnostic(origin)} error={BoundScriptDiagnostic(ex.Message)}",
                         scriptFailedFields,
                         LogMarker.EngineBug);
                 }
@@ -4164,6 +4187,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 // Repaint requests are best-effort; script execution already completed.
             }
         }
+    }
+
+    private static string BoundScriptDiagnostic(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "<none>";
+        }
+
+        const int maxLength = 512;
+        var normalized = value.Replace('\r', ' ').Replace('\n', ' ');
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength] + "...";
     }
 
     private void RecordMissingGlobalReference(
@@ -4371,7 +4406,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         var src = !string.IsNullOrWhiteSpace(scriptRecord?.Src)
             ? scriptRecord.Src
-            : scriptElement?.GetAttribute("src");
+            : ScriptSourceOf(scriptElement);
         if (!string.IsNullOrWhiteSpace(src) &&
             TryResolveUri(src, baseUri, out var scriptUri))
         {
@@ -16740,6 +16775,21 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (cs.TextAlign.HasValue) props["text-align"] = JsValue.FromString(cs.TextAlign.Value.ToString());
         if (cs.FontWeight.HasValue) props["font-weight"] = JsValue.FromString(cs.FontWeight.Value.ToString(CultureInfo.InvariantCulture));
         if (cs.FontFamilyName != null) props["font-family"] = JsValue.FromString(cs.FontFamilyName);
+
+        // SVG 2 geometry properties (x, y, cx, cy, r, rx, ry) at computed-value time.
+        var rootFontSize = (float)(element.OwnerDocument?.DocumentElement?.GetComputedStyle()?.FontSize ?? 16d);
+        var fontSize = ResolveSynchronousInlineFontSize(
+            element.GetAttribute("style"), (float)(cs.FontSize ?? 16d), rootFontSize);
+        foreach (var geometryProperty in SvgGeometryComputedProperties)
+        {
+            var initial = geometryProperty is "rx" or "ry" ? "auto" : "0px";
+            var specified = props.TryGetValue(geometryProperty, out var cascaded)
+                ? CoerceToHostString(cascaded)
+                : initial;
+            var computed = SerializeComputedSvgGeometryValue(
+                geometryProperty, specified, initial, fontSize, rootFontSize);
+            props[geometryProperty] = JsValue.FromString(computed);
+        }
         // Border from Thickness + Brush
         var bt = cs.BorderThickness;
         if (bt.Left != 0 || bt.Right != 0 || bt.Top != 0 || bt.Bottom != 0)
@@ -16796,6 +16846,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             if (importantIndex >= 0)
             {
                 inlineValue = inlineValue[..importantIndex].TrimEnd();
+            }
+
+            if (IsSvgGeometryComputedProperty(name))
+            {
+                var initial = name.Equals("rx", StringComparison.OrdinalIgnoreCase) ||
+                              name.Equals("ry", StringComparison.OrdinalIgnoreCase)
+                    ? "auto"
+                    : "0px";
+                inlineValue = SerializeComputedSvgGeometryValue(
+                    name, inlineValue, initial, fontSize, rootFontSize);
             }
 
             props[name] = JsValue.FromString(inlineValue);
@@ -17001,6 +17061,98 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         var alpha = Math.Round(color.Alpha / 255d, 3);
         return string.Create(CultureInfo.InvariantCulture, $"rgba({color.Red}, {color.Green}, {color.Blue}, {alpha})");
+    }
+
+    private static readonly string[] SvgGeometryComputedProperties =
+    {
+        "x", "y", "cx", "cy", "r", "rx", "ry"
+    };
+
+    private static bool IsSvgGeometryComputedProperty(string property) =>
+        SvgGeometryComputedProperties.Contains(property, StringComparer.OrdinalIgnoreCase);
+
+    private static float ResolveSynchronousInlineFontSize(
+        string styleAttribute,
+        float computedFontSize,
+        float rootFontSize)
+    {
+        if (string.IsNullOrWhiteSpace(styleAttribute))
+        {
+            return computedFontSize;
+        }
+
+        foreach (var declaration in styleAttribute.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var colonIndex = declaration.IndexOf(':');
+            if (colonIndex <= 0 ||
+                !declaration[..colonIndex].Trim().Equals("font-size", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = declaration[(colonIndex + 1)..].Trim();
+            var importantIndex = value.LastIndexOf("!important", StringComparison.OrdinalIgnoreCase);
+            if (importantIndex >= 0)
+            {
+                value = value[..importantIndex].TrimEnd();
+            }
+
+            if (SvgCssLengthEvaluator.TryEvaluate(
+                    value, computedFontSize, computedFontSize, rootFontSize, out var resolved) &&
+                resolved > 0f)
+            {
+                computedFontSize = resolved;
+            }
+        }
+
+        return computedFontSize;
+    }
+
+    private static string SerializeComputedSvgGeometryValue(
+        string property,
+        string specified,
+        string initial,
+        float fontSize,
+        float rootFontSize)
+    {
+        var normalization = CssStyleDeclarationValueNormalizer.Normalize(property, specified, out var normalized);
+        if (normalization != CssPropertyNormalizationResult.Valid || normalized.Length == 0)
+        {
+            return initial;
+        }
+
+        if (normalized.Equals("initial", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("unset", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("revert", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("revert-layer", StringComparison.OrdinalIgnoreCase))
+        {
+            return initial;
+        }
+
+        // Percentages are intentionally retained at computed-value time for SVG
+        // positional/radius properties; their viewport basis is a used-value concern.
+        if (normalized.Contains('%') ||
+            normalized.Contains("var(", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("env(", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("inherit", StringComparison.OrdinalIgnoreCase))
+        {
+            return normalized;
+        }
+
+        if (!SvgCssLengthEvaluator.TryEvaluate(normalized, 0f, fontSize, rootFontSize, out var pixels))
+        {
+            return normalized;
+        }
+
+        if ((property.Equals("r", StringComparison.OrdinalIgnoreCase) ||
+             property.Equals("rx", StringComparison.OrdinalIgnoreCase) ||
+             property.Equals("ry", StringComparison.OrdinalIgnoreCase)) && pixels < 0f)
+        {
+            pixels = 0f;
+        }
+
+        return pixels.ToString("0.###", CultureInfo.InvariantCulture) + "px";
     }
 
     private JsValue CreateComputedStyleObject(Dictionary<string, JsValue> props)
@@ -18722,7 +18874,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 if (IsExecutableScriptElement(element))
                 {
                     scriptElements++;
-                    var src = element.GetAttribute("src") ?? string.Empty;
+                    var src = ScriptSourceOf(element) ?? string.Empty;
                     LogScriptLoading(
                         "ScriptElementDiscovered",
                         LogSeverity.Debug,
@@ -19600,6 +19752,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     {
         SetDocumentReadyState("complete");
         FireDocumentReadyStateChange(document);
+        DispatchSvgLoadEvents(document);
         InvokeBodyOnloadAttribute(document);
         DispatchWindowLoadHandlers();
         MarkEventLoopCompleted();
@@ -23517,6 +23670,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 {
                     return JsValue.Undefined;
                 }
+                if (!removeDeclaration)
+                {
+                    // Properties with a declared grammar (the SVG geometry properties)
+                    // are validated and normalised; an invalid value is ignored.
+                    var normalization = CssStyleDeclarationValueNormalizer.Normalize(prop, val, out var normalizedValue);
+                    if (normalization == CssPropertyNormalizationResult.Invalid)
+                    {
+                        return JsValue.Undefined;
+                    }
+                    if (normalization == CssPropertyNormalizationResult.Valid)
+                    {
+                        val = normalizedValue;
+                    }
+                }
                 bool replaced = false;
                 bool changed = false;
                 var sb = new System.Text.StringBuilder();
@@ -24105,7 +24272,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return;
         }
 
-        var elements = domRoot.Descendants().OfType<Element>();
+        // The root counts too: the engine is often handed the document element, and
+        // its own handlers (<svg onload>, <html onclick>) must be wired like any other.
+        var elements = domRoot.SelfAndDescendants().OfType<Element>();
         foreach (var element in elements)
         {
             foreach (var eventName in InlineEventHandlerEventNames)
@@ -24816,7 +24985,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         var scriptRecord = AddDynamicScriptLoadingRecord(scriptElement);
-        var src = scriptElement.GetAttribute("src");
+        var src = ScriptSourceOf(scriptElement);
         if (string.Equals(scriptElement.GetAttribute("type")?.Trim(), "importmap", StringComparison.OrdinalIgnoreCase))
         {
             RegisterImportMapScript(scriptElement);
@@ -25190,7 +25359,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(scriptElement.GetAttribute("src")))
+            if (!string.IsNullOrWhiteSpace(ScriptSourceOf(scriptElement)))
             {
                 continue;
             }
@@ -28074,6 +28243,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case FenJsMutationObserverHost mutationObserver:
                     found = _owner.TryGetMutationObserverProperty(mutationObserver, property, out value);
                     break;
+                case FenJsSvgDomHost svgDomHost:
+                    found = _owner.TryGetSvgDomProperty(svgDomHost, property, out value);
+                    break;
                 default:
                     value = JsValue.Undefined;
                     found = false;
@@ -28109,6 +28281,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 FenJsLocationHost => "Location",
                 FenJsHistoryHost => "History",
                 FenJsMutationObserverHost => "MutationObserver",
+                FenJsSvgDomHost svgDomHost => svgDomHost.InterfaceName,
                 _ => hostObject?.GetType().Name ?? "HostObject"
             };
         }
@@ -28558,6 +28731,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     HtmlAttributeReflection.Write(
                         element, reflected, value, CoerceToHostString, CoerceToHostBoolean, v => CoerceToFiniteNumber(v, 0));
                     return true;
+                case Element element when _owner.TrySetSvgElementProperty(element, property, value):
+                    return true;
                 case Element element:
                     // Catch-all for arbitrary element properties (e.g. Google sets
                     // __gwbp, __jsl, and other internal bookkeeping properties on
@@ -28622,6 +28797,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                     treeWalker.TreeWalker.CurrentNode = currentNode;
                     return true;
+                case FenJsSvgDomHost svgDomHost:
+                    return _owner.TrySetSvgDomProperty(svgDomHost, property, value);
                 case FenJsAnimationHost animation when string.Equals(property, "id", StringComparison.Ordinal):
                     animation.Id = CoerceToHostString(value);
                     return true;
@@ -31515,6 +31692,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                     // HTML §2.6.1 reflected IDL attributes (disabled, htmlFor,
                     // colSpan, ...) read straight from the content attribute.
+                    if (_owner.TryGetSvgElementProperty(element, property, out value))
+                    {
+                        return true;
+                    }
+
                     if (HtmlAttributeReflection.TryGetEntry(element, property, out var reflected))
                     {
                         value = HtmlAttributeReflection.Read(

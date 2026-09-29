@@ -10,7 +10,7 @@ using FenBrowser.FenEngine.Rendering;
 namespace FenBrowser.FenEngine.Scripting;
 
 /// <summary>
-/// Load and error events for <c>img</c> elements.
+/// Load and error events for <c>img</c> elements and SVG <c>image</c> elements.
 /// </summary>
 /// <remarks>
 /// HTML "update the image data" (4.8.4.3.x): once the image is available the
@@ -21,6 +21,8 @@ namespace FenBrowser.FenEngine.Scripting;
 /// this is where an element's current request is remembered and matched to
 /// the loader's completion. Only the top realm observes; frame realms hand
 /// their documents up to it, and dispatch routes back down to the frame.
+/// The SVG <c>image</c> element (SVG 2 §5.7) follows the same model with
+/// <c>href</c>, or the legacy <c>xlink:href</c>, as its source.
 /// </remarks>
 public sealed partial class FenJsBrowserScriptEngine
 {
@@ -74,8 +76,23 @@ public sealed partial class FenJsBrowserScriptEngine
         }
     }
 
-    private static bool IsImgElement(Element element) =>
-        string.Equals(element?.TagName, "img", StringComparison.OrdinalIgnoreCase);
+    private static bool IsLoadEventImageElement(Element element) =>
+        string.Equals(element?.TagName, "img", StringComparison.OrdinalIgnoreCase) ||
+        IsSvgImageElement(element);
+
+    private static bool IsSvgImageElement(Element element) =>
+        element != null &&
+        string.Equals(element.LocalName, "image", StringComparison.Ordinal) &&
+        string.Equals(element.NamespaceUri, Namespaces.Svg, StringComparison.Ordinal);
+
+    /// <summary>The attribute holding an image's source: src, or href / xlink:href for SVG.</summary>
+    private static string ImageSourceAttribute(Element image) =>
+        !IsSvgImageElement(image) ? "src" : image.HasAttribute("href") ? "href" : "xlink:href";
+
+    private static bool IsImageSourceAttribute(Element image, string attributeName) =>
+        IsSvgImageElement(image)
+            ? attributeName is "href" or "xlink:href"
+            : string.Equals(attributeName, "src", StringComparison.OrdinalIgnoreCase);
 
     // Node.OnMutation is process-wide: only act on documents this realm hosts,
     // which are its own document and the documents of frames nested in it.
@@ -123,9 +140,9 @@ public sealed partial class FenJsBrowserScriptEngine
         {
             if (string.Equals(type, "attributes", StringComparison.Ordinal))
             {
-                if (string.Equals(attributeName, "src", StringComparison.OrdinalIgnoreCase) &&
-                    target is Element element &&
-                    IsImgElement(element) &&
+                if (target is Element element &&
+                    IsLoadEventImageElement(element) &&
+                    IsImageSourceAttribute(element, attributeName) &&
                     OwnsDocumentForImageEvents(element.OwnerDocument))
                 {
                     StartImageRequest(element);
@@ -169,14 +186,14 @@ public sealed partial class FenJsBrowserScriptEngine
             return;
         }
 
-        if (root is Element rootElement && IsImgElement(rootElement))
+        if (root is Element rootElement && IsLoadEventImageElement(rootElement))
         {
             StartImageRequest(rootElement);
         }
 
         foreach (var descendant in root.Descendants())
         {
-            if (descendant is Element element && IsImgElement(element))
+            if (descendant is Element element && IsLoadEventImageElement(element))
             {
                 StartImageRequest(element);
             }
@@ -196,7 +213,7 @@ public sealed partial class FenJsBrowserScriptEngine
             return;
         }
 
-        var src = image.GetAttribute("src");
+        var src = image.GetAttribute(ImageSourceAttribute(image));
         if (string.IsNullOrWhiteSpace(src))
         {
             lock (_imageLoadSync)
@@ -207,7 +224,7 @@ public sealed partial class FenJsBrowserScriptEngine
             return;
         }
 
-        var url = ResolveElementUrlProperty(image, "src");
+        var url = ResolveElementUrlProperty(image, ImageSourceAttribute(image));
         if (string.IsNullOrWhiteSpace(url))
         {
             return;
@@ -372,7 +389,7 @@ public sealed partial class FenJsBrowserScriptEngine
     /// <summary>Intrinsic size of the cached image, or 0x0 while unavailable.</summary>
     internal (int Width, int Height) GetImageNaturalSize(Element image)
     {
-        var url = ResolveElementUrlProperty(image, "src");
+        var url = ResolveElementUrlProperty(image, ImageSourceAttribute(image));
         if (string.IsNullOrWhiteSpace(url))
         {
             return (0, 0);

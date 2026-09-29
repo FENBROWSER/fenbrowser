@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using SkiaSharp;
+using FenBrowser.Core.Cache;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Layout
@@ -24,9 +25,9 @@ namespace FenBrowser.FenEngine.Layout
             "Roboto",
             "Open Sans"
         };
-        private static readonly object s_systemTypefaceCacheLock = new object();
-        private static readonly Dictionary<SystemTypefaceCacheKey, SKTypeface> s_systemTypefaceCache = new();
         private const int MaxSystemTypefaceCacheEntries = 64;
+        private static readonly BoundedLruCache<SystemTypefaceCacheKey, SKTypeface> s_systemTypefaceCache =
+            new(MaxSystemTypefaceCacheEntries, long.MaxValue, static (_, _) => 256);
 
         private readonly record struct SystemTypefaceCacheKey(
             string Family,
@@ -38,22 +39,29 @@ namespace FenBrowser.FenEngine.Layout
         /// </summary>
         public static SKTypeface ResolveTypeface(string fontFamily, string text, int weight = 400, SKFontStyleSlant slant = SKFontStyleSlant.Upright)
         {
-            // 1. Try FontRegistry (user-defined or already loaded)
+            return ResolveTypefaceInternal(fontFamily, text, weight, slant);
+        }
+
+        private static SKTypeface ResolveTypefaceInternal(
+            string fontFamily,
+            string text,
+            int weight,
+            SKFontStyleSlant slant)
+        {
             if (!string.IsNullOrEmpty(fontFamily))
             {
                 var families = fontFamily.Split(',');
                 foreach (var f in families)
                 {
                     var clean = f.Trim().Trim('\'', '"');
-                    
-                    // Map generic font families to actual fonts
+
                     if (clean.Equals("sans-serif", StringComparison.OrdinalIgnoreCase))
                         clean = "Segoe UI";
                     else if (clean.Equals("serif", StringComparison.OrdinalIgnoreCase))
                         clean = "Georgia";
                     else if (clean.Equals("monospace", StringComparison.OrdinalIgnoreCase))
                         clean = "Consolas";
-                    
+
                     var tf = FenBrowser.FenEngine.Rendering.FontRegistry.TryResolve(clean, weight, slant);
                     if (tf != null && SupportsCharacters(tf, text)) return tf;
 
@@ -63,70 +71,96 @@ namespace FenBrowser.FenEngine.Layout
                         return cachedSystemTypeface;
                     }
 
-                    // Fallback to Skia system font matching
-                    var systemTf = SKTypeface.FromFamilyName(clean, (SKFontStyleWeight)weight, SKFontStyleWidth.Normal, slant);
-                    if (systemTf != null && !string.IsNullOrEmpty(systemTf.FamilyName) && SupportsCharacters(systemTf, text))
+                    var systemTf = SKTypeface.FromFamilyName(
+                        clean,
+                        (SKFontStyleWeight)weight,
+                        SKFontStyleWidth.Normal,
+                        slant);
+                    if (TryPublishCreatedSystemTypeface(clean, weight, slant, text, systemTf, out var resolvedSystemTypeface))
                     {
-                        CacheSystemTypeface(clean, weight, slant, systemTf);
-                        return systemTf;
+                        return resolvedSystemTypeface;
                     }
                 }
             }
 
-            // 2. Try Sans-Serif fallback chain first (before character matching)
             foreach (var fallbackFont in s_sansSerifFallbacks)
             {
-                var tf = SKTypeface.FromFamilyName(fallbackFont, (SKFontStyleWeight)weight, SKFontStyleWidth.Normal, slant);
-                if (tf != null && !string.IsNullOrEmpty(tf.FamilyName) && SupportsCharacters(tf, text))
-                    return tf;
+                if (TryGetCachedSystemTypeface(fallbackFont, weight, slant, out var cachedFallbackTypeface) &&
+                    SupportsCharacters(cachedFallbackTypeface, text))
+                {
+                    return cachedFallbackTypeface;
+                }
+
+                var tf = SKTypeface.FromFamilyName(
+                    fallbackFont,
+                    (SKFontStyleWeight)weight,
+                    SKFontStyleWidth.Normal,
+                    slant);
+                if (TryPublishCreatedSystemTypeface(fallbackFont, weight, slant, text, tf, out var resolvedFallbackTypeface))
+                {
+                    return resolvedFallbackTypeface;
+                }
             }
 
-            // 3. Character matching for non-Latin scripts (Indian languages, etc.)
             if (!string.IsNullOrEmpty(text))
             {
                 foreach (var c in text)
                 {
-                    // If we find a non-ASCII character, it's a good candidate for specialized fallback
-                    if (c > 255) 
+                    if (c <= 255) continue;
+
+                    var matched = SKFontManager.Default.MatchCharacter(c);
+                    if (matched != null &&
+                        TryPublishCreatedSystemTypeface(null, weight, slant, c.ToString(), matched, out var resolvedMatchedTypeface))
                     {
-                        var matched = SKFontManager.Default.MatchCharacter(c);
-                        if (matched != null) 
-                        {
-                            FenBrowser.Core.EngineLogCompat.Debug($"[FONT-MATCH] Resolved typeface for non-ASCII char '{c}' (0x{(int)c:X4}): {matched.FamilyName}");
-                            return matched;
-                        }
+                        FenBrowser.Core.EngineLogCompat.Debug(
+                            $"[FONT-MATCH] Resolved typeface for non-ASCII char '{c}' (0x{(int)c:X4}): {resolvedMatchedTypeface.FamilyName}",
+                            FenBrowser.Core.Logging.LogCategory.Rendering);
+                        return resolvedMatchedTypeface;
                     }
                 }
             }
 
-            // 4. Character matching - check ALL characters for best font match (important for symbols like ✓)
             if (!string.IsNullOrEmpty(text))
             {
-                // Check for symbol characters that need special fonts
                 foreach (var c in text)
                 {
-                    // Check if this is a symbol character that might need special font
-                    if (c > 0x2000 && c < 0x3000) // Symbol ranges
+                    if (c <= 0x2000 || c >= 0x3000) continue;
+
+                    var matched = SKFontManager.Default.MatchCharacter(c);
+                    if (matched != null &&
+                        TryPublishCreatedSystemTypeface(null, weight, slant, c.ToString(), matched, out var resolvedSymbolTypeface))
                     {
-                        var matched = SKFontManager.Default.MatchCharacter(c);
-                        if (matched != null) return matched;
+                        return resolvedSymbolTypeface;
                     }
                 }
-                
-                // Fallback character matching for other characters
+
                 foreach (var c in text)
                 {
-                     if (!char.IsWhiteSpace(c))
-                     {
-                         var matched = SKFontManager.Default.MatchCharacter(c);
-                         if (matched != null) return matched;
-                         break;
-                     }
+                    if (char.IsWhiteSpace(c)) continue;
+
+                    var matched = SKFontManager.Default.MatchCharacter(c);
+                    if (matched != null &&
+                        TryPublishCreatedSystemTypeface(null, weight, slant, c.ToString(), matched, out var resolvedCharacterTypeface))
+                    {
+                        return resolvedCharacterTypeface;
+                    }
+                    break;
                 }
             }
 
-            // 5. Ultimate Fallback
-            return SKTypeface.FromFamilyName("Segoe UI") ?? SKTypeface.FromFamilyName("Arial") ?? SKTypeface.Default;
+            var segoe = SKTypeface.FromFamilyName("Segoe UI");
+            if (TryPublishCreatedSystemTypeface("Segoe UI", weight, slant, text, segoe, out var resolvedSegoe))
+            {
+                return resolvedSegoe;
+            }
+
+            var arial = SKTypeface.FromFamilyName("Arial");
+            if (TryPublishCreatedSystemTypeface("Arial", weight, slant, text, arial, out var resolvedArial))
+            {
+                return resolvedArial;
+            }
+
+            return SKTypeface.Default;
         }
 
         private static bool TryGetCachedSystemTypeface(
@@ -136,31 +170,65 @@ namespace FenBrowser.FenEngine.Layout
             out SKTypeface typeface)
         {
             var key = new SystemTypefaceCacheKey(family.ToLowerInvariant(), weight, slant);
-            lock (s_systemTypefaceCacheLock)
-            {
-                return s_systemTypefaceCache.TryGetValue(key, out typeface);
-            }
+            return s_systemTypefaceCache.TryGetValue(key, out typeface);
         }
 
-        private static void CacheSystemTypeface(
+        private static bool TryPublishCreatedSystemTypeface(
             string family,
             int weight,
             SKFontStyleSlant slant,
-            SKTypeface typeface)
+            string text,
+            SKTypeface candidate,
+            out SKTypeface resolved)
         {
-            if (typeface == null ||
-                !string.Equals(typeface.FamilyName, family, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
+            resolved = null;
+            if (candidate == null) return false;
 
-            var key = new SystemTypefaceCacheKey(family.ToLowerInvariant(), weight, slant);
-            lock (s_systemTypefaceCacheLock)
+            try
             {
-                if (s_systemTypefaceCache.Count < MaxSystemTypefaceCacheEntries)
+                var candidateFamily = candidate.FamilyName;
+                if (string.IsNullOrWhiteSpace(candidateFamily) || !SupportsCharacters(candidate, text))
                 {
-                    s_systemTypefaceCache[key] = typeface;
+                    return false;
                 }
+
+                if (ReferenceEquals(candidate, SKTypeface.Default))
+                {
+                    resolved = candidate;
+                    return true;
+                }
+
+                var cacheFamily = string.IsNullOrWhiteSpace(family) ? candidateFamily : family;
+                var key = new SystemTypefaceCacheKey(cacheFamily.ToLowerInvariant(), weight, slant);
+                if (s_systemTypefaceCache.TryGetValue(key, out var cached))
+                {
+                    if (!SupportsCharacters(cached, text)) return false;
+                    resolved = cached;
+                    return true;
+                }
+
+                s_systemTypefaceCache.Set(key, candidate);
+                resolved = candidate;
+                return true;
+            }
+            finally
+            {
+                if (resolved == null || !ReferenceEquals(resolved, candidate))
+                {
+                    DisposeCreatedSystemTypeface(candidate);
+                }
+            }
+        }
+
+        private static void DisposeCreatedSystemTypeface(SKTypeface typeface)
+        {
+            if (typeface == null || ReferenceEquals(typeface, SKTypeface.Default)) return;
+            try
+            {
+                typeface.Dispose();
+            }
+            catch (System.Exception)
+            {
             }
         }
 
@@ -180,7 +248,7 @@ namespace FenBrowser.FenEngine.Layout
             using var font = new SKFont(tf);
             foreach (var c in text)
             {
-                if (c > 127 && font.GetGlyph(c) == 0) return false;
+                if (!char.IsWhiteSpace(c) && font.GetGlyph(c) == 0) return false;
             }
             return true;
         }

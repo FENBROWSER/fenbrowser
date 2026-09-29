@@ -4569,106 +4569,18 @@ namespace FenBrowser.FenEngine.Rendering
             else if (tag == "SVG" || tag.EndsWith(":SVG", StringComparison.Ordinal))
             {
                 // Rasterizers do not participate in the document CSS cascade. Serialize a
-                // detached clone with computed SVG presentation properties on every element.
-                string svgContent = SerializeInlineSvgWithComputedPresentation(elem);
-                
-                // Resolve CSS variables in SVG content
-                if (style != null && style.CustomProperties != null && style.CustomProperties.Count > 0 && svgContent.Contains("var("))
-                {
-                    foreach (var varKvp in style.CustomProperties)
-                    {
-                        string varFunc = $"var({varKvp.Key})";
-                        if (svgContent.Contains(varFunc))
-                        {
-                            svgContent = svgContent.Replace(varFunc, varKvp.Value);
-                        }
-                    }
-                }
-
-                // Resolve remaining CSS var() usage so Skia receives concrete paint values.
-                if (svgContent.Contains("var("))
-                {
-                    // Use fallback value when present: var(--x, fallback) -> fallback
-                    svgContent = Regex.Replace(
-                        svgContent,
-                        @"var\(\s*--[^,\)]+\s*,\s*([^)]+)\)",
-                        "$1",
-                        RegexOptions.IgnoreCase);
-
-                    // Remaining unresolved custom properties fallback to currentColor.
-                    svgContent = Regex.Replace(
-                        svgContent,
-                        @"var\([^)]+\)",
-                        "currentColor",
-                        RegexOptions.IgnoreCase);
-                }
-
-                // Bridge computed CSS presentation properties onto inline SVG root.
-                // This makes declarations like `svg { fill: ...; stroke: ...; }` visible to rasterization.
-                var cssFill = ResolveSvgPresentationProperty(style, "fill");
-                var cssStroke = ResolveSvgPresentationProperty(style, "stroke");
-                if (!string.IsNullOrWhiteSpace(cssFill) || !string.IsNullOrWhiteSpace(cssStroke))
-                {
-                    svgContent = InjectSvgRootPresentationStyle(svgContent, cssFill, cssStroke);
-                }
-                
-                // Final currentColor fallback if any left.
-                // Some inline SVG icons (notably Google material symbols) rely on inherited color;
-                // if computed style is missing on the SVG node, fall back to parent/black so the icon stays visible.
-                if (svgContent.IndexOf("currentColor", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    var fg = style?.ForegroundColor ?? SKColors.Empty;
-                    // Walk up ancestor chain to find an inherited foreground color.
-                    // Google Material symbols set color via CSS vars on parent containers;
-                    // checking only one parent is insufficient.
-                    if (fg == SKColors.Empty || fg.Alpha == 0)
-                    {
-                        var ancestor = elem.ParentElement;
-                        while (ancestor != null)
-                        {
-                            try
-                            {
-                                CssComputed ancStyle = null;
-                                if (_styles.TryGetValue(ancestor, out ancStyle) ||
-                                    (ancStyle = ancestor.GetComputedStyle()) != null)
-                                {
-                                    if (ancStyle?.ForegroundColor != null &&
-                                        ancStyle.ForegroundColor.Value != SKColors.Empty &&
-                                        ancStyle.ForegroundColor.Value.Alpha > 0)
-                                    {
-                                        fg = ancStyle.ForegroundColor.Value;
-                                        break;
-                                    }
-                                }
-                            }
-                            catch (Exception ex) { global::FenBrowser.Core.EngineLogCompat.Warn($"[IMG-BUILD] Failed parsing ancestor style while resolving image URL: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
-                            ancestor = ancestor.ParentElement;
-                        }
-                    }
-                    if (fg == SKColors.Empty || fg.Alpha == 0)
-                        fg = SKColors.Black;
-
-                    string hexColor = $"#{fg.Red:X2}{fg.Green:X2}{fg.Blue:X2}";
-                    svgContent = Regex.Replace(svgContent, "currentColor", hexColor, RegexOptions.IgnoreCase);
-                }
-
-                if (!svgContent.Contains("xmlns=\"http://www.w3.org/2000/svg\"") && 
-                    !svgContent.Contains("xmlns='http://www.w3.org/2000/svg'"))
-                {
-                    if (svgContent.Contains("<svg "))
-                        svgContent = svgContent.Replace("<svg ", "<svg xmlns=\"http://www.w3.org/2000/svg\" ");
-                    else if (svgContent.Contains("<svg>"))
-                        svgContent = svgContent.Replace("<svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\">");
-                }
-
-                // Normalization: SkiaSharp.Svg is case-sensitive for certain attributes
-                if (svgContent.Contains("viewbox="))
-                {
-                    svgContent = svgContent.Replace("viewbox=", "viewBox=");
-                }
+                // detached clone carrying the computed SVG presentation properties and the
+                // root context (inherited color, referenced custom properties). The SVG
+                // engine resolves currentColor and var() itself, so the markup is never
+                // rewritten as text.
+                string svgContent = SerializeInlineSvgWithComputedPresentation(
+                    elem, style, box.ContentBox.Width, box.ContentBox.Height);
 
                 // Re-rasterize with resolved colors
-                var bitmap = RenderSvgToCachedBitmap(svgContent, (int)box.ContentBox.Width, (int)box.ContentBox.Height);
+                 var bitmap = RenderSvgToCachedBitmap(
+                     elem, svgContent, box.ContentBox.Width, box.ContentBox.Height,
+                     SvgZoomAndPanState.ForPainting(elem),
+                     ResolveSvgDocumentTime(elem));
 
                 return new ImagePaintNode
                 {
@@ -4683,7 +4595,8 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
-        private string SerializeInlineSvgWithComputedPresentation(Element svgElement)
+        private string SerializeInlineSvgWithComputedPresentation(
+            Element svgElement, CssComputed style, float viewportWidth, float viewportHeight)
         {
             if (svgElement?.CloneNode(true) is not Element clone)
             {
@@ -4691,7 +4604,135 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             ApplySvgComputedPresentation(svgElement, clone);
+            if (SvgAnimationTimeline.HasAnimations(svgElement))
+            {
+                ApplySvgAnimationInstanceTimes(svgElement, clone);
+            }
+
+            var references = new StringBuilder();
+            CollectCustomPropertyReferences(clone, references);
+            string context = InlineSvgContext.BuildRootDeclarations(
+                references.ToString(),
+                ResolveInlineSvgForeground(svgElement, style),
+                style?.CustomProperties,
+                out int withheld);
+            FenBrowser.FenEngine.Adapters.SvgDiagnostics.RecordInlineContextWithheld(withheld);
+
+            // The outer inline <svg> establishes its viewport from its CSS content box
+            // (SVG 2 §8.2, CSS sizing of the outer svg element): pin that used size on the
+            // root so the SVG engine lays content out in it instead of in the 300x150
+            // default. The trailing declaration wins over author inline sizes, as the
+            // CSS width/height properties win over the attributes.
+            string viewportDeclarations = string.Empty;
+            if (float.IsFinite(viewportWidth) && float.IsFinite(viewportHeight) &&
+                viewportWidth > 0f && viewportHeight > 0f)
+            {
+                string w = viewportWidth.ToString("0.###", CultureInfo.InvariantCulture);
+                string h = viewportHeight.ToString("0.###", CultureInfo.InvariantCulture);
+                clone.SetAttributeUnsafe("width", w);
+                clone.SetAttributeUnsafe("height", h);
+                viewportDeclarations = " width: " + w + "px; height: " + h + "px;";
+            }
+
+            string existing = clone.GetAttribute("style")?.Trim();
+            clone.SetAttributeUnsafe(
+                "style",
+                (string.IsNullOrEmpty(existing) ? context : context + " " + existing) + viewportDeclarations);
             return clone.ToHtml();
+        }
+
+        /// <summary>
+        /// The document time an SVG is painted at: its time container's SMIL timeline
+        /// when it holds animations, else 0 (time cannot change it, and a constant keeps
+        /// the rendered bitmap cacheable).
+        /// </summary>
+        private static double ResolveSvgDocumentTime(Element svgElement) =>
+            SvgAnimationTimeline.HasAnimations(svgElement)
+                ? SvgAnimationTimeline.CurrentTime(SvgAnimationTimeline.TimeContainerOf(svgElement))
+                : 0d;
+
+        /// <summary>
+        /// Adds the instance times that beginElement and endElement created to the
+        /// clone's begin and end lists, so the renderer's SMIL model sees them. The
+        /// clone mirrors the source node for node, so the two are walked together.
+        /// </summary>
+        private static void ApplySvgAnimationInstanceTimes(Element source, Element clone)
+        {
+            if (SvgAnimationTimeline.IsAnimationElement(source))
+            {
+                string begin = SvgAnimationTimeline.ComposeTimingAttribute(source, isEnd: false);
+                if (begin != null) clone.SetAttributeUnsafe("begin", begin);
+                string end = SvgAnimationTimeline.ComposeTimingAttribute(source, isEnd: true);
+                if (end != null) clone.SetAttributeUnsafe("end", end);
+            }
+
+            Node sourceChild = source.FirstChild;
+            Node cloneChild = clone.FirstChild;
+            while (sourceChild != null && cloneChild != null)
+            {
+                if (sourceChild is Element sourceElement && cloneChild is Element cloneElement)
+                {
+                    ApplySvgAnimationInstanceTimes(sourceElement, cloneElement);
+                }
+                sourceChild = sourceChild.NextSibling;
+                cloneChild = cloneChild.NextSibling;
+            }
+        }
+
+        /// <summary>
+        /// Gathers the attribute values and text that can hold var() references, so
+        /// the root context is derived without serializing the clone twice.
+        /// </summary>
+        private static void CollectCustomPropertyReferences(Element element, StringBuilder references)
+        {
+            foreach (var attribute in element.Attributes)
+            {
+                string value = attribute.Value;
+                if (value != null && value.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
+                    references.Append(value).Append('\n');
+            }
+
+            for (Node child = element.FirstChild; child != null; child = child.NextSibling)
+            {
+                if (child is Element childElement)
+                    CollectCustomPropertyReferences(childElement, references);
+                else if (child is Text text && text.Data != null &&
+                         text.Data.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
+                    references.Append(text.Data).Append('\n');
+            }
+        }
+
+        /// <summary>
+        /// The color currentColor resolves to at the inline SVG root: its computed
+        /// color, else the nearest ancestor with one (icon sets that set color on a
+        /// wrapper through custom properties), else black.
+        /// </summary>
+        private SKColor ResolveInlineSvgForeground(Element svgElement, CssComputed style)
+        {
+            var foreground = style?.ForegroundColor ?? SKColors.Empty;
+            for (var ancestor = svgElement?.ParentElement;
+                 (foreground == SKColors.Empty || foreground.Alpha == 0) && ancestor != null;
+                 ancestor = ancestor.ParentElement)
+            {
+                try
+                {
+                    if ((_styles.TryGetValue(ancestor, out var ancestorStyle) ||
+                         (ancestorStyle = ancestor.GetComputedStyle()) != null) &&
+                        ancestorStyle?.ForegroundColor is SKColor inherited &&
+                        inherited != SKColors.Empty && inherited.Alpha > 0)
+                    {
+                        foreground = inherited;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    global::FenBrowser.Core.EngineLogCompat.Warn(
+                        $"[InlineSvg] ancestor style lookup failed while resolving currentColor: {ex.Message}",
+                        LogCategory.Rendering);
+                }
+            }
+
+            return foreground == SKColors.Empty || foreground.Alpha == 0 ? SKColors.Black : foreground;
         }
 
         private void ApplySvgComputedPresentation(Element source, Element clone)
@@ -4782,22 +4823,39 @@ namespace FenBrowser.FenEngine.Rendering
             return Regex.Replace(value, "currentColor", hexColor, RegexOptions.IgnoreCase);
         }
 
-        private SKBitmap RenderSvgToCachedBitmap(string svgContent, int width, int height)
+        private SKBitmap RenderSvgToCachedBitmap(
+            Element source,
+            string svgContent,
+            float width,
+            float height,
+            FenBrowser.FenEngine.Adapters.SvgZoomAndPan? zoomAndPan = null,
+            double documentTimeSeconds = 0d)
         {
-
-
-                
-            if (width <= 0) width = 24;
-            if (height <= 0) height = 24;
-
-            string dataUri = "data:image/svg+xml;base64," + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(svgContent));
-            var tuple = ImageLoader.GetImageTuple(dataUri, false, null, width, height);
-            
-            if (tuple is (SKBitmap bitmap, bool _))
+            if (!LayoutValidator.IsNonNegativeNumber(width) ||
+                !LayoutValidator.IsNonNegativeNumber(height) ||
+                width >= int.MaxValue ||
+                height >= int.MaxValue)
             {
-                return bitmap;
+                return null;
             }
-            return null;
+
+            if (width <= 0f) width = 24f;
+            if (height <= 0f) height = 24f;
+
+            Uri baseUri = null;
+            if (Uri.TryCreate(_baseUri, UriKind.Absolute, out var parsedBaseUri))
+            {
+                baseUri = parsedBaseUri;
+            }
+
+            return ImageLoader.GetInlineSvgImage(
+                svgContent,
+                (int)Math.Ceiling(width),
+                (int)Math.Ceiling(height),
+                baseUri,
+                source?.OwnerDocument,
+                zoomAndPan,
+                documentTimeSeconds);
         }
 
         private static string ResolveSvgPresentationProperty(CssComputed style, string propertyName)
@@ -4824,111 +4882,6 @@ namespace FenBrowser.FenEngine.Rendering
 
             return value;
         }
-
-        private static string InjectSvgRootPresentationStyle(string svgContent, string fill, string stroke)
-        {
-            if (string.IsNullOrWhiteSpace(svgContent))
-            {
-                return svgContent;
-            }
-
-            var declarations = new List<string>();
-            if (!string.IsNullOrWhiteSpace(fill))
-            {
-                declarations.Add($"fill: {fill}");
-            }
-            if (!string.IsNullOrWhiteSpace(stroke))
-            {
-                declarations.Add($"stroke: {stroke}");
-            }
-            if (declarations.Count == 0)
-            {
-                return svgContent;
-            }
-
-            int svgStart = svgContent.IndexOf("<svg", StringComparison.OrdinalIgnoreCase);
-            if (svgStart < 0)
-            {
-                return svgContent;
-            }
-
-            int tagEnd = FindTagEnd(svgContent, svgStart);
-            if (tagEnd < 0)
-            {
-                return svgContent;
-            }
-
-            string openTag = svgContent.Substring(svgStart, tagEnd - svgStart + 1);
-            string appendedStyle = string.Join("; ", declarations) + ";";
-
-            var styleMatch = Regex.Match(
-                openTag,
-                @"\bstyle\s*=\s*([""'])(?<value>.*?)\1",
-                RegexOptions.IgnoreCase | RegexOptions.Singleline);
-
-            string updatedTag;
-            if (styleMatch.Success)
-            {
-                string quote = styleMatch.Groups[1].Value;
-                string existing = styleMatch.Groups["value"].Value.Trim();
-                if (!string.IsNullOrEmpty(existing) && !existing.EndsWith(";", StringComparison.Ordinal))
-                {
-                    existing += ";";
-                }
-
-                string merged = string.IsNullOrEmpty(existing)
-                    ? appendedStyle
-                    : existing + " " + appendedStyle;
-
-                string replacement = $"style={quote}{merged}{quote}";
-                updatedTag = openTag.Substring(0, styleMatch.Index) +
-                    replacement +
-                    openTag.Substring(styleMatch.Index + styleMatch.Length);
-            }
-            else
-            {
-                int insertAt = openTag.LastIndexOf('>');
-                if (insertAt <= 0)
-                {
-                    return svgContent;
-                }
-
-                updatedTag = openTag.Insert(insertAt, $" style=\"{appendedStyle}\"");
-            }
-
-            return svgContent.Substring(0, svgStart) +
-                updatedTag +
-                svgContent.Substring(tagEnd + 1);
-        }
-
-        private static int FindTagEnd(string text, int startIndex)
-        {
-            bool inSingleQuote = false;
-            bool inDoubleQuote = false;
-
-            for (int i = startIndex; i < text.Length; i++)
-            {
-                char ch = text[i];
-                if (ch == '"' && !inSingleQuote)
-                {
-                    inDoubleQuote = !inDoubleQuote;
-                    continue;
-                }
-                if (ch == '\'' && !inDoubleQuote)
-                {
-                    inSingleQuote = !inSingleQuote;
-                    continue;
-                }
-                if (ch == '>' && !inSingleQuote && !inDoubleQuote)
-                {
-                    return i;
-                }
-            }
-
-            return -1;
-        }
-
-
 
         private TextPaintNode BuildInputTextNode(Element elem, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
         {

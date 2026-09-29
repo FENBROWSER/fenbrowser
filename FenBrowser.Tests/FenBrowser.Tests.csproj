@@ -86,6 +86,9 @@
     <!-- The media element's user agent controls: geometry, hit testing, paint, accessibility. -->
     <Compile Include="Rendering\MediaControlsTests.cs" />
     <Compile Include="Rendering\MediaControlsInteractionTests.cs" />
+    <!-- SVG sandbox-limit compliance coverage. The rest of the Architecture
+         legacy/policy tree stays excluded. -->
+    <Compile Include="Architecture\SvgSandboxingTests.cs" />
     <!-- Phase 1 animation-scoping regression (BrowserIntegration is in Host,
          which is otherwise excluded). -->
     <Compile Include="Host\Phase1AnimationScopingTests.cs" />

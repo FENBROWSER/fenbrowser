@@ -171,6 +171,37 @@ namespace FenBrowser.Tests.Core
             Assert.Equal("1", upgradeInsecureRequests);
         }
 
+        [Fact]
+        public async Task NavigateUserInputAsync_SvgUrlFetchesXmlDocumentInsteadOfImageWrapper()
+        {
+            const string svg = "<svg xmlns='http://www.w3.org/2000/svg'><script>window.ready=true;</script></svg>";
+            using var handler = new StaticContentHandler(svg, "image/svg+xml");
+            using var httpClient = new HttpClient(handler);
+            var navigation = new NavigationManager(new ResourceManager(httpClient, isPrivate: true));
+
+            var result = await navigation.NavigateUserInputAsync("https://example.com/conformance.svg");
+
+            Assert.Equal(FetchStatus.Success, result.Status);
+            Assert.Equal("image/svg+xml", result.ContentType);
+            Assert.Equal(svg, result.Content);
+            Assert.DoesNotContain("<img", result.Content, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public async Task NavigateUserInputAsync_SvgDataUrlCreatesXmlDocumentPayload()
+        {
+            const string url = "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%3E%3Cscript%2F%3E%3C%2Fsvg%3E";
+            using var httpClient = new HttpClient(new StaticHtmlHandler());
+            var navigation = new NavigationManager(new ResourceManager(httpClient, isPrivate: true));
+
+            var result = await navigation.NavigateUserInputAsync(url);
+
+            Assert.Equal(FetchStatus.Success, result.Status);
+            Assert.Equal("image/svg+xml", result.ContentType);
+            Assert.StartsWith("<svg", result.Content, StringComparison.Ordinal);
+            Assert.DoesNotContain("<img", result.Content, StringComparison.OrdinalIgnoreCase);
+        }
+
         private static string? GetHeader(HttpRequestMessage request, string name)
         {
             if (request.Headers.TryGetValues(name, out var values))
@@ -197,6 +228,27 @@ namespace FenBrowser.Tests.Core
                 };
 
                 return Task.FromResult(response);
+            }
+        }
+
+        private sealed class StaticContentHandler : HttpMessageHandler
+        {
+            private readonly string _content;
+            private readonly string _contentType;
+
+            public StaticContentHandler(string content, string contentType)
+            {
+                _content = content;
+                _contentType = contentType;
+            }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(_content, Encoding.UTF8, _contentType),
+                    RequestMessage = request
+                });
             }
         }
     }

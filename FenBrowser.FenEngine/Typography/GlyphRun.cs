@@ -1,3 +1,4 @@
+using System;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Typography
@@ -37,6 +38,10 @@ namespace FenBrowser.FenEngine.Typography
     /// </summary>
     public class GlyphRun
     {
+        private const int WasShapedBit = int.MinValue;
+
+        private int _fontSizeBits;
+
         /// <summary>
         /// The positioned glyphs in this run.
         /// </summary>
@@ -50,7 +55,12 @@ namespace FenBrowser.FenEngine.Typography
         /// <summary>
         /// Font size for rendering.
         /// </summary>
-        public float FontSize { get; set; }
+        public float FontSize
+        {
+            get => BitConverter.Int32BitsToSingle(_fontSizeBits & ~WasShapedBit);
+            set => _fontSizeBits = BitConverter.SingleToInt32Bits(value) & ~WasShapedBit
+                | _fontSizeBits & WasShapedBit;
+        }
         
         /// <summary>
         /// Total width of the run.
@@ -66,6 +76,23 @@ namespace FenBrowser.FenEngine.Typography
         /// The original text (for debugging/accessibility).
         /// </summary>
         public string SourceText { get; set; }
+
+        /// <summary>True when HarfBuzz produced the positioned glyph sequence.</summary>
+        public bool WasShaped
+        {
+            get => (_fontSizeBits & WasShapedBit) != 0;
+            set
+            {
+                if (value)
+                {
+                    _fontSizeBits |= WasShapedBit;
+                }
+                else
+                {
+                    _fontSizeBits &= ~WasShapedBit;
+                }
+            }
+        }
         
         /// <summary>
         /// Number of glyphs in this run.

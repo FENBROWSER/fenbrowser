@@ -1967,3 +1967,39 @@ Verification:
 - Core and the repository test assembly build in Release with zero warnings and
   errors. Canonical parser and interleaved-state tests pass (`13/13`), including
   RCDATA fragment behavior and bounded stream parsing.
+## 1.76 Namespace-Preserving XML DOM Construction (2026-08-24)
+
+- `XmlDomParser` preserves qualified element and attribute names, including XHTML prefixes in SVG documents and `xlink`/`xmlns` attributes, instead of exposing LINQ-to-XML expanded-name syntax as DOM qualified names.
+- XML MIME detection uses the MIME essence, accepts parameters such as `charset`, and preserves the successful document content type. DTD processing remains prohibited and the XML resolver remains disabled.
+- Legal whitespace before and after the XML document element is ignored. Non-whitespace text outside the document element remains a hierarchy error and is converted to the normal XML parse-error document by the non-throwing entry point.
+
+### 1.97 SVG Names In HTML Foreign Content (2026-09-29)
+
+The HTML tokenizer lowercases tag and attribute names, and the tree builder only
+restored attribute names, from a partial table that also held three element names
+by mistake. So an inline `<linearGradient>`, `<radialGradient>`, `<clipPath>`,
+`<textPath>`, `<foreignObject>` or any `fe*` filter primitive entered the DOM
+lowercased, and the SVG renderer, which matches names case-sensitively as XML
+requires, refused the whole icon; five of 151 captured real-site SVGs on GitHub and
+X disappeared this way. `HtmlTreeBuilder.CreateElement` now applies the HTML
+13.2.6.5 "adjust SVG tag name" table (37 names) to SVG-namespace elements, the
+attribute table gained the 25 names it was missing (among them `clipPathUnits`,
+`spreadMethod`, `pathLength`, `patternContentUnits`, `systemLanguage`), and the
+HTML integration-point checks compare against `foreignObject`. End tags still close
+the adjusted elements because the open-element stack compares names
+case-insensitively. Covered by `Core/Parsing/HtmlSvgNameAdjustmentTests`; the
+html5lib tree-construction tests pass unchanged.
+
+### 1.98 The ID Index Follows Tree Moves; Document.adoptNode (2026-09-29)
+
+`TreeScope` keeps an incremental ID index, but elements only entered it when it was
+first built or when their `id` changed. An element inserted after the first
+`getElementById` was never found, and a removed one stayed findable. `Node
+.UpdateTreeScopeRecursive` now moves each element's ID from the old scope's index
+to the new one whenever it changes trees (DOM Standard 4.2.4, "get an element by
+ID" only sees the tree). Seventeen previously failing iframe and scripting tests
+that look elements up after inserting them now pass. `Document.AdoptNode` (DOM
+Standard 4.5, "adopt") removes a node from its parent and rehomes its subtree,
+throwing NotSupportedError for documents and HierarchyRequestError for shadow roots;
+it is bound as `document.adoptNode`. Covered by `Core/DomIdIndexTests` and
+`Scripting/AdoptNodeTests`.

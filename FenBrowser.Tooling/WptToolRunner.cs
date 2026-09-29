@@ -367,6 +367,13 @@ namespace FenBrowser.Tooling
             {
                 psi.Environment["FEN_WPT_TOOLING_EXE"] = currentToolingExe;
             }
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION")))
+            {
+                // Classic WebDriver commands currently execute against the host
+                // engine. Keep WPT on that engine unless a caller explicitly opts
+                // into brokered-mode process/IPC validation.
+                psi.Environment["FEN_PROCESS_ISOLATION"] = "in-process";
+            }
             var artifactDirectory = Path.GetDirectoryName(rawLogPath);
             if (!string.IsNullOrWhiteSpace(artifactDirectory))
             {

@@ -10,6 +10,7 @@ internal sealed class EngineLogger : IEngineLogger, IDisposable
     private readonly EngineLoggingOptions _options;
     private readonly EngineLogDispatcher _dispatcher;
     private readonly RingBufferEngineLogSink _ringBuffer;
+    private IReadOnlyDictionary<LogSubsystem, LogSeverity> _subsystemLevels;
     private long _sequence;
 
     public event Action<EngineLogEvent> EventWritten;
@@ -19,6 +20,9 @@ internal sealed class EngineLogger : IEngineLogger, IDisposable
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         _ringBuffer = ringBuffer;
+        // Snapshot the overrides: IsEnabled runs on every thread, so the levels it
+        // reads are replaced wholesale, never mutated in place.
+        _subsystemLevels = new Dictionary<LogSubsystem, LogSeverity>(options.SubsystemOverrides);
     }
 
     public bool IsEnabled(LogSubsystem subsystem, LogSeverity severity)
@@ -33,12 +37,38 @@ internal sealed class EngineLogger : IEngineLogger, IDisposable
             return false;
         }
 
-        if (_options.SubsystemOverrides.TryGetValue(subsystem, out var overrideLevel))
+        if (Volatile.Read(ref _subsystemLevels).TryGetValue(subsystem, out var overrideLevel))
         {
             return severity >= overrideLevel;
         }
 
         return severity >= _options.GlobalMinimumSeverity;
+    }
+
+    /// <summary>
+    /// Makes events of <paramref name="subsystem"/> at or above
+    /// <paramref name="minimumSeverity"/> pass the level gate. Never narrows what
+    /// is already enabled. Lock-free copy-on-write of the level snapshot.
+    /// </summary>
+    internal void EnsureSubsystemEnabled(LogSubsystem subsystem, LogSeverity minimumSeverity)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _subsystemLevels);
+            LogSeverity effective = current.TryGetValue(subsystem, out var existing)
+                ? existing
+                : _options.GlobalMinimumSeverity;
+            if (effective <= minimumSeverity)
+            {
+                return;
+            }
+
+            var next = new Dictionary<LogSubsystem, LogSeverity>(current) { [subsystem] = minimumSeverity };
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _subsystemLevels, next, current), current))
+            {
+                return;
+            }
+        }
     }
 
     private bool IsCategoryEnabled(LogSubsystem subsystem)

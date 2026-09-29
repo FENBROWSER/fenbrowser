@@ -319,6 +319,17 @@ Standard xUnit tests covering internal components:
       - `DocumentSecurityContextTests`
       - `SandboxLaunchPolicyTests`
     - The pipeline matrix uses the same zero-match guard for `Phase3AnimationClassificationTests`, `Phase4CompositorOnlyPathTests`, `Phase6ImageRepaintCoalescingTests`, and `Phase10WatchdogLateFramePolicyTests`.
+  - SVG / sandbox / Host-target / ImageLoader CI gate (added to `quality-gate`):
+    - The P0 step array `$filters` in `.github/workflows/build-fenbrowser-exe.yml` gained three entries, so SVG coverage is no longer nightly-only:
+      - `FullyQualifiedName~FenBrowser.Tests.Svg.` — all SVG tests, including the Host target-process decode slice `FenBrowser.Tests.Svg.TargetProcessSvgDecodeTests` and the SVG resource path `FenBrowser.Tests.Svg.ImageLoaderSvgResourceTests`
+      - `FullyQualifiedName~FenBrowser.Tests.Architecture.SvgSandboxingTests` — SVG sandbox-limit compliance
+      - `FullyQualifiedName~FenBrowser.Tests.Core.ImageLoader` — `ImageLoaderCssFunctionTests` and `ImageLoaderDetailedResultTests`
+    - All three filters resolve to compiled tests only. `FenBrowser.Tests/Svg/**` and `FenBrowser.Tests/Core/**` are on the default compile surface, and `Architecture/SvgSandboxingTests.cs` is explicitly re-included by `FenBrowser.Tests.csproj` while the rest of `Architecture/**` stays excluded — so the gate does not depend on excluded folders.
+    - Exact local reproduction (Release, `--no-build`; drop `--no-build` for a cold run):
+      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FenBrowser.Tests.Svg." --verbosity minimal` — pass (`809/809`)
+      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FenBrowser.Tests.Architecture.SvgSandboxingTests" --verbosity minimal` — pass (`6/6`)
+      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FenBrowser.Tests.Core.ImageLoader" --verbosity minimal` — pass (`17/17`)
+    - Total added gate surface: `832` tests in roughly `2 s`, which is why the SVG suite is in the blocking PR gate rather than the nightly `full-regression` job.
 - Recent engine verification hardening now includes a shorthand-cascade regression for the internal new-tab search field: author `background:` shorthand must override lower-origin UA `background-color` longhands for form controls, guarding the exact precedence bug that caused the live `fen://newtab` input to repaint white (`FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`).
 - Acid2 intro-page hardening on `2026-04-11` added:
   - `FenBrowser.Tests/Engine/CascadeModernTests.cs`
@@ -4508,3 +4519,1456 @@ Verification:
 - `FenBrowser.WebDriver/Commands/CommandHandler.cs`
   - The default `NavigateTrackedAsync` is an async implementation so a faulted `NavigateAsync` propagates its original exception instead of surfacing as a cancelled continuation.
 - Verification: `FenBrowser.Tests/WebDriver/PageLoadStrategyNavigationTests.cs` (initiation deadline, fault preservation, navigation-id passing), `FenBrowser.Tests/WebDriver/HostBrowserDriverReadinessTests.cs` (pre-wait lifecycle retention), `FenBrowser.Tests/ProcessIsolation/RendererNavigationCorrelationBinderTests.cs` (binding, pruning, script-initiated navigations), and `FenBrowser.Tests/DevTools/MessageRouterTests.cs` (concurrent clear/dispatch never overlaps same-domain handlers).
+
+Current SVG renderer policy: the first-party renderer is the only backend.
+`FEN_SVG_RENDERER` is still read so existing deployments keep starting, but
+`first-party`/`fen`, the deprecated `legacy`/`svg-skia` aliases, and absent,
+blank, or unrecognized values all resolve to `SvgRendererBackend.FirstParty`.
+There is no fallback renderer, so an unsupported declared feature or a rejected
+resource is terminal: `SvgRenderResult.IsAdmissible(...)` is the shared
+fail-closed predicate and rejected results never yield pixels.
+
+`SvgRendererConfiguration.Backend` and the shared `ImageLoader` resource cache
+are still process-wide global state, so tests that mutate them share one
+non-parallel collection (`SvgRendererBackendStateCollection`) rather than
+running in parallel with the rest of the suite. Per-fixture self-configuration
+remains the required pattern for any other new global-state-dependent test
+until collections are consolidated.
+
+Sandbox limits are a single defaulting boundary: `SvgRenderLimits.Normalize`
+clamps every caller-supplied value to a non-bypassable process cap, and
+`AllowExternalReferences` defaults to `false` so an external reference is
+rejected before the caller-supplied resolver is ever consulted.
+`Architecture/SvgSandboxingTests` is compiled explicitly from the otherwise
+excluded `Architecture` tree and asserts the `Default`/`Strict` limit contract
+and admission rejection; the rest of that legacy tree stays excluded.
+
+> **Reading note for 6.193-6.242:** these entries are the migration-era record
+> for the first-party SVG renderer. Routing classifications, legacy/first-party
+> pixel comparisons, and differential gates described below were produced while
+> a third-party compatibility backend and a hybrid routing backend still
+> existed. Both are removed (see `docs/VOLUME_III_FENENGINE.md` 2.177). The
+> routing columns and differential comparisons no longer describe a live code
+> path, and their numbers are historical measurements rather than current
+> targets.
+
+## 6.193 SVG Corpus Characterization And Differential Gate (2026-08-23)
+
+- `scripts/BenchSvg --corpus <directory>` recursively selects local `.svg` files in ordinal path
+  order, skips reparse points, and caps file count and per-file bytes. It never downloads a corpus;
+  WPT input comes from the mandatory local checkout and captured-site input remains a separate gate.
+- Each selected document runs through first-party, hybrid, and legacy renderers with deterministic
+  disposal. Schema-v1 JSON and Markdown reports under `Results/svg/` record routing classification,
+  producing backend, bounded errors, elapsed time, fallback count, and pixel comparison only where
+  both first-party and legacy successfully produce equal-sized rasters.
+- Pixel comparison records alpha-mask intersection-over-union and foreground RGB mean difference.
+  `--gate` fails on an empty or truncated selection, read failures, hybrid failures, oversize skips, or any
+  comparable pair below the existing `0.80` alpha-IoU / `16` RGB-difference thresholds. Ordinary
+  characterization runs retain mismatches in the report without failing, allowing unsupported WPT content to remain evidence
+  instead of being mislabeled as a product regression.
+- The runner reports selection truncation explicitly. A capped sample is never described as the
+  complete corpus. Reports replace prior JSON/Markdown atomically, and WPT corpus results do not
+  close the real-site release-readiness requirement.
+
+Verification:
+
+- Release build of `scripts/BenchSvg/BenchSvg.csproj`: pass, zero warnings and zero errors.
+- Deterministic first 100 files from local `C:\Users\udayk\Videos\wpt\svg`: 100 evaluated,
+  10 first-party, 90 compatibility fallbacks, zero first-party/hybrid routing failures, and 3/6
+  comparable pairs meeting the pixel thresholds. Strict `--gate` exits `1` on the three retained
+  differential mismatches, proving that the gate rejects rather than conceals current gaps.
+
+## 6.194 SVG Corpus Resource-Rejection Classification (2026-08-23)
+
+- Corpus reports now classify successful partial renders with rejected embedded resources separately from
+  normal first-party support and compatibility fallback. Strict `--gate` treats every resource rejection as
+  a failure, so an intentionally omitted image cannot be mistaken for complete rendering success.
+- Comparable entries record first-party and legacy foreground-pixel counts alongside alpha IoU and RGB mean
+  difference. This makes blank-output and large-coverage disagreements directly visible without retaining
+  raster images or source content in the report.
+- A follow-up deterministic run over the same first 100 ordinal files from the local WPT SVG checkout reports
+  8 first-party documents, 77 compatibility fallbacks, 15 resource rejections, zero first-party/hybrid routing
+  failures, and 4/4 comparable pairs meeting pixel thresholds. The capped selection remains characterization
+  evidence only; it does not satisfy the complete-corpus or captured real-site release-readiness gates.
+
+Verification:
+
+- Release build of `scripts/BenchSvg/BenchSvg.csproj`: pass, zero warnings and zero errors.
+- Focused Release SVG suite: 194 passed, 0 failed, 0 skipped.
+- Strict mode exits `1` for this sample because selection is truncated and resource rejections remain, while
+  pixel parity itself passes 4/4; each gate condition is therefore observable rather than collapsed into a
+  single misleading compatibility count.
+
+## 6.195 SVG Shared-CSS Differential Evidence (2026-08-23)
+
+- The focused CSS/cascade slice verifies shared stylesheet and inline parsing, cascade importance and
+  specificity, source order, combinators, attributes, structural pseudos, local width media queries,
+  stylesheet `display:none`, concurrent renders, deadline enforcement, and external-resource isolation.
+- Re-running the same deterministic first 100 local WPT SVG files after shared CSS integration moved two
+  documents from compatibility fallback to first-party: 10 first-party, 75 fallback, 15 resource rejection,
+  and zero first-party/hybrid failures.
+- Five of six comparable pairs match the compatibility backend's alpha/RGB thresholds. The retained difference is
+  `geometry/reftests/percentage-ref.svg`: first-party applies the root stylesheet's `fill:none` and scaled
+  stroke while the legacy raster has 44,591 foreground pixels versus 15,101 first-party pixels. This is
+  retained as a differential for trusted-reference review; the migration gate does not alter correct
+  first-party output merely to match a legacy backend.
+- An attempted uncapped 1,197-file local WPT characterization was stopped after the legacy renderer stalled
+  inside one document with negligible CPU. The in-process corpus runner therefore remains unsuitable as the
+  complete switch gate until per-document process isolation and wall-clock termination are implemented.
+
+Verification:
+
+- `SvgCssCascadeTests`: 12 passed, 0 failed, 0 skipped.
+- Complete focused SVG slice: 206 passed, 0 failed, 0 skipped.
+- Deterministic 100-file report: first-party 10, fallback 75, resource rejection 15, parity 5/6.
+
+## 6.196 SVG Text-Shaping And Cross-Platform Stress Gate (2026-08-24)
+
+- `SvgTextShapingTests` covers mixed text/tspan ordering and paint, anchored absolute tspan chunks,
+  hidden spans, ancestor font inheritance, `xml:space`, explicit per-glyph fallback, the document glyph
+  budget, and concurrent Arabic/Greek/Hebrew/Indic shaping. Production-hardening tests separately retain
+  vertical text as a compatibility case and require non-empty shaped complex-script output.
+- The complete focused SVG test slice contains 216 passing tests. Host and benchmark Release builds complete
+  with zero warnings and zero errors after locked Host/DevTools restore resolves the Linux HarfBuzz native
+  asset at the managed 14.2.0 version.
+- `scripts/BenchSvg --stress-only` completes 10,000 hybrid renders with zero failures and 1,111 intended
+  fallbacks on Windows x64 and on the published `linux-x64` binary executed under Ubuntu 24.04 WSL. Both
+  retained-memory measurements remain below the fixed 64 MiB ceiling.
+- The same deterministic first 100 local WPT files classify as 9 first-party, 75 compatibility fallback,
+  and 16 resource rejection, with 4/5 comparable pairs meeting the current legacy differential thresholds.
+  The additional rejection is an inline CDATA stylesheet that requests an external image; the gate records
+  it as resource isolation rather than handing it to the legacy backend.
+
+## 6.197 SVG Effect And Marker Verification (2026-08-24)
+
+- `SvgFilterTests` verifies blur expansion, sequential primitive input, normalized color-matrix offsets, group
+  compositing, unsupported/unbounded primitive routing, and concurrent native-filter ownership.
+- `SvgMaskTests` verifies object-bounding-box luminance masking, alpha masks, user-space regions, invalid/external
+  references, unsupported group bounds, and fail-closed native-layer admission. `SvgMarkerTests` verifies endpoint
+  orientation, shorthand start/mid/end placement, stroke-width units, and curved-path mid fallback.
+- Complete focused SVG tests pass 236/236. Host and benchmark Release builds complete with zero warnings/errors;
+  the 10,000-render Windows ownership gate now includes filter, mask, and marker documents and reports zero
+  failures, 833 intended fallbacks, and 10,317,824 retained bytes, below the 64 MiB ceiling.
+- The deterministic 100-file local WPT characterization reports 10 first-party, 74 fallback, 16 resource rejection,
+  zero first-party/hybrid failures, and 4/5 legacy-comparable parity. The sample is still truncated characterization,
+  not the complete process-isolated corpus gate.
+
+## 6.198 SVG Nested-Resource Isolation Verification (2026-08-24)
+
+- `SvgNestedResourceTests` verifies nested unsupported-feature isolation from legacy fallback, shared recursive-depth
+  and sibling-byte budgets, strict UTF-8 rejection, and percent-encoded data SVG. The production-hardening hybrid test
+  verifies nested author styles do not inherit the parent stylesheet and that the producing backend stays first-party.
+- Complete focused SVG tests pass 241/241. The benchmark stress corpus includes a nested SVG case and completes
+  10,000 renders with zero failures, 769 intended fallbacks, and 9,224,192 retained private bytes.
+- The same deterministic 100-file WPT sample reports 11 first-party, 75 fallback, 14 resource rejection, zero renderer
+  failures, and 4/6 comparable parity. The new nested-data first-party case remains a visible pixel differential, so
+  this evidence expands coverage without closing the release-readiness parity gate.
+
+## 6.199 Complete Process-Isolated SVG Corpus Evidence (2026-08-24)
+
+- `scripts/BenchSvg --corpus` launches each document in a new worker and enforces `--per-file-timeout-ms` by
+  terminating the entire worker tree. Normal, timeout, manifest, and progress smoke runs verify result transport,
+  bounded termination, integrity validation, classification, and live counters on Windows without shell commands.
+- The uncapped local WPT run selected and evaluated all 1,197 SVG files: 103 first-party, 899 fallback,
+  143 resource rejection, 31 first-party failure, 19 hybrid failure, 2 worker timeouts, 0 worker failures, and
+  49/58 comparable parity. Generated report: `Results/svg/wpt-complete-isolated/corpus-report.json`.
+- Captured-site mode requires an exact SHA-256 manifest and zero fallback/failure/differential. A signed synthetic
+  smoke corpus passes 1/1. Workspace inspection found no genuine captured real-site SVG inventory, so production
+  production release-readiness acceptance remains open rather than being inferred from WPT or fabricated samples.
+
+## 6.200 Genuine Captured-Site SVG Acceptance (2026-08-24)
+
+- `scripts/BenchSvg/captured-sites.json` declares the credential-free HTTPS capture set. The capture command applies
+  SSRF-resistant DNS/redirect validation plus public-address-pinned socket connection, no cookies, bounded responses,
+  512 SVG candidates per site, a 32 MiB total SVG ceiling, and emits only under `Results/svg/captured-site/`.
+- The capture manifest is an integrity and completeness contract: every site must finish with zero asset failures and
+  no truncation; site counts must equal the exact SVG inventory; every file carries HTTPS provenance and SHA-256.
+- The 2026-08-24 production capture completed 11/11 sites and 151 SVGs (426,519 bytes), with zero truncation and zero
+  asset failures. Amazon, Gmail, CSS Zen Garden, and React TodoMVC legitimately exposed no SVG in their fetched shell;
+  their successful zero counts remain recorded instead of being silently omitted.
+- The isolated strict run evaluated 151/151: all routed first-party, with zero fallback, rejection, render/worker
+  failure, timeout, read failure, or oversize skip. Pixel comparison evaluated every file: 150 direct passes and one
+  narrow, reported chromatic-gradient-loss reference defect where the source declares blue/red/yellow stops,
+  first-party preserves them, and the legacy raster is black.
+- Complete focused SVG tests pass 246/246. The same Release binary passes the 10,000-render ownership gate on Windows
+  and as a published `linux-x64` application under Ubuntu 24.04 WSL, both with zero failures and retained memory below
+  64 MiB. This closes the captured-site acceptance gate but does not override the still-open complete-WPT gate.
+
+## 6.201 Reason-Coded, Stratified, Resumable SVG Corpus Runs (2026-08-24)
+
+- Corpus schema v2 records bounded warning messages, stable fallback/resource/failure codes, source SHA-256, and
+  aggregated reason counts. WPT runs locate the mandatory local `MANIFEST.json` and classify selected SVG files as
+  reftest, support, manual, testharness, crashtest, visual, or unclassified instead of treating every `.svg` as an
+  equivalent conformance test.
+- Repeated `--include-prefix <relative-path>` arguments select exact path segments before `--max-files`; traversal,
+  rooted, empty, and captured-site-filter attempts are rejected. This supports small category/root-cause reruns while
+  preserving paths relative to the full local WPT SVG root.
+- `--resume` appends JSONL checkpoints under the selected `Results/svg/` output. Reuse requires the exact benchmark
+  module build id and exact source SHA-256. Worker timeouts/failures and read failures are always rerun, preventing a
+  transient execution problem from becoming a cached pass/fail result. The final JSON/Markdown reports remain atomic.
+
+Verification:
+
+- A current `path/bearing` selection classified 3 reftests and 3 support files; 5 rendered first-party and the
+  `zero.svg` reftest retained its bounded worker timeout.
+- An immediate resume reused the 5 deterministic results in 5 ms of parent evaluation and reran the timeout under its
+  full 5-second wall budget. The report recorded `execution/worker-timeout: 1` rather than hiding the rerun.
+
+## 6.202 SVG Resource-Context Verification (2026-08-24)
+
+- `SvgResourceContextTests` covers authorized same-origin raster loading, missing context, cross-origin rejection before
+  resolver invocation, resolver URI substitution, shared count and cumulative-byte limits, nested SVG relative-base
+  propagation, sibling clip isolation, and null-safe adapter request overloads. `SvgNestedResourceTests` additionally
+  locks XML-escaped data-SVG decoding and the independent per-resource/cumulative limits.
+- `ImageLoaderSvgResourceTests` proves the production asynchronous path fetches a nested same-origin image through the
+  active owner context, freezes it before rendering, and produces the expected first-party pixels without renderer-side
+  I/O. The focused resource/parser/integration slice passed 38/38; the complete SVG slice passed 262/262.
+- Target-process SVG decode IPC carries content and safety limits only; it does not serialize
+  `BaseUri`, resolver snapshots, or ambient file/network authority. External resources therefore
+  fail closed on that path.
+- The local WPT resolver uses `https://wpt.local/` as an offline origin and maps URL paths into the discovered checkout.
+  A root-relative `/images/green-256x256.png` selection completed with zero resource rejection, demonstrating browser
+  URL-root semantics without granting filesystem-root access. The runner and Host Release builds were warning-free.
+- Re-running the signed 151-document captured-site inventory under the same renderer build passed its strict gate with
+  all documents first-party and all execution/security counters at zero. Generated diagnostics remain under
+  `Results/svg/`; no runtime artifacts are committed as documentation.
+
+## 6.203 Declared WPT SVG Reference Oracle (2026-08-24)
+
+- WPT corpus runs now read each selected test's declared `==` and `!=` references from the mandatory local
+  `MANIFEST.json`. Reference URLs resolve against the test URL under the existing confined `https://wpt.local/`
+  origin; traversal, query/fragment substitution, missing files, non-SVG targets, and paths outside the checkout remain
+  visible as unresolved instead of being treated as passes. `about:blank` is represented by an explicitly cleared
+  transparent canvas and never performs I/O.
+- Schema v3 separates declared-reference applicability, comparability, pass/fail, blocked tests, unresolved targets,
+  relation counts, and bounded per-reference outcomes. WPT fuzzy metadata supplies the allowed maximum premultiplied
+  channel difference and differing-pixel count; exact comparison remains the default. Fully transparent RGB bytes are
+  canonicalized through premultiplication, and different intrinsic bitmap extents compare on their transparent union
+  canvas, matching observable pixels rather than allocator contents.
+- WPT strict mode uses declared WPT references as its conformance oracle. First-party-versus-compatibility-backend
+  alpha/RGB
+  comparison remains in the report as migration diagnostics but cannot make a conformant WPT reference fail or make an
+  incorrect render pass. Support/reference files may route independently without becoming tests; a WPT selection with
+  no declared-reference test cannot pass strict mode. Captured-site mode retains its independent legacy differential
+  gate because those documents do not declare WPT references.
+
+Verification:
+
+- A passing CSS-variable reftest exits strict mode with code 0; a known incorrect `about:blank` case exits 1. The initial
+  five-file CSS-variable selection reported three declared-reference passes and two actual failures instead of hiding
+  them behind legacy differential output.
+- The initial 27-file `path/distance` selection reported five declared-reference passes, two actual failures, and eight
+  tests blocked by compatibility routing. These deliberately failing results verified that the new oracle distinguishes
+  renderer defects from unsupported coverage before conformance fixes are credited.
+- After the static geometry/path fixes, the same schema-v3 oracle evaluated the 198-file `path`, `shapes`, `geometry`,
+  and `styling` selection. All 64 first-party-comparable declared-reference tests pass and zero fail; 29 remain blocked
+  by explicit compatibility/resource routing, and four non-SVG reference targets remain visible for a future
+  browser-level reftest runner.
+
+## 6.204 CSS Transform Conformance In The Static SVG Selection (2026-08-24)
+
+- After CSS `transform`/`transform-origin`/`transform-box` support, the same
+  198-file static selection reports 124 first-party documents (from 121), 71
+  compatibility fallbacks (from 74), and 67/93 comparable declared-reference
+  passes (from 64) with zero declared-reference failures, zero renderer or
+  worker failures, and zero timeouts; 26 tests remain blocked by explicit
+  routing and four non-SVG reference targets remain for a future browser-level
+  reftest runner.
+- The complete `styling` prefix runs 51 documents with 39 first-party; all eight
+  `styling/render` transform documents are now first-party, including the
+  `transform-origin` presentation-attribute visual test that passes at full
+  pixel identity.
+- The signed captured-site gate re-ran under the same renderer build: 151/151
+  first-party, zero fallback, rejection, failure, timeout, skip, or truncation;
+  150 direct legacy differentials pass with the one existing chromatic-gradient
+  legacy reference defect still visible.
+- The 10,000-render native-ownership stress reports zero failures, 769 intended
+  compatibility cases, and 10,039,296 retained private bytes against the fixed
+  67,108,864-byte ceiling.
+- A framework-dependent portable Release publish executes the same gate under
+  Ubuntu 24.04 WSL with the explicit DejaVu Sans benchmark font: zero failures,
+  769 intended compatibility cases, and 15,237,120 retained private bytes below
+  the same ceiling.
+- Follow-up mixed-cascade and malformed-numeric coverage corrects independent
+  `transform`/`transform-origin`/`transform-box` provenance, valid keyword
+  ordering, CSS `matrix()` number grammar, and non-finite angle rejection. The
+  complete Release SVG slice passes 303/303; the static WPT and captured-site
+  results above remain unchanged after these corrections.
+
+## 6.205 Viewport-Unit And Nested-SVG CSS Sizing Conformance (2026-08-24)
+
+- Seven static reftests shared one root cause in the earliest owning stage: the
+  bounded CSS geometry-value resolver accepted lengths, percentages, and
+  `calc()` but rejected viewport-relative units, and nested `<svg>` layout
+  ignored cascaded width/height entirely while hard-routing sizing keywords,
+  `calc-size()`, and viewport units to compatibility fallback. Reproduced
+  reason codes before the fix: `nested SVG CSS width/height sizing requires
+  compatibility layout fallback` on six `styling/nested-svg-sizing-*` files and
+  `SVG CSS geometry value 'width: 10vw'/'height: 10vh' requires compatibility
+  fallback` on `styling/rect-sizing-viewport-units.svg`, all classified
+  `css-cascade`.
+- The fix resolves viewport units against an explicit nearest-viewport context
+  with attribute-path float parity, applies fill/stretch sizing keywords and
+  `calc-size()` to nested `<svg>` per the tentative declared references, and
+  leaves plain length/percentage/calc/auto declarations non-applying so the
+  seven already-passing "do not apply" nested-svg sizing tests keep passing.
+- Targeted seven-file declared-reference oracle after the fix: 7/7 first-party,
+  7/7 comparable declared-reference passes, zero fallbacks, zero failures.
+- Full 198-file static selection (`path`, `shapes`, `geometry`, `styling`)
+  before → after: first-party 124 → 131; compatibility fallbacks 71 → 64;
+  declared-reference passes 67 → 74 of 93 comparable (zero failures); blocked
+  reference tests 26 → 19; resource rejections 3 → 3; renderer, hybrid, worker,
+  timeout, and read failure counters all zero; remaining css-cascade fallbacks
+  are the nine known out-of-scope items (`zoom` ×2, dynamic nth-child
+  invalidation ×2, margin/padding ×2, `auto` geometry behind foreignObject ×2,
+  malformed calc ×1) and four non-SVG reference targets remain unresolved for a
+  future browser-level reftest runner.
+- Signed captured-site gate under the same renderer build: 151/151 first-party,
+  zero fallback/rejection/failure/timeout/skip/truncation, manifest validated;
+  150 direct legacy differentials pass with the one existing chromatic-gradient
+  legacy reference defect still visible.
+- Complete Release SVG slice: 330 passed, 0 failed, 0 skipped (27 new tests in
+  `SvgCssSizingTests` plus the rewritten viewport-unit cascade case). The wider
+  Release suite retains pre-existing unrelated Core/WebDriver/Performance
+  failures verified identical at baseline; two order-sensitive cases that
+  differed between filtered runs pass repeatedly in isolation and are unrelated
+  to this change.
+- 10,000-render native-ownership stress: zero failures, 769 intended
+  compatibility cases, Windows x64 retained private bytes 8,716,288 and Ubuntu
+  24.04 WSL (portable framework-dependent publish, DejaVu Sans benchmark font)
+  10,567,680, both below the fixed 67,108,864-byte ceiling.
+- Remaining static blockers for later phases: CSS `zoom` (2 tentative
+  path/distance reftests), margin/padding box properties, `width`/`height:
+  auto` behind foreignObject, malformed-calc invalid-value recovery, and the
+  dynamic/testharness, SMIL, advanced-text-layout, and HTML/XHTML reference
+  targets excluded by scope. Remaining compatibility work is tracked separately.
+
+## 6.206 Invalid Geometry Math And RID-Neutral Bench Verification (2026-08-24)
+
+- `shapes/reftests/disabled-shapes-01.svg` exposed a routing defect: CSS token
+  serialization surfaced the invalid `calc(10%+10px)` form as
+  `calc(10%10px)`, and the geometry fallback classifier treated every failed
+  math function as an unimplemented valid feature. Invalid declarations now
+  remain first-party and render the declared empty reference.
+- Focused CSS sizing/cascade verification passes 60/60 and the complete Release
+  SVG namespace passes 337/337. The targeted WPT case is 1/1 first-party and
+  1/1 against its declared reference with no fallback or rejection.
+- Full static selection before -> after: first-party 131 -> 132; compatibility
+  fallback 64 -> 63; declared-reference passes 74 -> 75 of 93; blocked references
+  19 -> 18. Resource rejections stay at 3, unresolved non-SVG targets stay at 4,
+  and all renderer/worker/read/timeout failure counters remain zero.
+- Removing the accidentally committed `net10.0/linux-x64` lock section restores
+  the normal RID-neutral BenchSvg Release build: zero warnings and zero errors.
+  Cross-RID publish verification must use an isolated restore graph rather than
+  mutating the tracked platform-neutral lock file.
+- Remaining static CSS blockers are `zoom`, dynamic selector invalidation,
+  margin/padding, and `width`/`height: auto` around `foreignObject`; malformed
+  geometry math is no longer a blocker. Remaining compatibility work is tracked separately.
+
+## 6.207 CSS Zoom And Path-Length Conformance (2026-08-24)
+
+- `path/distance/path-length-css-zoom.tentative.svg` and its declared reference
+  previously routed on the unsupported `zoom` declaration. The owning fix adds
+  bounded local-coordinate zoom while preserving path-length calibration before
+  the canvas scale.
+- The two-file targeted corpus is 2/2 first-party; the test is 1/1 against its
+  declared reference with zero fallback, rejection, or failure.
+- Complete Release SVG tests pass 342/342. The full 198-file static selection is
+  now 134 first-party, 61 compatibility fallbacks, 3 resource rejections, and
+  76/93 declared-reference passes; 17 references remain blocked and 4 non-SVG
+  targets remain unresolved. Renderer, hybrid, worker, timeout, and read failure
+  counters remain zero.
+- The signed captured-site gate remains 151/151 first-party with a validated
+  manifest and no fallback, rejection, failure, timeout, skip, or truncation.
+- Static CSS `zoom` is no longer a blocker. Remaining CSS-related entries are
+  dynamic selector invalidation, margin/padding, and geometry `auto` around
+  `foreignObject`; remaining compatibility work is tracked separately.
+
+## 6.208 SVG-As-Image Padding Classification (2026-08-24)
+
+- `styling/support/circle-padding-right.svg` is an image support resource whose
+  root padding must not contribute to intrinsic image size or picture pixels.
+  It now renders first-party with direct legacy pixel parity and no fallback.
+- Focused cascade tests pass 32/32 and the complete Release SVG namespace passes
+  343/343. The full 198-file static selection improves from 134 to 135
+  first-party and from 61 to 60 fallbacks; declared-reference counters remain
+  76/93 because this file is a support resource rather than a reftest target.
+- The captured-site gate remains 151/151 first-party with a validated manifest
+  and no fallback, rejection, renderer failure, timeout, skip, or truncation.
+- Margin and padding no longer constitute a static pixel-renderer blocker. CSSOM
+  interface behavior and external `@import` remain browser-level dynamic/resource
+  work; remaining compatibility work is tracked separately.
+
+## 6.209 Text-Path And Path-Length Reference Completion (2026-08-24)
+
+- Seven `path/distance/pathLength-*` documents previously shared the
+  `advanced-text-layout` fallback. The targeted corpus is now 7/7 first-party
+  and all 4/4 declared references pass with zero fallback, rejection, renderer
+  failure, worker failure, or timeout.
+- Focused text-path tests pass 4/4, including positive/percentage calibration,
+  zero-length behavior, external-reference rejection, and concurrent deterministic
+  rendering. The complete Release SVG namespace passes 347/347.
+- The 198-file static selection before -> after is first-party 135 -> 142,
+  compatibility fallback 60 -> 53, and declared-reference passes 76 -> 80 of 93;
+  blocked references drop 17 -> 13. Resource rejections remain 3 because the two
+  circular text-path reftests still contain an external font resource, and four
+  non-SVG reference targets remain unresolved.
+- The signed captured-site gate remains 151/151 first-party. Windows native
+  ownership stress now includes text-path rendering and completes 10,000 renders
+  with zero failures, 714 intentional compatibility cases, and 10,391,552 retained
+  private bytes under the fixed 67,108,864-byte ceiling.
+- Basic same-document text-path is no longer a blocker. External font loading,
+  transformed targets, nested content, and advanced text-path modes remain
+  explicit work; remaining compatibility work is tracked separately.
+
+## 6.210 Unconsumed SVG Font-Face URL Classification (2026-08-24)
+
+- The two circular path-length reftests used an external URL only inside an
+  unconsumed `@font-face` rule. Focused verification now classifies both files
+  first-party and the declared reference passes at exact pixel equality; no
+  external resource is fetched.
+- Focused cascade tests pass 34/34 and the complete Release SVG namespace passes
+  349/349. The 198-file static selection improves from 142 to 144 first-party
+  documents and from 80 to 81 declared-reference passes; all 81 comparable
+  references pass, 12 remain explicitly blocked, and four HTML/XHTML targets
+  remain unresolved by the isolated SVG oracle.
+- The one remaining static resource rejection is the intentional external
+  `@import` in `styling/style-sheet-interfaces.svg`. The signed captured-site
+  gate remains 151/151 first-party with a validated manifest and no fallback,
+  rejection, renderer/worker failure, timeout, skip, or truncation. The bounded
+  hybrid default remains active while dynamic and browser-level conformance work remains.
+
+## 6.211 Bounded MPath Snapshot Conformance (2026-08-24)
+
+- `path/property/mpath.svg` previously carried the final static
+  `smil-animation` fallback. Its constant initial key point now renders
+  first-party and matches `mpath-ref.svg` exactly on Windows and Ubuntu 24.04
+  WSL using the same portable Release publish.
+- Focused motion/diagnostic tests pass 12/12 and the complete Release SVG
+  namespace passes 357/357. The full 198-file static selection improves from
+  144 to 145 first-party documents, from 53 to 52 fallbacks, and from 81 to 82
+  declared-reference passes; all 82 comparable references pass and 11 remain
+  blocked by browser-level dynamic/resource routing.
+- The signed captured-site gate remains 151/151 first-party. Native-ownership
+  stress includes motion-path measurement and completes 10,000 renders with
+  zero failures on both Windows and Ubuntu: retained private bytes are
+  10,571,776 and 10,010,624 respectively, both below the 67,108,864-byte limit.
+- General timeline advancement, event timing, animation composition, and
+  non-geometry motion targets remain explicit browser/runtime work; the bounded
+  hybrid default remains active.
+
+## 6.212 SVG Paint-Order Conformance (2026-09-04)
+
+- The local WPT reproduction used only
+  `painting/reftests/paint-order-001.svg`, `paint-order-002.svg`, and
+  `paint-order-003.svg`. Before the fix all three were `css-cascade`
+  compatibility fallbacks and none reached the declared-reference oracle.
+- After bounded inherited paint-order support, `paint-order-002.svg` and
+  `paint-order-003.svg` route first-party and both match their declared SVG
+  references exactly: maximum channel difference 0 and differing pixels 0.
+  There are no renderer failures, worker failures, resource rejections, or
+  timeouts. `paint-order-001.svg` still routes to compatibility solely because
+  its marker requires unsupported `overflow:visible` clipping behavior.
+- Four focused paint-order pixel regressions pass, and the complete 26-file
+  Release SVG test namespace passes 361/361. The Release FenEngine and BenchSvg
+  builds complete with zero warnings and zero errors.
+- This closes static fill/stroke/marker ordering only. It does not close marker
+  overflow, text-decoration ordering, CSSOM parsing tests, or the release
+  readiness gate.
+
+## 6.213 SVG Marker Overflow Conformance (2026-09-04)
+
+- The exact retained blocker from 6.212,
+  `painting/reftests/paint-order-001.svg`, reproduced as a `css-cascade`
+  compatibility fallback for marker `overflow:visible` before the fix.
+- After preserving default marker clipping while honoring explicit visible
+  overflow, the file routes first-party and matches its declared reference with
+  alpha intersection-over-union 1, mean RGB difference 0, maximum channel
+  difference 0, and 0 differing pixels.
+- The cumulative three-file paint-order gate is now 3/3 first-party and 3/3
+  declared-reference passes, with zero fallback, resource rejection, renderer or
+  worker failure, and timeout. Focused marker tests pass 7/7; the complete
+  26-file Release SVG namespace passes 364/364; the Release BenchSvg build has
+  zero warnings and zero errors.
+- Nested SVG viewport overflow and browser-level CSSOM behavior remain separate
+  gates. Remaining compatibility work is tracked separately.
+
+## 6.214 SVG Non-Scaling Stroke And Marker-Unit Conformance (2026-09-04)
+
+- Exact local WPT files
+  `painting/reftests/marker-units-strokewidth-non-scaling-stroke.svg` and
+  `marker-units-userspaceonuse-non-scaling-stroke.svg` reproduced as 0/2
+  first-party with `unsupported-property` routing before the fix.
+- An intermediate run that merely admitted the property was correctly rejected:
+  both declared-reference comparisons failed because the transformed stroke and
+  marker coordinate/style semantics were still wrong. The final device-space
+  stroke, marker-unit, and definition-inheritance implementation routes both
+  files first-party and passes 2/2 declared references.
+- Each final outcome has alpha intersection-over-union 1, mean RGB difference 0,
+  maximum channel difference 0, 0 differing pixels, and matching 10,000-pixel
+  foreground counts. There are zero fallbacks, resource rejections, renderer or
+  worker failures, and timeouts.
+- Focused vector-effect plus marker tests pass 12/12; the complete 27-file
+  Release SVG namespace passes 369/369; the Release BenchSvg build completes with
+  zero warnings and zero errors.
+- This is a static basic-geometry subset. Broader HTML-hosted non-scaling-stroke,
+  dynamic mutation, text, and paint-server coverage remain explicit future gates.
+
+## 6.215 Windows SVG Breadth Baseline And Test-Metadata Classification (2026-09-04)
+
+- The complete local Windows `wpt/svg` inventory evaluates all 1,258 selected
+  files with zero worker failures and one five-second document timeout. Before
+  the metadata fix it reports 367 first-party renders, 749 legacy fallbacks, 68
+  resource rejections, 54 first-party reference failures, and 19 hybrid failures.
+  The complete run is a classification baseline, not a conformance pass claim.
+- The largest false fallback source was the non-rendering W3C SVG 1.1
+  `d:SVGTestCase` annotation. Focused tests prove that the exact test-suite
+  namespace does not require fallback while a lookalike namespace still does.
+  Local `import/painting-fill-01-t-manual.svg` then routes first-party with no
+  fallback, resource rejection, renderer failure, worker failure, or timeout.
+- Re-running all 513 local `svg/import` files changes clean first-party renders
+  from 0 to 244 and legacy fallbacks from 423 to 192; 237 files move directly
+  from legacy fallback to first-party. The run has zero worker failures, while
+  its remaining animation, script, filter, resource, text, admission, pixel, and
+  timeout results stay visible rather than being waived.
+- Windows-only parity is now the active release gate. Linux/macOS evidence is
+  deferred, not claimed. Release readiness still requires eliminating or
+  justifying every Windows compatibility fallback, closing comparable reference
+  failures, exercising real browser integration, and completing repeat/soak
+  evidence without weakening sandbox limits.
+
+## 6.216 SVG-Image Script Inertness Classification (2026-09-04)
+
+- Three focused regressions cover unprefixed and WPT-used HTML-prefixed script
+  forms. Each parser path discards raw script text, produces the expected image,
+  and reports no compatibility fallback.
+- Local `svg/geometry/parsing` verification evaluates all 47 files: 45 are clean
+  first-party renders and all 45 directly comparable outputs match the compatibility backend; two
+  retain independent CSS fallbacks. There are no resource rejections, renderer
+  or worker failures, timeouts, or first-party/hybrid pixel failures.
+- These static-image results do not count testharness assertions as passing and
+  do not replace top-level SVG document WPT. Script execution and DOM mutation
+  remain browser-runtime responsibilities and must be verified through that path.
+
+## 6.217 Post-Classification Windows SVG Baseline And Linear Markers (2026-09-04)
+
+- After the test-metadata and inert-image-script corrections, a fresh complete
+  local Windows `wpt/svg` run evaluates all 1,258 files in 628 seconds. It reports
+  878 first-party renders, 249 legacy fallbacks, 68 resource rejections, 43
+  first-party reference failures, 19 hybrid failures, one timeout, and zero
+  worker failures. Direct compatibility-backend parity is 523/848; declared-reference passes
+  are 125/276, with 95 blocked references and six unresolved targets.
+- Path marker work was then verified against exactly
+  `painting/marker-001.svg`, `marker-002.svg`, `marker-006.svg`, `marker-008.svg`,
+  `marker-009.svg`, and `painting/reftests/marker-path-021.svg`. Before the fix all
+  six were marker compatibility fallbacks; afterward all six route first-party
+  with zero fallback, rejection, renderer/worker failure, or timeout.
+- Five of the six declared references pass exactly with alpha intersection-over-
+  union 1 and zero differing pixels. `marker-006.svg` remains open, and the figure
+  recorded in this section is superseded: alpha IoU 0.9993, mean RGB difference
+  0.1081, maximum channel difference 71, and 103 differing pixels at this
+  checkpoint, against alpha IoU 1, mean RGB difference 0.0004, maximum channel
+  difference 1, and 32 differing pixels on a local `D:\wpt\svg` `painting` slice
+  at `f4755e3b` with renderer sources matching the revision. The axis-aligned
+  marker viewport clip is antialiased rather than resolved as a bounds test, and
+  that is what moved the figure (VOLUME_III 2.179). The oracle was not relaxed and
+  the case is not counted green.
+- This closes bounded linear path vertices, whole-path subpath roles, default
+  orientation, and line middle-marker handling. Curved/arc marker tangents and the
+  remaining marker-viewBox pixel mismatch are still Windows parity work; the
+  remaining compatibility work is tracked separately.
+
+## 6.218 SVG Curve And Arc Marker Conformance (2026-09-04)
+
+- Exact local Windows verification adds `painting/marker-orient-001.svg`,
+  `painting/reftests/marker-path-022.svg`, and `marker-path-023.svg` to the six
+  linear-path files from 6.217. All nine route first-party with no fallback,
+  rejection, renderer/worker failure, or timeout.
+- Eight declared references pass at exact pixel equality, including closed and
+  multi-subpath linear, cubic, and elliptical-arc markers. The only red result is
+  the retained `marker-006.svg` marker-viewport raster residual, whose figure in
+  this section is superseded: alpha IoU 0.9993, mean RGB difference 0.1081,
+  maximum channel difference 71, and 103 differing pixels then, against alpha
+  IoU 1, mean RGB difference 0.0004, maximum channel difference 1, and 32
+  differing pixels on a local `painting` slice at `f4755e3b`. The axis-aligned
+  viewport clip is antialiased, which is what moved it; see 6.217 and
+  VOLUME_III 2.179.
+- The broader 152-file local painting slice moves from 131 to 134 first-party,
+  15 to 12 legacy fallbacks, and 19 to 22 declared-reference passes. Its marker
+  reason is now limited to the intentionally rejected external marker resource;
+  no supported local curve/arc marker test requests compatibility fallback.
+- Focused tests cover control-point tangents, ellipse tangents, closed joins,
+  repeated smooth-command groups, default orientation, path-wide subpath roles,
+  and the 4,096-point cap. Bearing commands and the retained marker-viewBox raster
+  difference remain open.
+
+## 6.219 SVG Zero-Area ViewBox Conformance (2026-09-04)
+
+- Focused tests assert preserved raster dimensions and no visible descendants for
+  zero-width/height root viewBoxes, nested SVG viewports, used symbols, and marker
+  viewports. Marker verification also proves the referencing path remains painted.
+- The 16-file local Windows `svg/coordinate-systems` slice completes without a
+  first-party failure, worker failure, or timeout. Four transparent viewport cases
+  and the marker case are byte-identical to their checked-in expected PNG outputs.
+- Direct comparisons against the compatibility backend fail for those targets
+  because it paints the suppressed descendants. The expected WPT artifacts are the
+  acceptance source. Pattern viewBox behavior remains behind the explicit pattern
+  paint-server fallback and is not claimed by this unit.
+
+## 6.220 SVG Use Viewport Override Conformance (2026-09-04)
+
+- Exact local WPT verification covers `use-svg-dimensions-override-001.svg`,
+  `use-svg-dimensions-override-002.svg`, `use-symbol-dimensions-override-001.svg`,
+  and `use-symbol-dimensions-override-002.svg`.
+- All four are first-party, all four match their declared references at exact
+  pixel equality, and the run has no fallback, resource rejection, renderer or
+  worker failure, or timeout.
+- Focused tests separately exercise positive `use` width/height overrides for
+  both viewport element types and visible overflow beyond a nested SVG viewport.
+
+## 6.221 Embedded SVG Fractional-Width Conformance (2026-09-04)
+
+- The exact local Windows WPT
+  `embedded/image-fractional-width-vertical-fidelity.svg` routes first-party and
+  passes its declared reference at exact pixel equality, with no fallback,
+  rejection, failure, or timeout.
+- The complete 19-file local `svg/embedded` slice remains 15 first-party, one
+  compatibility fallback, and three resource rejections, while declared-reference
+  passes improve from 1/14 to 2/14 with no new classification regression.
+- A focused regression test paints red behind the embedded image and asserts both
+  fractional boundary columns remain green under root `xMinYMin` placement.
+
+## 6.222 SVG Malformed Path Progress Conformance (2026-09-04)
+
+- The exact local Windows WPT `import/paths-data-18-f-manual.svg` previously hit
+  the five-second isolated-worker timeout. After the scanner progress fix it
+  completes in 730 ms total, including first-party, hybrid, and compatibility-backend checks.
+- The result routes first-party with zero fallback, resource rejection, renderer
+  or worker failure, and timeout. It is a manual visual test and has no declared
+  reference in the local manifest, so no reference-pass claim is made.
+- Focused parser coverage asserts that malformed data stops at the last valid path
+  point; existing maximal-munch, exponent, command-repeat, and segment-budget
+  cases remain in the full SVG test namespace.
+
+## 6.223 SVG Paint-Server currentColor Fallback Conformance (2026-09-04)
+
+- The exact local Windows WPT references
+  `painting/currentColor-override-pserver-fallback.svg` and
+  `pservers/reftests/fill-fallback-currentcolor-2.svg` now pass at exact pixel
+  equality. Both route first-party with no fallback, rejection, renderer or
+  worker failure, or timeout.
+- Focused coverage verifies that an inherited `url(#missing) currentColor` paint
+  binds to the painted child's `color`, not the ancestor's color. The complete
+  SVG test namespace passes 391/391.
+
+## 6.224 SVG Text XML-Whitespace Conformance (2026-09-04)
+
+- The exact local Windows WPT `text/reftests/text-xml-space-001.svg` now matches
+  its declared reference at exact pixel equality. It routes first-party with no
+  fallback, rejection, renderer or worker failure, or timeout.
+- Focused coverage compares preserved ordinary spaces with equivalent
+  non-breaking spaces and requires byte-identical output. The complete SVG test
+  namespace passes 392/392.
+
+## 6.225 SVG Context-Paint Conformance (2026-09-04)
+
+- Exact local Windows verification covers the eight `paint-context-001` through
+  `paint-context-008` WPT files plus `text-context-fill.svg`. The solid-color
+  marker/use cases `001`, `002`, `003`, and the text case pass their declared
+  references at exact pixel equality.
+- The slice reports five first-party files and four explicit compatibility
+  fallbacks, with no resource rejection, renderer/worker failure, or timeout.
+  The four blocked references use gradient or pattern context paint and are not
+  claimed as supported.
+- Focused tests cover marker fill/stroke context, `use` fill/stroke context,
+  late-bound inherited `currentColor`, and explicit fallback for paint-server
+  context values. The complete SVG test namespace passes 396/396.
+
+## 6.226 SVG Local-Reference Whitespace Conformance (2026-09-04)
+
+- Exact local Windows verification covers
+  `linking/reftests/url-processing-whitespace-001.svg`, `002.svg`, and `003.svg`.
+  The slice improves from one first-party file plus two resource rejections and
+  zero reference passes to three first-party files and 3/3 exact reference
+  passes, with no fallback, rejection, failure, or timeout.
+- Focused parser and renderer tests cover outer whitespace trimming, preserved
+  internal fragment whitespace, quoted paint URLs, gradient template links, and
+  `use` links. The complete SVG test namespace passes 398/398.
+
+## 6.227 SVG requiredExtensions Conformance (2026-09-04)
+
+- The exact local Windows WPT
+  `struct/reftests/requiredextensions-empty-string.svg` moves from a fully
+  painted mismatch to an exact transparent reference pass. It routes first-party
+  with no fallback, rejection, failure, or timeout.
+- The focused-coverage claim recorded here no longer describes the rule, and the
+  two classes of nonempty list now land on opposite sides of it. Conditional
+  processing is one tri-state decision, and it is not one question:
+  - A list containing an identifier no user agent can satisfy is false for every
+    user agent, so the element or branch is filtered and the walk continues. That
+    class covers an empty list, an extension identifier outside the two the
+    specification defines (`http://www.w3.org/1999/xhtml`,
+    `http://www.w3.org/1999/xlink`), a feature string outside the SVG 1.1/2
+    feature namespace, and a language tag that is not well formed. A document
+    whose fallback branch is the correct frame stays decidable and keeps painting
+    it, so suppression is still suppression - it is no longer what happens to
+    every nonempty extension requirement.
+  - A list made only of identifiers this renderer cannot answer fails closed, with
+    a reason naming the identifier, classified `unsupported-property`, and a
+    `switch` stops scanning rather than painting the next sibling in its place.
+  - The required-extension half and the system-language half settle on different
+    questions and must not be read as one. `requiredExtensions` and
+    `requiredFeatures` are satisfied only when every listed entry is, so one
+    unrecognised identifier settles the whole list as false. `systemLanguage` is
+    satisfied by any one of its tags, so it takes a list carrying no well-formed
+    tag at all to be false for every user agent, and one well-formed tag is
+    unanswerable here because the renderer has no user language to match it
+    against. A language tag that is not well formed matches no user language and
+    therefore skips rather than fails closed.
+- The class that pins this is `Svg/SvgSwitchConditionalProcessingTests`: the
+  `foreignObject` branch offered and selected, both defined extension identifiers,
+  an empty list, an unrecognised identifier, a supported feature beside an
+  unrecognised one, a well-formed beside a malformed language tag, and the
+  unanswerable branch that paints no sibling. `dotnet test FenBrowser.Tests
+  -c Release --filter "FullyQualifiedName~SvgSwitchConditionalProcessingTests"`:
+  pass (18/18) on 2026-09-27. The complete SVG test namespace passed 401/401 at
+  the 2026-09-04 checkpoint this section records.
+- Corpus consequence, local `D:\wpt\svg` `struct` slice at `f4755e3b` with
+  renderer sources matching the revision: the first bullet above still holds -
+  `struct/reftests/requiredextensions-empty-string.svg` is first-party with zero
+  warnings and its declared reference passes exactly. Its sibling
+  `struct/reftests/requiredextensions-xhtml.tentative.svg` moves from painting the
+  red fallback rect to `unsupported` with `unsupported-element,unsupported-property`
+  and two warnings, the parse-time `foreignObject` gate plus `SVG conditional
+  processing attribute 'requiredExtensions' requires compatibility fallback for
+  unimplemented extension 'http://www.w3.org/1999/xhtml'`. Its
+  `reference/green-100x100.svg` is no longer comparable because the document is
+  inadmissible rather than painted. A browser implements the XHTML extension and
+  selects the `foreignObject` branch, so the frame this renderer would have
+  painted is wrong either way and the honest result is to fail closed; the case is
+  a tracked gap, not a pass. No document in the local corpus carries a
+  `systemLanguage` value, so that half is covered by the focused class only.
+
+## 6.228 Complete Windows SVG WPT Rebaseline (2026-09-04)
+
+- A fresh untruncated run evaluates all 1,258 local WPT SVG files at commit
+  `cd1a2434`. It reports 892 first-party files, 240 compatibility fallbacks, 66
+  resource rejections, 41 first-party failures, 19 hybrid failures, and zero
+  worker failure or timeout.
+- Against the preceding complete Windows snapshot, declared-reference passes
+  improve from 140/276 to 150/276 and legacy pixel parity improves from 540/864
+  to 548/866. Reference blocking decreases from 84 to 83 and unresolved targets
+  remain 5.
+- Compatibility fallbacks increase from 238 to 240 because gradient/pattern
+  context paint is now classified honestly instead of producing unsupported
+  first-party pixels. Resource rejections decrease from 68 to 66, and the prior
+  malformed-path worker timeout is eliminated.
+- The remaining 41 first-party failures and 19 hybrid failures are evidence gaps
+  at that checkpoint, when a bounded hybrid backend was still selectable. This
+  snapshot is a Windows conformance checkpoint, not a conformance claim.
+
+## 6.229 SVG Pattern Paint-Server Conformance (2026-09-05)
+
+- The complete local Windows `svg/pservers` slice was run before and after the
+  implementation. Across all 42 files, first-party routing moves from 29 to 38,
+  compatibility fallbacks fall from 11 to 2, declared-reference passes improve
+  from 9/23 to 13/23, and blocked references fall from 9 to 3. Both runs have
+  zero first-party failure, worker failure, or timeout; the two unchanged hybrid
+  failures are the 5669-by-5669 source/reference pair rejected by the existing
+  16,777,216-pixel document raster limit.
+- The four newly passing declared references exercise pattern opacity, pattern
+  content on text, translated pattern tiles, and fallback paint for two distinct
+  non-invertible transforms. The broader 168-file `coordinate-systems` plus
+  `painting` slice adds exact reference passes for currentColor pattern fill and
+  stroke and completes with zero worker failure or timeout.
+- All eight pattern files that carried `paint-server` fallback in the imported
+  SVG 1.1 set now route first-party. They cover fill, stroke, text, user-space
+  and object-bounding-box units, transforms, viewBox mapping, invalid servers,
+  and multi-level pattern inheritance.
+- Eleven focused regressions cover fill/stroke repeat tiling,
+  object-bounding-box content and opacity, inherited geometry/content,
+  definition-tree currentColor, viewBox mapping, non-invertible fallback,
+  zero-area viewBox suppression, recursion, and invalid-context isolation. The
+  complete focused SVG namespace passes 411/411 after the change.
+- `pattern-transform-03.svg` remains an explicit paint-server fallback because
+  its static object-bounding-box tile maps to 10,000 by 10,000 pixels, beyond the
+  native-work admission budget. Scripted pattern changes are not claimed by this
+  static-image gate. Remaining compatibility work is tracked separately.
+
+## 6.230 SVG Filter-Graph Conformance (2026-09-05)
+
+- An exact nine-file local Windows WPT slice was run before and after the graph
+  implementation. First-party routing improves from 5 to 7 files and
+  compatibility fallbacks fall from 4 to 2, with zero resource rejection,
+  renderer/worker failure, or timeout in either result.
+- `filters-blend-01-b-manual.svg` and `filters-color-01-b-manual.svg` now route
+  first-party. Correct object-bounding-box distance scaling also moves
+  `filters-offset-02-b-manual.svg` from pixel mismatch to legacy-parity pass;
+  the declared `clip-path-filter-order.svg` reference remains 1/1 passing.
+- The two retained fallbacks expose the next real boundaries:
+  `BackgroundImage` input in `filters-background-01-f-manual.svg` and
+  `FillPaint` input in `filters-composite-03-f-manual.svg`. They are not counted
+  as first-party support.
+- Sixteen focused filter regressions cover named and branched inputs,
+  SourceAlpha, flood/blend/composite/merge, object-bounding-box scaling and group
+  regions, color-matrix modes, admission fallback, and concurrent native
+  ownership. The complete focused SVG namespace passes 418/418.
+
+## 6.231 SVG Component-Transfer Verification (2026-09-05)
+
+- The exact local Windows files `filters-color-02-b-manual.svg` and
+  `filters-comptran-01-b-manual.svg` move from 0/2 first-party with two filter
+  fallbacks to 2/2 first-party with no fallback, rejection, renderer/worker
+  failure, or timeout.
+- These are manual WPT files with no declared reference, so they are not claimed
+  as exact WPT reference passes. The report remains honest about 0/2 legacy
+  pixel parity; one comparison identifies the existing legacy chromatic-gradient
+  defect, and the other includes broader renderer differences outside the
+  component-transfer primitive.
+- Twenty focused filter regressions exercise identity defaults, last-duplicate
+  selection, table/discrete/linear/gamma functions, default linear-light RGB,
+  explicit sRGB operation, malformed-type fallback, graph behavior, admission,
+  and concurrent native ownership. The complete focused SVG namespace passes
+  422/422 after the change.
+
+## 6.232 SVG Displacement And Filter-Region Verification (2026-09-05)
+
+- The exact local Windows manual WPT `filters-displace-02-f-manual.svg` moves
+  from filter fallback to first-party with no fallback, rejection,
+  renderer/worker failure, or timeout. It reaches legacy pixel parity with
+  alpha IoU 0.9329 and mean RGB difference 1.9121; the file has no declared WPT
+  reference, so no reference-pass claim is made.
+- The ten-file regression slice combines that displacement case with the prior
+  nine graph/region files. It reports eight first-party files, two honest named
+  input fallbacks, 4/8 legacy parity, and the declared filter/clip ordering
+  reference still passing 1/1, with zero renderer/worker failure or timeout.
+- Focused regressions cover constant-map channel direction, SourceGraphic as a
+  required native displacement input, invalid selectors, and final graph crops
+  in both user-space and object-bounding-box regions. The complete focused SVG
+  namespace passes 427/427.
+
+## 6.233 SVG Use-Instance Effects Verification (2026-09-05)
+
+- A focused regression proves that an offset filter on `use` removes the
+  unfiltered instance pixels and paints the translated instantiated subtree at
+  the filtered location without fallback.
+- Re-running local `filters-conv-05-f-manual.svg` changes its classification
+  from a false first-party pixel-parity pass to an explicit filter fallback.
+  This is intentional evidence correction: the file's filters are now executed,
+  exposing the genuinely unsupported `feConvolveMatrix` primitive instead of
+  silently bypassing it.
+- The complete focused SVG namespace passes 428/428, with no renderer or worker
+  failure in the corrected local WPT run.
+
+## 6.234 SVG Matrix-Convolution Verification (2026-09-06)
+
+- The exact five local Windows SVG 1.1 convolution manual files were rerun.
+  `filters-conv-05-f-manual.svg` now routes first-party with no fallback,
+  rejection, renderer/worker failure, or timeout and passes the legacy pixel
+  threshold at alpha IoU 0.8762 and mean RGB difference 2.5559.
+- The other four files remain resource-rejected because their imported fonts or
+  raster images resolve outside the current authorized resource directory.
+  `filters-conv-03-f-manual.svg` additionally retains honest `set` animation
+  and `feImage` fallbacks. These manual files provide no declared WPT reference,
+  so no exact reference-pass claim is made.
+- Focused regressions cover normalized bias, divisor use, edge sampling, and
+  malformed kernel admission. The complete SVG test namespace passes 437/437.
+
+## 6.235 SVG Filter-Definition Admission Verification (2026-09-06)
+
+- A parser regression proves the default profile admits 12 independent filter
+  definitions, while the existing explicit two-filter limit still rejects a
+  third definition with a sandbox violation.
+- Local `filters-composite-02-b-manual.svg` now reaches first-party feature
+  evaluation instead of failing hybrid routing at the former 10-filter limit.
+  Its local-fragment `feImage` inputs remain the next explicit compatibility
+  boundary; no rendering-support claim is made by this admission change.
+
+## 6.236 SVG Local-Fragment Image Filter Verification (2026-09-06)
+
+- Focused regressions prove both SVG 2 `href` and SVG 1.1 `xlink:href` local
+  fragments render as filter sources, remain clipped to their primitive region,
+  and can feed named `feComposite` graph inputs. External image references
+  remain explicit resource-policy fallbacks.
+- The exact local `filters-composite-02-b-manual.svg` rerun advances past all
+  24 local-fragment `feImage` inputs. Its sole reported filter boundary at this
+  stage was arithmetic `feComposite`, subsequently closed in section 6.237.
+
+## 6.237 SVG Arithmetic Composite Verification (2026-09-06)
+
+- The exact local `filters-composite-02-b-manual.svg` now completes first-party
+  with no fallback, resource rejection, renderer/worker failure, or timeout.
+  The manual file declares no WPT reference and produced no comparable legacy
+  pair, so no pixel-parity or exact reference-pass claim is made.
+- Focused regressions verify `k2` selects SVG `in`, `k3` selects `in2`, omitted
+  coefficients default to zero, malformed and over-bound coefficients remain
+  fallback, and the primitive-region crop prevents constant arithmetic output
+  from expanding into an unbounded native filter graph.
+
+## 6.238 SVG Turbulence Verification (2026-09-06)
+
+- The exact local manual files `filters-turb-01-f-manual.svg` and
+  `filters-turb-02-f-manual.svg` now complete first-party with no fallback,
+  rejection, renderer/worker failure, or timeout. Neither declares a WPT
+  reference; the one comparable legacy rendering does not meet pixel parity
+  (alpha IoU 0.9454, mean RGB difference 48.737), so no visual-equivalence
+  claim is made.
+- Focused regressions verify deterministic turbulence and fractal-noise output,
+  independent base frequencies, bounded octaves, and the fractional seed groups
+  exercised by the local SVG 1.1 seed test. Unsupported stitching and invalid or
+  over-bound parameters remain fallback.
+
+## 6.239 SVG Distant Lighting Verification (2026-09-06)
+
+- The exact local `filters-light-02-f-manual.svg` now completes first-party and
+  passes the legacy pixel threshold at alpha IoU 0.9287 and mean RGB difference
+  0.0004, with no fallback, rejection, renderer/worker failure, or timeout. The
+  manual file declares no WPT reference, so no exact reference-pass claim is
+  made.
+- `filters-diffuse-01-f-manual.svg` and `filters-specular-01-f-manual.svg`
+  reach resource rejection because their `bumpMap2.png` input is absent from the
+  authorized local WPT resource tree. They are not counted as lighting passes.
+- Focused regressions cover both diffuse and specular output, input handling,
+  lighting color, exponent admission, unsupported point lights, and primitive
+  region bounds.
+
+## 6.240 SMIL Set Snapshot Verification (2026-09-07)
+
+- Focused tests sample a `<set>` before, at, during, and at the end of its active
+  interval, verify frozen state after the interval, reject invalid document
+  times, and prove the legacy renderer cannot misrepresent a nonzero request.
+- The exact local `svg/animations/support/green-at-3s.svg` file now routes
+  first-party at document time zero with no fallback, rejection,
+  renderer/worker failure, or timeout and reaches legacy pixel parity 1/1.
+- This closes deterministic `<set>` snapshots only. Interpolated `animate`,
+  transform animation, event timing, DOM SMIL controls, and live invalidation
+  remain explicit migration work.
+
+## 6.241 SMIL Value-Interpolation Verification (2026-09-07)
+
+- Focused regressions verify numeric geometry at the middle and frozen end of
+  an interval, presentation-color interpolation, restoration of the underlying
+  value for `fill="remove"`, and explicit fallback for spline calculation.
+- The complete SVG test namespace passes with no regression. This unit covers
+  deterministic two-value snapshots; value lists, repeats, transforms, live
+  invalidation, event timing, and DOM SMIL controls remain migration work.
+
+## 6.242 SMIL Value-List and Repeat Verification (2026-09-07)
+
+- Focused regressions sample a three-value linear animation within its second
+  key-time segment, hold the active item in a discrete color list, sample the
+  third repeated iteration, retain its frozen endpoint, and animate an element
+  selected by local `href`.
+- The complete SVG test namespace remains the regression boundary. Spline and
+  additive math, transform animation, event timing, live invalidation, and DOM
+  SMIL controls remain separately tracked migration work.
+
+## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
+
+- Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
+- The exact local WPT `svg/geometry/parsing/cx-valid.svg` passes with status `OK`, all five subtests passing, and no unexpected results. The 14-file `cx/cy/r/rx/ry/x/y` valid/invalid parsing slice produced 13 clean files and one `ry-valid.svg` browser-process crash; an isolated rerun of `ry-valid.svg` then passed with status `OK`. The CSS geometry assertions are therefore green, while the cumulative runner crash remains visible as stability evidence rather than being counted as a clean 14-file batch.
+- The seven-file `cx/cy/r/rx/ry/x/y` computed-value slice passes `7/7` with no unexpected tests or subtests, including font-relative lengths, length-only `calc()` evaluation, retained percentages, negative positions, and non-negative radius clamping.
+- WPT defaults its child browser/WebDriver process to `FEN_PROCESS_ISOLATION=in-process` when the caller did not choose a mode, because classic automation commands currently target the host engine. Explicit process-isolation validation can still opt into brokered mode, and summaries record the effective WPT default truthfully.
+
+## 6.243 Single-Backend SVG Verification (2026-09-26)
+
+The first-party SVG renderer is the only backend. The third-party SVG
+package, the compatibility renderer, the hybrid routing renderer, and
+per-document legacy fallback are removed, and the routing columns in 6.193-6.242
+no longer describe a live code path.
+
+What the verification surface now covers:
+
+- Renderer selection: `FEN_SVG_RENDERER` resolves `first-party`, `fen`, the
+  deprecated `legacy` and `svg-skia` aliases, and absent/blank/unrecognized
+  values to `SvgRendererBackend.FirstParty`. No other backend member exists, so
+  the selection tests assert a single outcome per input instead of three-way
+  routing (`Svg/SvgFirstPartyBackendContractTests`).
+- Fail-closed admission: `SvgRenderResult.IsAdmissible(...)` rejects a
+  successful render that sets `RequiresFallback` or `HadResourceRejection`, or
+  that carries any `ResourceRejectionReasonCodes`.
+  `SvgRenderResult.DescribeRejection(...)` returns a bounded, source-free
+  reason, capped at four codes and 200 characters with a `+N more` overflow
+  suffix.
+- Target-process decode: the Host `RejectSvgDecodeResult(...)` gate requires an
+  admissible result whose `Backend` is `FirstParty`; rejected decodes return no
+  bitmap bytes and a bounded `ErrorMessage`. `TargetIpc.BoundMetadata(...)`
+  bounds response metadata on assignment, and
+  `TargetIpc.TrySerializeEnvelope(...)` drops an over-bound outbound envelope
+  before it reaches the pipe. Covered by `Svg/TargetProcessSvgDecodeTests`.
+- Pixel regression for the supported subset is pinned by
+  `Svg/SvgFirstPartyRenderRegressionTests` and
+  `Svg/FenSvgRendererPartialResultTests`; `Architecture/SvgSandboxingTests`
+  keeps the `Default`/`Strict` limit and admission contract.
+- Resource isolation is now a hard invariant rather than a routing rule: with no
+  second parser, a rejected external reference cannot be re-interpreted
+  downstream. The external-reference and nested-resource tests assert rejection,
+  not fallback.
+- Differential comparison against the removed renderer is gone with it
+  (`Svg/SvgBackendGoldenCompareTests` and the compatibility-renderer test class
+  are deleted). The surviving oracles are WPT declared references, the
+  process-isolated corpus runs, and the captured-site SHA-256 manifest.
+
+Verification: run and record, rather than copying a count forward:
+
+```bash
+dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --nologo -v minimal
+dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Release --nologo -v minimal
+dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "FullyQualifiedName~FenBrowser.Tests.Svg"
+dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "FullyQualifiedName~SvgSandboxingTests"
+dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "FullyQualifiedName~TargetProcessSvgDecode"
+```
+
+The focused SVG count is discovery-derived and shrinks when the removed
+differential tests go away, so no count is recorded here. Cross-platform corpus
+runs stay in `Results/svg/` and the process-isolated gate keeps its
+`--gate` semantics; the per-file routing classification now reduces to
+first-party, unsupported-feature, resource rejection, renderer failure, worker
+failure, timeout, and read/oversize skip.
+
+Residual risk, stated explicitly: because an unsupported construct now produces
+no pixels, WPT and captured-site runs will show a higher "unsupported/rejected"
+share than the 6.193-6.242 baselines for any document that previously relied on
+the compatibility backend. That is the expected consequence of removing the
+second renderer, not a new regression, and each such document is a tracked
+conformance gap in `docs/VOLUME_III_FENENGINE.md` 2.121-2.176.
+
+## 6.244 WPT Manifest Oracle And Report Comparability (2026-09-27)
+
+`WptManifestIndex` now reads the WPT v9 `MANIFEST.json`: it discovers the file,
+validates it, indexes every SVG item, and resolves each test's declared `==`/`!=`
+references against it. A default run stops at the 500-file `--max-files` limit, so
+an unparameterised run was not a corpus result. The change corrects the oracle and
+changes what a WPT pass rate means, so this section records both, together with
+the run invocation rules that follow from them. The engine-side admission contract
+these runs measure is in `docs/VOLUME_III_FENENGINE.md` 2.178.
+
+### Manifest discovery, and what `--manifest` is for
+
+`--corpus-kind wpt` discovers the manifest itself: it walks up from `--corpus`
+until it finds `MANIFEST.json`, then validates that the root is an object, that
+`version` is exactly 9, that `url_base` is absent or `"/"`, that `items` is an
+object of per-type `svg` trees, and that every item carries a content hash. A
+manifest of any other shape throws rather than being partially understood. The
+run then sets `manifestValidated` from that index, and strict mode requires it for
+both `wpt` and `captured-site` corpus kinds.
+
+`--manifest` is a different thing and is a frequent source of a wasted run. It
+takes a *corpus* manifest - a document this repository defines, carrying
+`schemaVersion: 1`, a `corpusKind` equal to the selected kind, and a per-file
+SHA-256 inventory that must exactly match the corpus's `.svg` set. It is required
+for `--corpus-kind captured-site` and optional otherwise. It is not a WPT input.
+Passing the WPT `MANIFEST.json` to `--manifest` aborts the run with `manifest
+schema, corpus kind, or file inventory is invalid` before a single document is
+evaluated. Do not pass it; `--corpus-kind wpt` needs no `--manifest` at all.
+
+### The denominator changed: pre- and post-change WPT rates are not comparable
+
+`WptManifestIndex` now classifies every selected file and removes reference-only
+support files from the test denominator: files whose manifest type is `support`,
+and files that are a declared reference target of some other test but declare no
+reference of their own. In the current checkout that removes 252 of the 1,307
+`.svg` files under the SVG corpus root, leaving 1,055 tests.
+
+The report records this as `wptExcludedReferenceFiles`, next to `wptManifestPath`,
+`wptManifestVersion`, `wptManifestItems`, and `wptUnclassifiedFiles`; the Markdown
+report prints the manifest path, its version, the indexed SVG item count, the
+exclusion count, and the count of files absent from the manifest. The summary schema
+is version 6: the manifest classification took it to 5, and the source-provenance
+fields below took it to 6.
+
+State the consequence plainly: **a WPT pass rate recorded before this change and
+one recorded after it are not directly comparable unless both runs used the same
+manifest version and the same exclusion handling.** Every 6.193-6.243 baseline
+had reference-only files inside its denominator. When quoting a rate, quote the
+denominator with it, or quote `wptManifestVersion` and `wptExcludedReferenceFiles`
+next to it. A rate without those two fields cannot be reconciled with a later run.
+
+Two related oracle corrections travel with the same change and matter for reading
+any rate:
+
+- An unresolved declared reference is counted as not comparable, not as a pass.
+  It appears in `wptUnresolvedTargets` and in a bounded
+  `wptUnresolvedReferenceSamples` list rather than inflating the pass count, and
+  strict mode fails unless every applicable test is comparable.
+- Per-type reference accounting is now reported directly
+  (`wptReferenceTypeCounts`: tests, comparable, pass, fail, blocked, unresolved)
+  instead of forcing a per-directory rerun to find the affected feature.
+
+### `RendererBuildId` is a module version id, not a revision
+
+`RendererBuildId` is
+`typeof(SvgCorpusRunner).Assembly.ManifestModule.ModuleVersionId`: a fresh GUID
+per compile, not a content hash of the source. Two builds of identical source
+produce different ids, and rebuilding unchanged source produces a new one. It is
+therefore usable for exactly one purpose - deciding whether a `--resume`
+checkpoint is still valid, which requires both the same build id and the same
+per-file source SHA-256 - and it cannot tie a report to a source revision.
+
+Treat it as a cache key, not as provenance. Record the commit, the dirty state of
+the working tree, the manifest parameters, and the runner options alongside any
+report you intend to cite, and record them again for the baseline it is compared
+against. The report now carries that provenance itself, so it no longer has to be
+reconstructed by hand - see the next subsection.
+
+### Source provenance: the fingerprint and the git fields
+
+`RendererBuildId` is not the only identity in a report. A report also carries a
+content fingerprint of the renderer sources and the git state they were read at, so
+two reports can be compared for *what produced the pixels* rather than for a GUID:
+
+- `RendererSourceHash` is a SHA-256 over the renderer sources in the three hashed
+  roots - `FenBrowser.FenEngine/Svg`, `FenBrowser.FenEngine/Adapters` and
+  `scripts/BenchSvg` - with `bin`/`obj` excluded, files sorted and de-duplicated, a
+  format tag first, and every field length-prefixed. Content is normalised before
+  hashing: a BOM is dropped and CRLF is folded to LF, so the same source hashes the
+  same on either line-ending convention. Two builds of identical source share this
+  hash, which is the property the build id lacks.
+- `RendererSourceRoots` and `RendererSourceFiles` name what went into it, so a
+  fingerprint can be checked against a checkout instead of trusted.
+- `GitRevision` is `git rev-parse --verify HEAD` and `GitShortRevision` is its first
+  ten characters.
+- `GitTreeDirty` is whether `git status --porcelain` reports anything for the whole
+  tree, counting untracked files.
+- `SourcesMatchGitRevision` is whether `git status --porcelain` is clean when
+  restricted to the three hashed roots. It is the field that answers the question
+  `GitTreeDirty` cannot: a dirty tree elsewhere in the repository does not
+  invalidate a fingerprint, but a dirty hashed root does.
+
+All three git fields are nullable, and null means git could not be read - no
+revision, a git that is not on `PATH`, or a command that did not finish inside its
+10-second budget. Null is not the same as false, and a report whose git fields are
+null cannot be tied to a revision at all.
+
+The Markdown report prints all of it: renderer source hash, roots, files hashed,
+git revision, dirty state, and whether the hashed sources match the revision. Read
+`gitTreeDirty` and `sourcesMatchGitRevision` before quoting a number. A report with
+`sourcesMatchGitRevision: false` is measuring a working tree, not the revision it
+names, and a report with `rendererSourceHash: unavailable` has no fingerprint to
+compare against.
+
+### Selection truncation and per-experiment output
+
+`--max-files` defaults to 500 and is hard-capped at 10,000. Selection is ordinal
+by path. A truncated run is visible - `truncated` is printed on the runner's JSON
+line, `selectionTruncated` is recorded in the report and as "Selection truncated
+by --max-files" in the Markdown, and strict mode fails on it - but a truncated run
+is not a corpus result. Pass an explicit `--max-files` large enough to cover the
+intended targets, confirm `truncated` is false, and use `--include-prefix` for a
+targeted root-cause rerun. `selectedFiles` and `evaluatedFiles` are reported
+separately, so a per-file byte or read skip is visible rather than absorbed into
+the total.
+
+The default `--output` is `Results/svg`, so every run writes the same
+`Results/svg/corpus-report.json` and `Results/svg/corpus-checkpoint.jsonl`.
+Reports are replaced atomically, which means concurrent runs silently overwrite
+each other's report rather than failing. Give every experiment its own `--output`
+directory under `Results/svg/`; the per-experiment subdirectories under
+`Results/svg/` are that pattern.
+
+### Build prerequisite: the SDK pin rolls forward
+
+`global.json` pins `10.0.300` with `rollForward: latestFeature`, not
+`latestPatch`. `latestPatch` asks for 10.0.300 exactly, which no installed SDK
+satisfies, so every documented build from the repo root failed with `SDK not
+found` before the change. `latestFeature` still prefers 10.0.300 when it is
+installed and otherwise takes the nearest higher 10.0.x band. Treat a `SDK not
+found` error as a bad working directory or a `global.json` edit, not as a missing
+SDK, and confirm `dotnet --list-sdks` names a 10.0.x SDK at or above the pin before
+diagnosing a build failure.
+
+### The WPT checkout path must be passed explicitly
+
+The runner has no default corpus location: it discovers the manifest by walking
+upward from `--corpus`, so the corpus root must always be given explicitly and
+must sit at or below a checkout containing `MANIFEST.json`. `AGENTS.md` and
+`CLAUDE.md` record the WPT root as `D:\wpt`, and the SVG corpus root is
+`D:\wpt\svg`. The `C:\Users\udayk\Videos\wpt` path this section previously
+recorded does not exist on this machine. A run pointed at a corpus directory that
+does not exist fails before it evaluates a document, so do not treat that as a
+runner fault. Use the path that exists on the machine you are running on, and
+confirm `wptManifestPath` in the report names the manifest you expected.
+
+Verification:
+
+```bash
+dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release -- --corpus D:\wpt\svg --corpus-kind wpt --max-files 10000 --output Results/svg/wpt-full
+```
+
+Read back from the generated `corpus-report.json`: `schemaVersion` 6,
+`wptManifestVersion` 9, `wptManifestItems`, `wptExcludedReferenceFiles`,
+`selectionTruncated` false, and `selectedFiles`. `wptUnclassifiedFiles` is 0 when
+the selection is covered by the manifest; treat a non-zero value as selection
+outside manifest coverage, not as a rounding artifact. Read
+`rendererSourceHash`, `rendererSourceRoots`, `rendererSourceFiles`,
+`gitRevision`, `gitShortRevision`, `gitTreeDirty` and
+`sourcesMatchGitRevision` as well, and do not cite a report that lacks them. Add
+`--gate` to make a truncated selection, a read or oversize skip, an inadmissible
+document, a comparable reference failure, an unresolved declared reference, or a
+missing manifest a non-zero exit. Record the numbers, the commit, and the dirty
+state together; do not quote a rate from a run that lacks them.
+
+## 6.245 The Corpus Harness Now Resolves What It Claims To (2026-09-27)
+
+Two harness settings decide what a WPT corpus run can actually measure, and both
+were wrong until now. Neither is an engine change: the engine default for the first
+is still `false`, and the second is a substitution rule inside the runner. The
+consequence is that a chunk of the numbers recorded earlier in this document was
+measuring the harness rather than the renderer, so this section says which, and
+how to read a rate that predates it.
+
+### The runner now asks the resolver for the subresource
+
+The runner built its render request from `SvgRenderLimits.Default` while also
+supplying a base URI and a resource resolver. The walk gates resolution on
+`AllowExternalReferences`, so the resolver was constructed, passed, and never
+called: every external image reference in the corpus was recorded as a policy
+refusal rather than as a lookup that was attempted and missed. The worker now sets
+that flag when, and only when, a resolver is present, which is what the document
+pipeline does. The engine default stays `false`, and `SvgRenderLimits.Default` still
+means no external references; a caller that wants a different default changes the
+engine, not the runner.
+
+The effect on a recorded rate is large and it is worth being blunt about it: **47
+documents stopped being recorded as policy refusals.** Of those, 2 now render
+because their subresource is on disk in the checkout. The other 45 are not fixed
+and were never going to be - the references they make resolve inside the WPT root,
+and the referenced legacy binaries are not in the tree, because W3C removed them for
+those SVG 1.1 tests years ago. They now fail in the resolver instead of in
+the policy check, which is the honest classification. Their reason code changes
+from `external-resource` to `resource-rejected`, so the document-level
+`ResourceRejections` count falls by only 6 while the reason mix moves by 45; the
+diagnostic the resolver emits for a file it cannot supply is a path complaint,
+because its path check runs before its existence check, so a missing file reads as
+a path error in the report.
+
+State the consequence plainly: **a `ResourceRejections` figure, and a
+first-party/render-failure figure, recorded before this change and one recorded
+after it are not comparable.** The earlier figure counted 47 documents that the
+harness never let the engine look at. Quote the revision and the provenance fields
+next to any rate, as 6.244 requires, and treat any earlier resource-rejection count
+as a harness artefact rather than as a policy decision.
+
+### The runner points the typeface resolver at the WPT test face
+
+The WPT text references are rasterised with the Ahem face, which is not installed
+on a normal machine. Without it the runner substitutes a proportional face and
+reports every Ahem document as an engine failure, which is a statement about the
+machine, not about the renderer. For `--corpus-kind wpt` the runner now looks for
+`fonts/Ahem.ttf` at the corpus root and each of its ancestors, and points
+`FEN_SVG_FONT_PATH` at the first one it finds, before any worker is launched; the
+workers inherit the environment. A caller that has already set
+`FEN_SVG_FONT_PATH` keeps its own value, and the substitution is skipped entirely
+for a corpus kind that is not `wpt`, or when the checkout has no test face.
+
+This is only safe because the resolver's order was corrected in the same change: a
+named family that is installed wins first, a list of only generic keywords resolves
+to the platform substitution, and the configured face is consulted only for a
+family that is not installed. Injecting the test face before that correction
+replaced the platform's monospace in a document that names `monospace`, and broke
+the reference comparison it was meant to repair. Together the two changes took the
+text selection from six comparable reference failures to one, on an unchanged
+denominator: both runs selected the same 99 files, with 42 comparable and 28
+blocked.
+
+The general rule for reading a text rate: a font-related failure is only evidence
+about the renderer if the report was produced with the test face the reference was
+rasterised with. The runner does that now, so a rate from an earlier run that
+predates it needs re-running before it means anything.
+
+Verification:
+
+```bash
+dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release -- --corpus D:\wpt\svg --corpus-kind wpt --max-files 10000 --output Results/svg/wpt-full
+```
+
+Confirm from the report that `ResourceRejections` is counted from resolver
+outcomes rather than from pre-resolver refusals, and read
+`warningMessages` on any document that still fails to classify: `local WPT
+resource ...` is the resolver declining to supply a file, not a policy decision.
+For the font path, confirm the substitution happened by checking that Ahem
+documents are no longer counted as first-party failures, and re-run any
+font-sensitive comparison with `FEN_SVG_FONT_PATH` set explicitly to confirm the
+result does not depend on the caller's environment. The engine-side contract these
+runs measure is in `docs/VOLUME_III_FENENGINE.md` 2.178.
+
+## 6.246 Content-Based Replaced-Element Sizing Refusal Verification (2026-09-27)
+
+A sizing value that asks for a content-based size was admitted and then resolved to
+something else - to nothing at all on a nested `<svg>`, a `<symbol>` and an
+`<image>`, and to a substituted default on the root `<svg>` - so every one of those
+was reported as a clean frame. The contract is VOLUME_III 2.180; what the
+verification surface can see is below. This section did not exist for the image-only
+refusal or for the generalization that followed it.
+
+- A content-based sizing value no longer produces a frame at all. `min-content`,
+  `max-content`, `fit-content`, `stretch`, an unrecognised sizing function and an
+  unknown keyword are refused with a reason naming the subject, the property and
+  the value - `SVG image sizing property 'width: min-content' requires intrinsic
+  replaced-element sizing that this renderer does not compute` - classified
+  `unsupported-property`. The observable difference from the previous behaviour is
+  the classification: the document is inadmissible and the render is not reported
+  as a success, instead of a frame that is quietly empty or substituted.
+- The refusal is no longer keyword enumeration on one element. One shared predicate
+  answers for every box that accepts the same value family, so a `width` on a nested
+  `<svg>`, on the root `<svg>`, on a `<symbol>` and on a `use` instance refuses for
+  the same reason with the subject named in the message, on either axis and in the
+  presentation-attribute form.
+- Two behaviours moved the other way as a consequence, and both are corrections
+  rather than new refusals: `auto` on a nested `<svg>` or a `<symbol>` now takes the
+  hundred-percent default - the initial value, and the same extent an omitted
+  dimension takes - instead of leaving the viewport unpainted, and `use width auto`
+  falls through to the referenced element's own extent instead of leaving the
+  instance unpainted. Both previously reported success while painting nothing.
+- Corpus consequence, local `D:\wpt\svg` `styling` slice at `f4755e3b` with
+  renderer sources matching the revision:
+  `styling/image-sizing-min-content.tentative.svg` is `unsupported` /
+  `unsupported-property` carrying the reason above, and all fifteen
+  `styling/nested-svg-sizing-*.svg` documents stay first-party with their declared
+  references passing. They are unaffected because they carry the keyword as a CSS
+  declaration, which the cascade declines in favour of the `width`/`height`
+  attributes, not as a geometry attribute. The generalization therefore moves no
+  corpus classification against the image-only stage: compared per file against a
+  `styling` slice captured at the image-only commit `9b921018` on a dirty tree,
+  every `styling/` entry is unchanged. Compare per file rather than by total,
+  because the two runs select different slices.
+- The negative side is pinned rather than inferred: `auto`, plain lengths,
+  percentages, `calc` with ordinary lengths, viewport units, `em` and `rem`, and the
+  `min` and `clamp` functions still resolve; a shape keeps its path where the value
+  is invalid so `auto` applies; and `min-width`/`max-width` are still refused at the
+  cascade. `dotnet test FenBrowser.Tests -c Release --filter
+  "FullyQualifiedName~SvgReplacedSizingRefusalTests"`: pass (69/69) on 2026-09-27,
+  and `--filter "FullyQualifiedName~SvgImageSizingKeywordTests"`: pass (48/48).
+
+## 6.247 unicode-bidi Token-Set Predicate Verification (2026-09-27)
+
+`unicode-bidi` combines keywords, and every gate compared the trimmed whole value
+against the two isolate literals, so a value such as `isolate plaintext` was
+recorded, opened no frame, and dropped the isolate in silence under a success
+report. The contract, including which value families are refused and why, is in
+VOLUME_III 2.178 under the bidi subsection. What the verification surface can see:
+
+- A combined value is refused at all three gates rather than recorded and narrowed,
+  and the refusal arrives through each delivery route - the attribute, the cascade,
+  a CSS variable and a live animated value - so a document cannot reach the text
+  pass holding a value the pass would have dropped.
+- The cascade reason is value-aware. A value carrying `isolate` or
+  `isolate-override` is refused because the text model computes no isolating run
+  sequence; a value that only combines keywords - `embed plaintext`,
+  `plaintext embed`, `bidi-override plaintext`, `plaintext bidi-override` - is
+  refused because the text model resolves no frame or paragraph level for it. A
+  diagnostic naming the isolating run sequence for a value that isolates nothing is
+  asserted not to occur, because it would send an operator to a stage the document
+  never reached.
+- A value longer than the two-token budget the text model can reason about is
+  refused rather than passed, and the mutually exclusive `embed bidi-override` pair
+  stays admitted and dropped, because no browser accepts that pair either. An
+  unrecognised single keyword such as `inline` is still dropped and leaves the
+  inherited value in place.
+- Corpus consequence: none, and this is stated rather than implied. No document in
+  the local `D:\wpt\svg` checkout carries a combined `unicode-bidi` value - the only
+  authored values are the single keywords `bidi-override` and `normal` in
+  `import/text-intro-02-b-manual.svg`, `import/text-intro-09-b-manual.svg` and the
+  `text/reftests/tspan-opacity-mixed-direction-ref.svg` reference - so no corpus
+  classification moves and the predicate is covered by the focused slice alone. An
+  unchanged corpus rate is not evidence that this path is exercised.
+- `dotnet test FenBrowser.Tests -c Release --filter "FullyQualifiedName~UnicodeBidi"`:
+  pass (64/64) on 2026-09-27, across `Svg/SvgCssCascadeTests` and
+  `Svg/SvgTextShapingTests`.
+
+## 6.248 SVG Fuzz Suite (2026-09-29)
+
+`FenBrowser.Svg.Fuzz` is a seeded, deterministic xUnit suite that runs in the
+blocking fuzz job next to the JS suite. Targets and the properties they check:
+
+- `MarkupParserFuzz`: the XML-subset parser accepts with an `<svg>` root or rejects
+  with a bounded fatal reason; it never throws, keeps warnings inside their caps and
+  enforces the element budget. Fixed cases cover 100 000-deep nesting and nested
+  entity expansion.
+- `ValueParserFuzz`: path data, numbers, lengths, colours, paints, local references
+  and transform lists never throw, and whatever they accept is finite.
+- `RenderFuzz`: `FenSvgRenderer.Render` never throws; success means complete pixels
+  inside the raster caps, failure means no pixels and a named reason; diagnostics
+  stay bounded; a render that consistently overruns its time budget (re-measured
+  twice before failing) is a finding. It reports how many cases were admitted versus
+  rejected so a run that only exercises rejection paths is visible.
+- `InlineContextFuzz`: whatever custom properties reach the inline SVG bridge, its
+  root declarations stay a flat, validated `name: value;` list.
+
+Mutation is byte-level plus SVG-aware (deep `<g>` nesting, reference cycles through
+`use`, paint servers, filters, masks and clips, hostile attribute values, element
+soup), bounded to 64 KiB per case. Seeds are 18 built-in documents covering every
+renderer area plus, optionally, a directory. Knobs: `FEN_SVG_FUZZ_ITERATIONS`
+(default 48 per seed, four seeds per target), `FEN_SVG_FUZZ_CORPUS` (extra `.svg`
+seeds), `FEN_SVG_FUZZ_ARTIFACTS` (where failing inputs are written; default
+`Results/fuzz/svg`, and CI uploads them with the test results).
+
+Campaign on 2026-09-29: `FEN_SVG_FUZZ_ITERATIONS=2500 FEN_SVG_FUZZ_CORPUS=D:\wpt\svg`
+(1323 seeds, 10 000 cases per target): 25/25 pass, with 803-866 of every 2500
+mutated renders admitted. The first runs found three defects, fixed in
+VOLUME III 2.181: `TryParse` throwing on a filter-count violation (which escaped
+through `ImageLoader.GetInlineSvgImage`), the foreign end-tag scan slicing past the
+end of the input on an unterminated attribute value, and that scan reading a nested
+element's name after its attributes.
+
+## 6.249 First-Party SVG Versus Svg.Skia On WPT (2026-09-28)
+
+A head-to-head against Svg.Skia 5.1.1 as integrated in the `fenbrowser-test`
+checkout (its `SvgSkiaRenderer`, unchanged) over the same 309 WPT SVG reftests,
+using the same manifest index and the same `CompareWptPixels` comparison as
+`scripts/BenchSvg`. Passes where both the test and every match reference are blank
+are counted separately because two empty images always compare equal.
+
+| | First-party | Svg.Skia |
+|---|---:|---:|
+| Passes | 231 / 309 | 148 / 309 |
+| of which blank on both sides | 21 | 14 |
+| Passes with content | 210 | 134 |
+
+Per test: both pass 126, first-party only 84, Svg.Skia only 8, neither 91. Of the
+eight, one (`embedded/image-embedding-svg-with-auto-height.svg`) was a first-party
+bug since fixed; one (`text/reftests/textpath-pathlength-zero-offset-percentage.svg`)
+contradicts `path/distance/pathLength-zero-percentage.svg`, which first-party,
+Chrome and Firefox follow and which Svg.Skia fails because it ignores `pathLength`;
+the other six are documents the first-party renderer refuses by design (a blocked
+resource, a script, viewport units, a paint-server URL form). Caveats: Svg.Skia ran
+without the Ahem test font, and per-test timing was not compared because the two
+harnesses start processes differently.
+
+## 6.250 Real-Site SVG Parity With Chrome (2026-09-29)
+
+`BenchSvg --capture-sites scripts/BenchSvg/captured-sites.json` captured 151 SVGs
+(inline and linked) from the static HTML of the eleven listed sites; Amazon, Gmail,
+CSS Zen Garden and the React TodoMVC build expose none without script.
+`python scripts/svg_chrome_diff.py <capture> <output>` renders each one with the
+first-party renderer and with headless Chrome at the same size and compares them
+premultiplied, counting a pixel as different when a channel moves by more than 48.
+Inline captures go through FenBrowser's HTML parser (`BenchSvg --inspect-inline-svg`)
+and are embedded inline in the Chrome page, pinned to the rendered size so page
+layout stays out of the comparison; linked files load through `<img>`.
+
+Result on 2026-09-29: 151/151 match (no pixel over the threshold): GitHub 128,
+X 10, Wikipedia 5, YouTube 3, Grafana 3, Google 1, Hacker News 1. The first run found
+five inline documents refused because the HTML tree builder did not restore SVG
+element names (VOLUME II 1.97), which is fixed.
+
+## 6.251 Scripted WPT SVG Reftests As Documents (2026-09-29)
+
+The static corpus runner cannot evaluate reftests that change the document from
+script, so `scripts/BenchSvg/WptDocumentRunner.cs` loads each test and reference as a
+top-level document in `BrowserHost` (XML DOM, FenJS, CSS, layout, paint) from a
+loopback, GET-only, root-confined HTTP server over the WPT checkout. It honours
+`reftest-wait`, primes a paint, waits for pending image loads to drain, paints at
+800x600 on white and compares with the manifest's fuzzy tolerances. Reports go to the
+`--output` directory; with `FEN_SVG_DIAGNOSTICS=failures` each test's diagnostics
+include SVG render refusals next to script errors.
+
+    BenchSvg --wpt-documents D:/wpt/svg --tests scripts/BenchSvg/scripted-reftests.txt \
+             --output Results/svg/wpt-documents
+
+Result on 2026-09-29: 35/36 (13 before this work). The static image corpus moved from
+232/309 to 235/309 with external `use` and `::first-letter`. Remaining:
+`struct/reftests/use-cross-origin.svg` (the refused cross-origin `use` fails the whole
+render; see VOLUME III 2.195). The
+fuzz suite gained a target whose `use` elements load external documents that resolve
+to the mutated document itself.

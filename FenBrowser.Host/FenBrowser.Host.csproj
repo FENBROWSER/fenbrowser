@@ -29,6 +29,8 @@
     -->
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <!-- Precompile Release publishes so first-use paths (SVG, CSS, layout) skip the JIT. -->
+    <PublishReadyToRun Condition="'$(Configuration)' == 'Release' and '$(RuntimeIdentifier)' != ''">true</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>

@@ -397,7 +397,11 @@ namespace FenBrowser.Host.ProcessIsolation
         {
             if (!_isWriter)
                 throw new InvalidOperationException("A shared-frame reader cannot publish frames.");
-            if (_accessor == null || _disposed)
+            if (_disposed)
+                return;
+
+            var accessor = _accessor;
+            if (accessor == null)
                 return;
 
             if (!TryComputePixelBytes(width, height, out var pixelBytes) || pixelBytes > _regionCapacity)
@@ -416,16 +420,16 @@ namespace FenBrowser.Host.ProcessIsolation
                 return;
             }
 
-            uint previous = _accessor.ReadUInt32(OffsetSeq);
+            uint previous = accessor.ReadUInt32(OffsetSeq);
             uint writingSequence = (previous & 1u) == 0 ? previous + 1u : previous + 2u;
             uint publishedSequence = writingSequence + 1u;
-            _accessor.Write(OffsetSeq, writingSequence);
+            accessor.Write(OffsetSeq, writingSequence);
             Thread.MemoryBarrier();
 
             unsafe
             {
                 byte* ptr = null;
-                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
+                accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
                 try
                 {
                     var dest = new Span<byte>(ptr + HeaderSize, pixelBytes);
@@ -433,14 +437,14 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
                 finally
                 {
-                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+                    accessor.SafeMemoryMappedViewHandle.ReleasePointer();
                 }
             }
 
-            _accessor.Write(OffsetWidth, width);
-            _accessor.Write(OffsetHeight, height);
+            accessor.Write(OffsetWidth, width);
+            accessor.Write(OffsetHeight, height);
             Thread.MemoryBarrier();
-            _accessor.Write(OffsetSeq, publishedSequence);
+            accessor.Write(OffsetSeq, publishedSequence);
         }
 
         public unsafe void WriteFrame(int width, int height, IntPtr bgraPixels, int bufferLength)
@@ -506,15 +510,19 @@ namespace FenBrowser.Host.ProcessIsolation
 
             if (_isWriter)
                 throw new InvalidOperationException("A shared-frame writer cannot consume compositor frames.");
-            if (_accessor == null || _disposed || destination == IntPtr.Zero || destinationCapacity <= 0)
+            if (_disposed)
                 return false;
 
-            uint sequenceBefore = _accessor.ReadUInt32(OffsetSeq);
+            var accessor = _accessor;
+            if (accessor == null || destination == IntPtr.Zero || destinationCapacity <= 0)
+                return false;
+
+            uint sequenceBefore = accessor.ReadUInt32(OffsetSeq);
             if ((sequenceBefore & 1u) != 0)
                 return false;
 
-            width = _accessor.ReadInt32(OffsetWidth);
-            height = _accessor.ReadInt32(OffsetHeight);
+            width = accessor.ReadInt32(OffsetWidth);
+            height = accessor.ReadInt32(OffsetHeight);
             if (!TryComputePixelBytes(width, height, out var pixelBytes) || pixelBytes > _regionCapacity)
             {
                 if (width != 0 || height != 0)
@@ -532,18 +540,18 @@ namespace FenBrowser.Host.ProcessIsolation
             }
 
             byte* ptr = null;
-            _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
+            accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
             try
             {
                 Buffer.MemoryCopy(ptr + HeaderSize, destination.ToPointer(), destinationCapacity, pixelBytes);
             }
             finally
             {
-                _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+                accessor.SafeMemoryMappedViewHandle.ReleasePointer();
             }
 
             Thread.MemoryBarrier();
-            uint sequenceAfter = _accessor.ReadUInt32(OffsetSeq);
+            uint sequenceAfter = accessor.ReadUInt32(OffsetSeq);
             if (sequenceBefore != sequenceAfter || (sequenceAfter & 1u) != 0)
                 return false;
 

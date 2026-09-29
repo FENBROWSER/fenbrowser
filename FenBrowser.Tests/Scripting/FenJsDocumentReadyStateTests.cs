@@ -76,6 +76,45 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
+        public void XmlDomParser_PreservesSvgXhtmlElementsAndNamespacedAttributes()
+        {
+            const string xml = "<?xml version='1.0' encoding='UTF-8'?>\n" +
+                "<svg xmlns='http://www.w3.org/2000/svg' " +
+                "xmlns:h='http://www.w3.org/1999/xhtml' " +
+                "xmlns:xlink='http://www.w3.org/1999/xlink'>" +
+                "<h:script src='/resources/testharness.js'/>" +
+                "<use xlink:href='#shape'/></svg>\n";
+
+            var parsed = XmlDomParser.Parse(xml, "image/svg+xml");
+            var root = parsed.DocumentElement;
+            var script = Assert.IsType<Element>(root.FirstChild);
+            var use = Assert.IsType<Element>(script.NextSibling);
+
+            Assert.Equal("svg", root.LocalName);
+            Assert.Equal("http://www.w3.org/2000/svg", root.NamespaceUri);
+            Assert.Equal("script", script.LocalName);
+            // tagName is the qualified name (DOM §4.9); its case follows the document type.
+            Assert.Equal("h:script", script.TagName, ignoreCase: true);
+            Assert.Equal("h", script.Prefix);
+            Assert.Equal("http://www.w3.org/1999/xhtml", script.NamespaceUri);
+            Assert.Equal("#shape", use.GetAttributeNS("http://www.w3.org/1999/xlink", "href"));
+            Assert.Equal("xlink", use.Attributes.GetNamedItemNS(
+                "http://www.w3.org/1999/xlink", "href").Prefix);
+        }
+
+        [Theory]
+        [InlineData("image/svg+xml")]
+        [InlineData(" image/svg+xml; charset=utf-8 ")]
+        [InlineData("application/xhtml+xml; charset=UTF-8")]
+        public void XmlDomParser_RecognizesParameterizedXmlMimeTypes(string contentType)
+        {
+            Assert.True(XmlDomParser.IsXmlMimeType(contentType));
+
+            var parsed = XmlDomParser.ParseWithErrorDocument("<svg/>", contentType);
+            Assert.Equal(contentType, parsed.ContentType);
+        }
+
+        [Fact]
         public void XmlDomParser_MalformedXml_YieldsParserErrorDocument()
         {
             var parsed = XmlDomParser.ParseWithErrorDocument("<html><p>unclosed");

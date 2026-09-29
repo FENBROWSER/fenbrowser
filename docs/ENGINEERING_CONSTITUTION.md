@@ -91,6 +91,15 @@ try {
 }
 ```
 
+### Single Backend
+
+SVG rendering is first-party only; there is no compatibility or fallback
+renderer. A declared unsupported feature, a resource-policy rejection, or a
+failed sandbox admission produces **no pixels**: `SvgRenderResult.IsAdmissible`
+is the shared fail-closed predicate, and a rejected result is dropped rather
+than downgraded to approximate output. Degradation is a placeholder at the
+consumer, never a second-hand parse of the same document.
+
 ---
 
 ## RULE 4: Rendering Backend Must Be Abstract
@@ -135,17 +144,22 @@ For every hot-path dependency: "If it dies tomorrow, can we survive?"
 | HarfBuzz    | ✅ YES   | None                        |
 | Silk.NET    | ✅ YES   | None                        |
 | RichTextKit | ⚠️ MAYBE | Wrap behind `ITextMeasurer` |
-| Svg.Skia    | ⚠️ MAYBE | Wrap behind `ISvgRenderer`  |
+| SVG         | ✅ YES   | First-party; no replaceable adapter to maintain |
 
 ### Adapter Pattern
 
 ```
 FenEngine.Core.ITextMeasurer        (Interface)
     └── FenEngine.Adapters.RichTextKitMeasurer  (Replaceable)
-
-FenEngine.Core.ISvgRenderer         (Interface)
-    └── FenEngine.Adapters.SvgSkiaRenderer      (Replaceable)
 ```
+
+`ITextMeasurer` earns its keep because RichTextKit is a third-party dependency
+that could die. The SVG seam does not: SVG rendering is first-party code in
+`FenEngine/Svg/` plus `Adapters/FenSvgRenderer.cs`, so there is nothing external
+to replace. `ISvgRenderer` remains the boundary that keeps Skia types out of
+consumers and keeps sandbox admission in one place, not a replaceable-adapter
+contract. Re-adding a second SVG backend would be a new dependency decision and
+must not be reintroduced through this seam.
 
 If RichTextKit dies in 2026:
 
@@ -162,7 +176,8 @@ Before any merge to main:
 - [ ] No `TextBlock.MaxWidth` usage
 - [ ] No raw `SKFontMetrics` in layout code
 - [ ] No `SKCanvas` outside `IRenderBackend`
-- [ ] No direct `Svg.Skia` calls outside adapter
+- [ ] No third-party SVG renderer, and no `SvgRendererBackend` value other than
+      `FirstParty`
 - [ ] No direct `RichTextKit` calls outside adapter
 - [ ] SVG render limits enforced
 - [ ] All new code has unit tests via HeadlessRenderer

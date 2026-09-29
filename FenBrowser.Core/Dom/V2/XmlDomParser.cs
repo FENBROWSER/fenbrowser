@@ -33,15 +33,18 @@ public static class XmlDomParser
     /// </summary>
     public static bool IsXmlMimeType(string mimeType)
     {
-        if (string.IsNullOrEmpty(mimeType))
+        if (string.IsNullOrWhiteSpace(mimeType))
         {
             return false;
         }
 
-        return string.Equals(mimeType, "text/xml", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(mimeType, "application/xml", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(mimeType, "application/xhtml+xml", StringComparison.OrdinalIgnoreCase)
-            || (mimeType.Length > 4 && mimeType.EndsWith("+xml", StringComparison.OrdinalIgnoreCase));
+        var parameterIndex = mimeType.IndexOf(';');
+        var essence = (parameterIndex >= 0 ? mimeType[..parameterIndex] : mimeType).Trim();
+
+        return string.Equals(essence, "text/xml", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(essence, "application/xml", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(essence, "application/xhtml+xml", StringComparison.OrdinalIgnoreCase)
+            || (essence.Length > 4 && essence.EndsWith("+xml", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -127,6 +130,10 @@ public static class XmlDomParser
             return Parse(xml, contentType);
         }
         catch (XmlDomParseException ex)
+        {
+            return CreateParserErrorDocument(ex.Message);
+        }
+        catch (DomException ex)
         {
             return CreateParserErrorDocument(ex.Message);
         }
