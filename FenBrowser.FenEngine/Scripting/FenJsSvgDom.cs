@@ -283,6 +283,11 @@ public sealed partial class FenJsBrowserScriptEngine
             return true;
         }
 
+        if (TryGetSvgGeometryProperty(element, property, out value))
+        {
+            return true;
+        }
+
         if (localName != "svg")
         {
             return false;
@@ -315,6 +320,7 @@ public sealed partial class FenJsBrowserScriptEngine
             SvgTransformListHost list => TryGetTransformListProperty(list, property, out value),
             SvgTransformHost transform => TryGetTransformProperty(transform, property, out value),
             SvgMatrixHost matrix => TryGetMatrixProperty(matrix, property, out value),
+            SvgPointHost point => TryGetSvgPointProperty(point, property, out value),
             _ => Undefined(out value)
         };
         if (found)
@@ -351,6 +357,11 @@ public sealed partial class FenJsBrowserScriptEngine
                 default: m.TransY = component; break;
             }
             matrix.Value = m;
+            return true;
+        }
+
+        if (host is SvgPointHost point && TrySetSvgPointProperty(point, property, value))
+        {
             return true;
         }
 
