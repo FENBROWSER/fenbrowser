@@ -5096,6 +5096,7 @@ namespace FenBrowser.FenEngine.Rendering
                     
                     return new CustomPaintNode
                     {
+                        SourceNode = elem,
                         Bounds = box.ContentBox,
                         PaintAction = (canvas, bounds) =>
                         {
@@ -5122,6 +5123,7 @@ namespace FenBrowser.FenEngine.Rendering
                     
                     return new CustomPaintNode
                     {
+                        SourceNode = elem,
                         Bounds = box.ContentBox,
                         PaintAction = (canvas, bounds) =>
                         {
@@ -5154,6 +5156,7 @@ namespace FenBrowser.FenEngine.Rendering
                 case "datetime-local":
                     return new CustomPaintNode
                     {
+                        SourceNode = elem,
                         Bounds = box.ContentBox,
                         PaintAction = (canvas, bounds) =>
                         {
@@ -5187,6 +5190,7 @@ namespace FenBrowser.FenEngine.Rendering
                 case "time":
                     return new CustomPaintNode
                     {
+                        SourceNode = elem,
                         Bounds = box.ContentBox,
                         PaintAction = (canvas, bounds) =>
                         {
@@ -5219,6 +5223,7 @@ namespace FenBrowser.FenEngine.Rendering
                 case "number":
                     return new CustomPaintNode
                     {
+                        SourceNode = elem,
                         Bounds = box.ContentBox,
                         PaintAction = (canvas, bounds) =>
                         {
@@ -5268,6 +5273,7 @@ namespace FenBrowser.FenEngine.Rendering
                 case "file":
                     return new CustomPaintNode
                     {
+                        SourceNode = elem,
                         Bounds = box.ContentBox,
                         PaintAction = (canvas, bounds) =>
                         {
@@ -5390,6 +5396,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             return new CustomPaintNode
             {
+                SourceNode = elem,
                 Bounds = box.ContentBox,
                 PaintAction = (canvas, bounds) =>
                 {
@@ -5533,6 +5540,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             return new CustomPaintNode
             {
+                SourceNode = elem,
                 Bounds = box.ContentBox,
                 PaintAction = (canvas, bounds) =>
                 {
@@ -5591,6 +5599,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             return new CustomPaintNode
             {
+                SourceNode = elem,
                 Bounds = box.ContentBox,
                 PaintAction = (canvas, bounds) =>
                 {
@@ -5619,6 +5628,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             return new CustomPaintNode
             {
+                SourceNode = elem,
                 Bounds = box.ContentBox,
                 PaintAction = (canvas, bounds) =>
                 {

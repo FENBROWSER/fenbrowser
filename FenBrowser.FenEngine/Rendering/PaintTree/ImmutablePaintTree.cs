@@ -53,15 +53,41 @@ namespace FenBrowser.FenEngine.Rendering
             return count;
         }
 
+        /// <summary>
+        /// Splices a freshly built paint subtree for <paramref name="sourceNode"/> in place
+        /// of everything the previous build produced for that DOM subtree, or returns null
+        /// when that cannot be done exactly and the caller must rebuild the whole tree.
+        /// A DOM subtree rarely paints as one node: an element emits sibling nodes for its
+        /// background, border and content (a video's frame), and positioned descendants
+        /// are hoisted into an ancestor's stacking context. The splice is exact only when
+        /// every node the subtree owns sits in one contiguous run under a single parent;
+        /// replacing just the first match left the rest behind, and the tree grew by a
+        /// copy of the subtree on every paint-only frame.
+        /// </summary>
         public ImmutablePaintTree WithReplacedSubtree(
             Node sourceNode,
             IReadOnlyList<PaintNodeBase> newSubtreeNodes)
         {
             if (sourceNode == null || newSubtreeNodes == null || Roots.Count == 0)
-                return this;
+                return null;
 
             var parentLinks = new Dictionary<PaintNodeBase, ParentLink>();
+            var ownership = new Dictionary<Node, bool>();
+
+            // A new top-level node the next splice could not attribute to this subtree
+            // (no source, or a source outside it) would never be replaced again.
+            for (var i = 0; i < newSubtreeNodes.Count; i++)
+            {
+                if (newSubtreeNodes[i] == null || !IsOwnedBy(newSubtreeNodes[i].SourceNode, sourceNode, ownership))
+                    return null;
+            }
+
             var search = new Stack<PaintNodeBase>();
+            PaintNodeBase ownedParent = null;
+            int firstOwned = int.MaxValue;
+            int lastOwned = -1;
+            int ownedCount = 0;
+            bool foundSourceNode = false;
 
             for (var i = Roots.Count - 1; i >= 0; i--)
             {
@@ -71,14 +97,22 @@ namespace FenBrowser.FenEngine.Rendering
                 search.Push(root);
             }
 
-            PaintNodeBase found = null;
             while (search.Count > 0)
             {
                 var node = search.Pop();
-                if (ReferenceEquals(node.SourceNode, sourceNode))
+                var link = parentLinks[node];
+                if (IsOwnedBy(node.SourceNode, sourceNode, ownership))
                 {
-                    found = node;
-                    break;
+                    // Everything below an owned node is replaced with it.
+                    if (ownedCount > 0 && !ReferenceEquals(ownedParent, link.Parent))
+                        return null;
+
+                    ownedParent = link.Parent;
+                    firstOwned = Math.Min(firstOwned, link.Index);
+                    lastOwned = Math.Max(lastOwned, link.Index);
+                    ownedCount++;
+                    foundSourceNode |= ReferenceEquals(node.SourceNode, sourceNode);
+                    continue;
                 }
 
                 var children = node.Children;
@@ -92,44 +126,75 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            if (found == null)
-                return this;
+            if (!foundSourceNode || lastOwned - firstOwned + 1 != ownedCount)
+                return null;
 
             IReadOnlyList<PaintNodeBase> replacement = newSubtreeNodes;
-            var current = found;
+            int replaceIndex = firstOwned;
+            int replaceCount = ownedCount;
+            var current = ownedParent;
 
-            while (parentLinks.TryGetValue(current, out var link) && link.Parent != null)
+            while (current != null)
             {
-                var parent = link.Parent;
-                var newChildren = ReplaceAt(parent.Children, link.Index, replacement);
-                var clonedParent = parent.CloneWithChildren(newChildren);
-                replacement = new[] { clonedParent };
-                current = parent;
+                var newChildren = ReplaceRange(current.Children, replaceIndex, replaceCount, replacement);
+                replacement = new[] { current.CloneWithChildren(newChildren) };
+                var link = parentLinks[current];
+                replaceIndex = link.Index;
+                replaceCount = 1;
+                current = link.Parent;
             }
 
-            if (!parentLinks.TryGetValue(current, out var rootLink) || rootLink.Parent != null)
-                return this;
-
-            var newRoots = ReplaceAt(Roots, rootLink.Index, replacement);
+            var newRoots = ReplaceRange(Roots, replaceIndex, replaceCount, replacement);
             return new ImmutablePaintTree(newRoots, FrameId, CountNodes(newRoots));
         }
 
-        private static IReadOnlyList<PaintNodeBase> ReplaceAt(
+        /// <summary>Whether <paramref name="node"/> is <paramref name="subtreeRoot"/> or inside it, across shadow and pseudo-element boundaries.</summary>
+        private static bool IsOwnedBy(Node node, Node subtreeRoot, Dictionary<Node, bool> memo)
+        {
+            if (node == null) return false;
+            if (memo.TryGetValue(node, out var known)) return known;
+
+            bool owned = false;
+            for (var current = node; current != null; current = OwnerOf(current))
+            {
+                if (ReferenceEquals(current, subtreeRoot))
+                {
+                    owned = true;
+                    break;
+                }
+
+                if (!ReferenceEquals(current, node) && memo.TryGetValue(current, out var ancestorOwned))
+                {
+                    owned = ancestorOwned;
+                    break;
+                }
+            }
+
+            memo[node] = owned;
+            return owned;
+        }
+
+        private static Node OwnerOf(Node node) => node switch
+        {
+            ShadowRoot shadowRoot => shadowRoot.Host,
+            PseudoElement { ParentNode: null } pseudo => pseudo.OriginatingElement,
+            _ => node.ParentNode
+        };
+
+        private static IReadOnlyList<PaintNodeBase> ReplaceRange(
             IReadOnlyList<PaintNodeBase> nodes,
             int index,
+            int count,
             IReadOnlyList<PaintNodeBase> replacement)
         {
-            if (nodes == null || index < 0 || index >= nodes.Count)
-                return nodes;
-
             var replacementCount = replacement?.Count ?? 0;
-            var result = new List<PaintNodeBase>(Math.Max(0, nodes.Count - 1 + replacementCount));
+            var result = new List<PaintNodeBase>(Math.Max(0, nodes.Count - count + replacementCount));
             for (var i = 0; i < index; i++) result.Add(nodes[i]);
             if (replacement != null)
             {
                 for (var i = 0; i < replacement.Count; i++) result.Add(replacement[i]);
             }
-            for (var i = index + 1; i < nodes.Count; i++) result.Add(nodes[i]);
+            for (var i = index + count; i < nodes.Count; i++) result.Add(nodes[i]);
             return result;
         }
 

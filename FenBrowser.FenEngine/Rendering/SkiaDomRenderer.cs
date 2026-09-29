@@ -919,7 +919,7 @@ namespace FenBrowser.FenEngine.Rendering
                                                    RenderFrameInvalidationReason.Dom |
                                                    RenderFrameInvalidationReason.Layout)) == 0;
 
-                        ImmutablePaintTree paintTree;
+                        ImmutablePaintTree paintTree = null;
                         if (useIncrementalPaint)
                         {
                             EngineLogCompat.Debug(
@@ -932,15 +932,18 @@ namespace FenBrowser.FenEngine.Rendering
                                     dirtyRoot, _boxes, styles,
                                     _viewportWidth, _viewportHeight,
                                     _scrollManager, baseUrl);
-                                if (newSubtree.Count > 0)
+                                // Null: the subtree's old nodes are not one splice-able
+                                // run, so only a full build is correct.
+                                mergedTree = mergedTree.WithReplacedSubtree(dirtyRoot, newSubtree);
+                                if (mergedTree == null)
                                 {
-                                    mergedTree = mergedTree.WithReplacedSubtree(
-                                        dirtyRoot, newSubtree);
+                                    break;
                                 }
                             }
                             paintTree = mergedTree;
                         }
-                        else
+
+                        if (paintTree == null)
                         {
                             EngineLogCompat.Debug(
                                 $"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}",
