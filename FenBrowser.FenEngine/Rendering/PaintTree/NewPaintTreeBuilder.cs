@@ -2044,19 +2044,11 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             
-            // Wrap in OpacityGroupPaintNode if needed (group-based opacity only). A
-            // text node's style is its parent's, whose opacity the parent applies.
-            if (node is not Text && style?.Opacity.HasValue == true && style.Opacity.Value < 1.0)
-            {
-                var groupNode = new OpacityGroupPaintNode
-                {
-                    Bounds = bounds,
-                    Opacity = (float)style.Opacity.Value,
-                    Children = nodes
-                };
-                return new List<PaintNodeBase> { groupNode };
-            }
-            
+            // No opacity group here: opacity < 1 always makes the element a stacking
+            // context (DetermineCreatesStackingContext), and the context's Flatten wraps
+            // these nodes together with the descendants in one group. A second group
+            // around the element's own nodes applied the opacity twice (.5 painted as .25).
+
             // Phase 4: stamp every paint node with a stable identity derived from
             // the DOM node's object reference. This persists across rebuilds so the
             // previous frame's nodes can be matched for incremental replacement.
