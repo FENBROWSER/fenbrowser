@@ -5873,9 +5873,9 @@ include SVG render refusals next to script errors.
     BenchSvg --wpt-documents D:/wpt/svg --tests scripts/BenchSvg/scripted-reftests.txt \
              --output Results/svg/wpt-documents
 
-Result on 2026-09-29: 34/36 (13 before this work). The static image corpus moved from
-232/309 to 234/309 with external `use`. Remaining: `text/reftests/first-letter.svg`
-(`::first-letter` is refused in SVG text) and `struct/reftests/use-cross-origin.svg`
-(the refused cross-origin `use` fails the whole render; see VOLUME III 2.195). The
+Result on 2026-09-29: 35/36 (13 before this work). The static image corpus moved from
+232/309 to 235/309 with external `use` and `::first-letter`. Remaining:
+`struct/reftests/use-cross-origin.svg` (the refused cross-origin `use` fails the whole
+render; see VOLUME III 2.195). The
 fuzz suite gained a target whose `use` elements load external documents that resolve
 to the mutated document itself.

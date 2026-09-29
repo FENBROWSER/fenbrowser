@@ -13068,6 +13068,23 @@ cross-origin `use`) still fails the whole render, on every path, as the existing
 fail-closed tests require. Browsers paint the rest of the document. Relaxing this is
 a security-policy decision.
 
+## 2.196 ::first-letter In SVG Text (2026-09-29)
+
+Documents that styled `::first-letter` used to be refused, because the cascade could
+not match pseudo-elements. `Svg/SvgFirstLetter.cs` now models the pseudo-element the
+way CSS Pseudo-Elements 4 §2.4 describes it: when a `::first-letter` rule matches a
+`text` element, its first typographic letter unit (the first letter, number or
+symbol grapheme with any punctuation before and after it; leading white space is
+skipped) is wrapped in a synthetic element inside the innermost element that holds
+it. That element is only in its parent's content list, never among its children, so
+structural selectors and IDs cannot see it. The cascade (`ApplyFirstLetter` in
+`SvgCssCascade.cs`) styles it from `::first-letter` chains alone, matched against
+the originating `text` element with their full specificity, and only with the
+properties that apply to the pseudo-element (fill and stroke, font, text decoration,
+spacing, `color`, `opacity`, custom properties). Text layout paints it like a tspan,
+so it inherits from its real parent. `tspan` and `textPath` are inline, so
+`::first-letter` does not apply to them; `::first-line` is still refused.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.
