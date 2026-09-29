@@ -644,7 +644,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // the containing block instead (CSS Transforms §2), so it scrolls along.
                 if (string.Equals(style?.Position, "fixed", StringComparison.OrdinalIgnoreCase) &&
                     node is Element fixedElement &&
-                    !HasTransformedAncestor(fixedElement))
+                    NeedsFixedScrollCounterTranslation(fixedElement))
                 {
                     var fixedScroll = ResolveViewportScrollForFixed(fixedElement);
                     if (Math.Abs(fixedScroll.X) > 0.01f || Math.Abs(fixedScroll.Y) > 0.01f)
@@ -1642,19 +1642,36 @@ namespace FenBrowser.FenEngine.Rendering
             return new SKPoint(viewportOffset.x, viewportOffset.y);
         }
 
-        private bool HasTransformedAncestor(Element element)
+        /// <summary>
+        /// Whether this fixed box must undo the viewport scroll itself. Not when a
+        /// transformed ancestor is its containing block (it scrolls along), and not
+        /// when an ancestor is fixed too: the box paints inside that ancestor's
+        /// stacking context, which already undid the scroll, so a second
+        /// counter-translation drops it by the scroll offset (github.com's header
+        /// inside its fixed .header-wrapper slid down the page on every scroll).
+        /// </summary>
+        private bool NeedsFixedScrollCounterTranslation(Element element)
         {
             for (var current = element?.ParentElement; current != null; current = current.ParentElement)
             {
-                if (_styles.TryGetValue(current, out var ancestorStyle) &&
-                    !string.IsNullOrEmpty(ancestorStyle.Transform) &&
+                if (!_styles.TryGetValue(current, out var ancestorStyle))
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(ancestorStyle.Transform) &&
                     !string.Equals(ancestorStyle.Transform, "none", StringComparison.OrdinalIgnoreCase))
                 {
-                    return true;
+                    return false;
+                }
+
+                if (string.Equals(ancestorStyle.Position, "fixed", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
                 }
             }
 
-            return false;
+            return true;
         }
 
         private Element FindNearestScrollContainer(Element startNode)
