@@ -1937,7 +1937,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private BrowserScriptLoadingRecord AddScriptLoadingRecord(Element scriptElement, int ordinal, bool isModule, bool isAsync, bool isDefer)
     {
-        var src = scriptElement?.GetAttribute("src") ?? string.Empty;
+        var src = ScriptSourceOf(scriptElement) ?? string.Empty;
         var record = new BrowserScriptLoadingRecord
         {
             Ordinal = ordinal,
@@ -1969,7 +1969,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private BrowserScriptLoadingRecord AddDynamicScriptLoadingRecord(Element scriptElement)
     {
         var ordinal = Interlocked.Increment(ref _dynamicScriptTraceCounter);
-        var src = scriptElement?.GetAttribute("src") ?? string.Empty;
+        var src = ScriptSourceOf(scriptElement) ?? string.Empty;
         var type = scriptElement?.GetAttribute("type")?.ToLowerInvariant() ?? string.Empty;
         var isModule = type == "module";
         var record = new BrowserScriptLoadingRecord
@@ -2036,6 +2036,26 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             fields);
     }
 
+    /// <summary>
+    /// The external source of a script element: <c>src</c> for an HTML script,
+    /// <c>href</c> (or the legacy <c>xlink:href</c>) for an SVG script (SVG 2 §15.2
+    /// "The script element"). Null when the script is inline.
+    /// </summary>
+    private static string ScriptSourceOf(Element scriptElement)
+    {
+        if (scriptElement == null)
+        {
+            return null;
+        }
+
+        if (string.Equals(scriptElement.NamespaceUri, Namespaces.Svg, StringComparison.Ordinal))
+        {
+            return scriptElement.GetAttribute("href") ?? scriptElement.GetAttribute("xlink:href");
+        }
+
+        return scriptElement.GetAttribute("src");
+    }
+
     private static string BuildScriptId(int ordinal)
     {
         return "script-" + Math.Max(0, ordinal).ToString(CultureInfo.InvariantCulture);
@@ -2044,7 +2064,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private static string BuildScriptSourceLabel(Element scriptElement, int ordinal)
     {
         var scriptId = BuildScriptId(ordinal);
-        var src = scriptElement?.GetAttribute("src");
+        var src = ScriptSourceOf(scriptElement);
         if (!string.IsNullOrWhiteSpace(src))
         {
             return "external:" + src.Trim();
@@ -2386,7 +2406,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             {
                 var scriptElement = allScripts[i];
                 var type = scriptElement.GetAttribute("type")?.ToLowerInvariant() ?? string.Empty;
-                var src = scriptElement.GetAttribute("src");
+                var src = ScriptSourceOf(scriptElement);
                 bool isModule = type == "module";
                 bool isAsync = false;
                 bool isDefer = false;
@@ -2420,7 +2440,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 {
                     if (type != "application/ld+json")
                         FenBrowser.Core.EngineLogCompat.Debug(
-                            $"[FenJsBridge] Skipping script with unknown type '{type}': src={scriptElement.GetAttribute("src")}",
+                            $"[FenJsBridge] Skipping script with unknown type '{type}': src={ScriptSourceOf(scriptElement)}",
                             FenBrowser.Core.Logging.LogCategory.JavaScript);
                     MarkScriptSkipped(scriptRecord, $"unsupported-type:{type}");
                     continue;
@@ -2429,7 +2449,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 if (scriptElement.HasAttribute("nomodule"))
                 {
                     FenBrowser.Core.EngineLogCompat.Debug(
-                        $"[FenJsBridge] Skipping nomodule script: src={scriptElement.GetAttribute("src")}",
+                        $"[FenJsBridge] Skipping nomodule script: src={ScriptSourceOf(scriptElement)}",
                         FenBrowser.Core.Logging.LogCategory.JavaScript);
                     MarkScriptSkipped(scriptRecord, "nomodule");
                     continue;
@@ -2946,7 +2966,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     {
                         try { desc = _interpreter.DescribeThrownValue(jte.Value); } catch { }
                     }
-                    var srcAttr = item.ScriptElement?.GetAttribute("src");
+                    var srcAttr = ScriptSourceOf(item.ScriptElement);
                     var origin = string.IsNullOrEmpty(srcAttr)
                         ? $"inline script (first {Math.Min(code?.Length ?? 0, 120)} chars)"
                         : srcAttr;
@@ -2972,7 +2992,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 }
                 catch (Exception ex)
                 {
-                    var srcAttr = item.ScriptElement?.GetAttribute("src");
+                    var srcAttr = ScriptSourceOf(item.ScriptElement);
                     var origin = string.IsNullOrEmpty(srcAttr)
                         ? $"inline script (first {Math.Min(code?.Length ?? 0, 120)} chars)"
                         : srcAttr;
@@ -3243,7 +3263,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         var src = !string.IsNullOrWhiteSpace(scriptRecord?.Src)
             ? scriptRecord.Src
-            : scriptElement?.GetAttribute("src");
+            : ScriptSourceOf(scriptElement);
         if (!string.IsNullOrWhiteSpace(src) &&
             TryResolveUri(src, baseUri, out var scriptUri))
         {
@@ -11267,7 +11287,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 if (string.Equals(element.TagName, "script", StringComparison.OrdinalIgnoreCase))
                 {
                     scriptElements++;
-                    var src = element.GetAttribute("src") ?? string.Empty;
+                    var src = ScriptSourceOf(element) ?? string.Empty;
                     LogScriptLoading(
                         "ScriptElementDiscovered",
                         LogSeverity.Debug,
@@ -15156,7 +15176,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         var scriptRecord = AddDynamicScriptLoadingRecord(scriptElement);
-        var src = scriptElement.GetAttribute("src");
+        var src = ScriptSourceOf(scriptElement);
         var discoveredFields = CreateScriptRecordFields(scriptRecord);
         discoveredFields["dynamic"] = true;
         LogScriptLoading(
@@ -15466,7 +15486,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(scriptElement.GetAttribute("src")))
+            if (!string.IsNullOrWhiteSpace(ScriptSourceOf(scriptElement)))
             {
                 continue;
             }
