@@ -841,6 +841,25 @@ public sealed partial class BytecodeInterpreter
     {
         var namesFunction = (flags & 1) != 0;
         var orThrow = (flags & 2) != 0;
+        if (target.Tag == JsValueTag.HostObject)
+        {
+            // A custom element's class fields land on the platform object its
+            // HTMLElement constructor returned. CreateDataPropertyOrThrow is the
+            // platform object's ordinary [[DefineOwnProperty]] (WebIDL 3.9), so
+            // the field becomes an own data property shadowing any interface
+            // accessor of the same name, exactly as Object.defineProperty does.
+            if (key.Tag == JsValueTag.Symbol)
+                throw new JsThrownException(CreateTypeError("Cannot define a symbol-keyed class field on a host object."));
+            _ = RequireHostObject(target, "define host class field");
+            var hostKey = ToPropertyKey(key);
+            DefineHostObjectProperty(
+                target.AsHostObjectHandle(),
+                hostKey,
+                new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+            if (namesFunction) ApplyFunctionName(value, JsValue.FromString(hostKey), prefix: null);
+            return;
+        }
+
         var obj = _heap.GetObject(ResolveObjectHandle(target));
         if (obj is ProxyObject proxy)
         {

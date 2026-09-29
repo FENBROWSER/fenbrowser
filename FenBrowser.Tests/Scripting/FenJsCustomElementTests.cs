@@ -291,6 +291,52 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("true|function|true|true", result?.ToString());
         }
 
+        // github.com's <react-app>, <react-partial> and <fullstory-capture> are
+        // `class extends HTMLElement { name = "..."; }`. ECMA-262 7.3.34 DefineField
+        // defines each field on the platform object super() returned; that threw
+        // "Cannot use a host object where a JS object is expected", so every one of
+        // those elements failed to upgrade and React never mounted.
+        [Fact]
+        public async Task PublicClassFields_AreDefinedOnTheHostElement_ForUpgradeAndConstruction()
+        {
+            var baseUri = new Uri("https://github.com/");
+            var document = new HtmlParser(
+                "<html><body><x-field-probe id='parsed'></x-field-probe></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(
+                """
+                (function () {
+                    class FieldProbe extends HTMLElement {
+                        nameAttribute = "app-name";
+                        routes = [];
+                        handler = () => this.nameAttribute;
+                        title = "shadowed";
+                    }
+                    customElements.define('x-field-probe', FieldProbe);
+                    var upgraded = document.getElementById('parsed');
+                    var constructed = new FieldProbe();
+                    return [
+                        upgraded.nameAttribute,
+                        String(Array.isArray(upgraded.routes)),
+                        upgraded.handler(),
+                        upgraded.handler.name,
+                        String(Object.getOwnPropertyDescriptor(upgraded, 'title').enumerable),
+                        upgraded.title,
+                        String(upgraded.hasAttribute('title')),
+                        constructed.nameAttribute
+                    ].join('|');
+                })();
+                """);
+
+            Assert.Equal("app-name|true|app-name|handler|true|shadowed|false|app-name", result?.ToString());
+        }
+
         private static JsHostAdapter CreateHost()
         {
             return new JsHostAdapter(
