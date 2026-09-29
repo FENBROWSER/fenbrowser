@@ -29,6 +29,12 @@ namespace FenBrowser.FenEngine.Svg
         public Dictionary<string, string> CustomProperties;
         public Dictionary<string, string> AnimatedProperties;
 
+        /// <summary>
+        /// Set only on the synthetic element that stands for a <c>::first-letter</c>
+        /// pseudo-element (<see cref="SvgFirstLetter"/>): the text element it belongs to.
+        /// </summary>
+        public SvgElement FirstLetterOrigin;
+
         private Dictionary<string, string> _lookup;
 
         public string GetAttribute(string name)

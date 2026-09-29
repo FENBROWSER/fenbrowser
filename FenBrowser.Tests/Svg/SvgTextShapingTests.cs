@@ -449,9 +449,8 @@ namespace FenBrowser.Tests.Svg
 
         /// <summary>
         /// WPT svg/text/reftests/first-letter.svg styles ::first-letter on a text
-        /// element. Unlike ::before or ::after the pseudo-element paints the first
-        /// letter of the first line, so the first-party cascade cannot drop the
-        /// rule and paint the whole run in the inherited fill.
+        /// element. The pseudo-element paints the first typographic letter unit as if
+        /// it were a tspan inside the innermost element holding that letter.
         /// </summary>
         private const string FirstLetterSheet =
             "<style>text { font-family: monospace; font-size: 40px; } " +
@@ -461,26 +460,28 @@ namespace FenBrowser.Tests.Svg
             $"<svg width='260' height='120'>{FirstLetterSheet}<text x='10' y='80' " +
             $"fill='black'>{body}</text></svg>";
 
-        [Fact]
-        public void FirstLetterPseudoElementFailsClosedInsteadOfPaintingTheWholeRun()
-        {
-            using var styled = new FenSvgRenderer().Render(FirstLetterDocument("XXXX"));
+        private static string PlainDocument(string body) =>
+            "<svg width='260' height='120'><style>text { font-family: monospace; font-size: 40px; }</style>" +
+            $"<text x='10' y='80' fill='black'>{body}</text></svg>";
 
-            AssertFailsClosed(styled);
-            Assert.True(styled.RequiresFallback);
-            Assert.Contains("dynamic-content", styled.FallbackReasonCodes);
-            Assert.Contains(styled.Warnings, warning =>
-                warning.Contains("first-letter", StringComparison.Ordinal));
+        [Theory]
+        [InlineData("XXXX", "<tspan fill='green'>X</tspan>XXX")]
+        [InlineData("<tspan>XXXX</tspan>", "<tspan><tspan fill='green'>X</tspan>XXX</tspan>")]
+        [InlineData("  (XX)", "  <tspan fill='green'>(X</tspan>X)")]
+        [InlineData("<tspan> </tspan>XX", "<tspan> </tspan><tspan fill='green'>X</tspan>X")]
+        public void FirstLetterPseudoElement_PaintsLikeATspanAroundTheFirstLetterUnit(string body, string reference)
+        {
+            AssertSamePixels(FirstLetterDocument(body), PlainDocument(reference));
         }
 
         [Fact]
-        public void TspanFirstLetterPseudoElementFailsClosedToo()
+        public void FirstLetterPseudoElement_IgnoresPropertiesThatDoNotApplyToIt()
         {
-            using var styled = new FenSvgRenderer().Render(
-                FirstLetterDocument("<tspan>XXXX</tspan>"));
-
-            AssertFailsClosed(styled);
-            Assert.True(styled.RequiresFallback);
+            AssertSamePixels(
+                "<svg width='260' height='120'><style>text { font-family: monospace; font-size: 40px; } " +
+                "text::first-letter { fill: green; transform: translate(50px); x: 100px; }</style>" +
+                "<text x='10' y='80' fill='black'>XXXX</text></svg>",
+                PlainDocument("<tspan fill='green'>X</tspan>XXX"));
         }
 
         [Fact]

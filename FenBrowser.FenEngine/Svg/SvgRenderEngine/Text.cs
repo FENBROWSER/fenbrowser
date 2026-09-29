@@ -20,7 +20,6 @@ namespace FenBrowser.FenEngine.Svg
         private int _documentTextGlyphCount;
         private int _documentStyleSheetsInspected;
         private int _documentStyleSheetCharsInspected;
-        private bool? _documentStylesFirstLetter;
         private bool? _documentStylesByLanguage;
 
         private void DrawTextElement(SvgElement el, SKCanvas canvas, ViewportContext viewport, InheritedStyle inherited)
@@ -34,7 +33,6 @@ namespace FenBrowser.FenEngine.Svg
             var state = new TextLayoutState();
             var runs = new List<TextPaintRun>();
             var chunks = new List<TextChunk>();
-            RequireFirstLetterSupport();
             RequireLanguageStyleSupport();
             LayoutTextElement(el, viewport, inherited, ResolveAncestorTextStyle(el), state, runs, chunks, true);
             ApplyParagraphDirection(runs, chunks, state);
@@ -330,71 +328,6 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private readonly record struct RotationScope(float[] List, int Index);
-
-        /// <summary>
-        /// A <c>::first-letter</c> rule paints the first letter of the first
-        /// formatted line, so unlike <c>::before</c> or <c>::after</c> it is not
-        /// inert in a static render. The first-party cascade cannot match a
-        /// pseudo-element, so a document that styles one would otherwise paint
-        /// its whole run in the inherited fill and report success. The guard is
-        /// read once per document: a run under a styled <c>::first-letter</c>
-        /// cannot be painted faithfully, so the document is routed to the
-        /// compatibility fallback instead of drawing the wrong pixels.
-        /// </summary>
-        private void RequireFirstLetterSupport()
-        {
-            if (DocumentStylesFirstLetter())
-            {
-                _report.RequireFallback(
-                    "SVG first-letter pseudo-element styling requires compatibility fallback");
-            }
-        }
-
-        private bool DocumentStylesFirstLetter()
-        {
-            if (_documentStylesFirstLetter.HasValue) return _documentStylesFirstLetter.Value;
-            _documentStylesFirstLetter = false;
-            if (_doc?.Root == null) return false;
-
-            var styles = new Stack<SvgElement>();
-            styles.Push(_doc.Root);
-            int scanned = 0;
-            while (styles.Count > 0 && scanned < MaxStyledSheetScanElements)
-            {
-                if ((scanned & 0x3F) == 0) CheckDeadline();
-                scanned++;
-                var element = styles.Pop();
-                if (element.Name == "style" && MentionsFirstLetter(element.TextContent))
-                {
-                    _documentStylesFirstLetter = true;
-                    return true;
-                }
-                for (int i = element.Children.Count - 1; i >= 0; i--)
-                    styles.Push(element.Children[i]);
-            }
-            return false;
-        }
-
-        private bool MentionsFirstLetter(string sheet)
-        {
-            if (!TryAccountStyleSheet(sheet)) return false;
-
-            int index = 0;
-            while ((index = sheet.IndexOf("first-letter", index, StringComparison.OrdinalIgnoreCase)) >= 0)
-            {
-                // A pseudo-element can only be spelled with a leading colon, so the
-                // character before the name is what distinguishes a selector from
-                // any other mention of the same text.
-                for (int i = index - 1; i >= 0; i--)
-                {
-                    if (char.IsWhiteSpace(sheet[i])) continue;
-                    if (sheet[i] == ':') return true;
-                    break;
-                }
-                index += "first-letter".Length;
-            }
-            return false;
-        }
 
         /// <summary>
         /// A <c>:lang()</c> rule paints a run from the language tag on the

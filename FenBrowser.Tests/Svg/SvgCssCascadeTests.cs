@@ -1559,18 +1559,47 @@ namespace FenBrowser.Tests.Svg
                 "<text x='100' y='28' font-size='20' fill='lime'>Ag</text></svg>");
         }
 
-        [Fact]
-        public void FirstLetterPseudoElement_ReportsTheTextModelGapItWouldNeed()
+        [Theory]
+        [InlineData("text::first-letter")]
+        [InlineData("text:FIRST-LETTER")]
+        public void FirstLetterPseudoElement_StylesTheFirstLetterOfText(string selector)
         {
-            const string svg =
-                "<svg width='20' height='20'><style>text::first-letter { fill: green }" +
-                "</style><text x='0' y='12' font-size='8'>hi</text></svg>";
+            string svg =
+                "<svg width='220' height='40'><style>" + selector +
+                " { fill: lime }</style><text x='4' y='28' font-size='20' fill='red'>AAAA</text></svg>";
 
             using var result = new FenSvgRenderer().Render(svg);
 
-            AssertFailsClosed(result);
-            Assert.Contains("css-cascade", result.FallbackReasonCodes);
-            Assert.Contains("'::first-letter'", string.Join("\n", result.Warnings));
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Empty(result.FallbackReasonCodes);
+            int limeRight = -1, redLeft = int.MaxValue;
+            for (int y = 0; y < result.Bitmap.Height; y++)
+            for (int x = 0; x < result.Bitmap.Width; x++)
+            {
+                var pixel = result.Bitmap.GetPixel(x, y);
+                if (pixel == SKColors.Lime) limeRight = System.Math.Max(limeRight, x);
+                if (pixel == SKColors.Red) redLeft = System.Math.Min(redLeft, x);
+            }
+            Assert.True(limeRight >= 0 && redLeft < int.MaxValue && limeRight < redLeft);
+        }
+
+        [Theory]
+        [InlineData("tspan::first-letter")]
+        [InlineData("textPath::first-letter")]
+        public void FirstLetterOnInlineTextContent_DoesNotApply(string selector)
+        {
+            // ::first-letter applies to block containers; tspan and textPath are inline.
+            string svg =
+                "<svg width='220' height='60'><style>" + selector + " { fill: lime }</style>" +
+                "<defs><path id='p' d='M4 40 H200'/></defs><text x='4' y='28' font-size='20' fill='red'>" +
+                "<tspan>Ag</tspan><textPath href='#p'>Ag</textPath></text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            for (int y = 0; y < result.Bitmap.Height; y++)
+            for (int x = 0; x < result.Bitmap.Width; x++)
+                Assert.NotEqual(SKColors.Lime, result.Bitmap.GetPixel(x, y));
         }
 
         [Fact]
@@ -2273,9 +2302,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData("text::first-letter")]
         [InlineData("text::first-line")]
-        [InlineData("text:FIRST-LETTER")]
         public void PseudoElementOnPaintedText_FailsClosedInsteadOfDroppingTheRule(string selector)
         {
             string svg =
@@ -2291,7 +2318,6 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData("tspan::first-letter")]
         [InlineData("tspan::first-line")]
         public void PseudoElementOnAPaintedTspan_FailsClosed(string selector)
         {
@@ -2310,7 +2336,7 @@ namespace FenBrowser.Tests.Svg
         public void PseudoElementOnAPaintedTextPath_FailsClosed()
         {
             const string svg =
-                "<svg width='220' height='60'><style>textPath::first-letter { fill: lime }" +
+                "<svg width='220' height='60'><style>textPath::first-line { fill: lime }" +
                 "</style><defs><path id='p' d='M4 40 H200'/></defs>" +
                 "<text font-size='20'><textPath href='#p'>Ag</textPath></text></svg>";
 

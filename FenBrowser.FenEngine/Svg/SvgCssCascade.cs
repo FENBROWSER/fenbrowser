@@ -171,6 +171,8 @@ namespace FenBrowser.FenEngine.Svg
 
             var useTargets = new List<SvgElement>();
             var seenUseTargets = new HashSet<SvgElement>();
+            bool stylesFirstLetter = StylesFirstLetter(rules);
+            List<SvgElement> firstLetterOrigins = null;
             var stack = new Stack<SvgElement>();
             stack.Push(document.Root);
             while (stack.Count > 0)
@@ -178,6 +180,10 @@ namespace FenBrowser.FenEngine.Svg
                 var element = stack.Pop();
                 checkDeadline();
                 ApplyToElement(element, rules, ruleIndex, report, checkDeadline);
+                if (stylesFirstLetter && string.Equals(element.Name, "text", StringComparison.Ordinal))
+                {
+                    (firstLetterOrigins ??= new List<SvgElement>()).Add(element);
+                }
                 if (string.Equals(element.Name, "use", StringComparison.Ordinal))
                 {
                     CollectUseTarget(document, element, useTargets, seenUseTargets);
@@ -189,6 +195,128 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             BuildUseShadowCascades(useTargets, rules, ruleIndex, report, checkDeadline);
+
+            if (firstLetterOrigins != null)
+            {
+                foreach (var origin in firstLetterOrigins)
+                {
+                    checkDeadline();
+                    ApplyFirstLetter(origin, rules, ruleIndex, report, checkDeadline);
+                }
+            }
+        }
+
+        /// <summary>True for a chain whose only pseudo-element is a trailing ::first-letter.</summary>
+        private static bool IsFirstLetterChain(SelectorChain chain)
+        {
+            if (chain?.Segments == null || chain.Segments.Count == 0) return false;
+            for (int i = 0; i < chain.Segments.Count - 1; i++)
+            {
+                if (chain.Segments[i].PseudoElements.Count > 0) return false;
+            }
+            var last = chain.Segments[^1].PseudoElements;
+            return last.Count == 1 &&
+                   string.Equals(last[0].Name, "first-letter", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool StylesFirstLetter(List<RuleEntry> rules)
+        {
+            foreach (var entry in rules)
+            {
+                var chains = entry.Rule.Selector?.Chains;
+                if (chains == null) continue;
+                foreach (var chain in chains)
+                {
+                    if (IsFirstLetterChain(chain)) return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Styles the ::first-letter of one text element (CSS Pseudo-Elements 4 §2.4):
+        /// the rules whose selector is a ::first-letter chain matching the text element
+        /// cascade onto a synthetic element around its first letter, which inherits
+        /// from the element that holds the letter. Nothing is inserted when no such
+        /// rule matches or the text has no letter.
+        /// </summary>
+        private static void ApplyFirstLetter(
+            SvgElement origin,
+            IReadOnlyList<RuleEntry> rules,
+            RuleIndex ruleIndex,
+            SvgParseReport report,
+            Action checkDeadline)
+        {
+            Dictionary<string, Winner> winners = null;
+            Dictionary<string, Winner> customWinners = null;
+            bool matched = false;
+            int candidatePosition = 0;
+            foreach (int i in ruleIndex.GetCandidates(origin))
+            {
+                if ((candidatePosition++ & 0x3f) == 0) checkDeadline();
+                var entry = rules[i];
+                var chains = entry.Rule.Selector?.Chains;
+                if (chains == null) continue;
+                Specificity? best = null;
+                foreach (var chain in chains)
+                {
+                    if (!IsFirstLetterChain(chain)) continue;
+                    var support = ClassifyChain(origin, chain, 0, firstLetter: true);
+                    if (support == SelectorSupport.Unsupported)
+                    {
+                        report.RequireFallback("SVG unsupported selector requires compatibility fallback");
+                        continue;
+                    }
+                    if (support == SelectorSupport.NotApplicable) continue;
+                    if (MatchesChain(origin, chain, chain.Segments.Count - 1, 0, null) &&
+                        (!best.HasValue || chain.Specificity.CompareTo(best.Value) > 0))
+                    {
+                        best = chain.Specificity;
+                    }
+                }
+                if (!best.HasValue) continue;
+                matched = true;
+
+                var declarations = entry.Rule.Declarations;
+                for (int d = 0; d < declarations.Count; d++)
+                {
+                    var declaration = declarations[d];
+                    if (!SvgFirstLetter.AppliesTo(declaration?.Property)) continue;
+                    Consider(
+                        origin,
+                        ref winners,
+                        ref customWinners,
+                        declaration,
+                        new CascadeKey(
+                            CssOrigin.Author,
+                            declaration.IsImportant,
+                            ClampSpecificity(best.Value.A),
+                            ClampSpecificity(best.Value.B),
+                            ClampSpecificity(best.Value.C),
+                            entry.LayerOrder,
+                            0,
+                            entry.SourceOrder,
+                            entry.Rule.Order,
+                            d),
+                        report);
+                }
+            }
+            if (!matched) return;
+
+            var pseudo = SvgFirstLetter.Insert(origin);
+            if (pseudo == null) return;
+            if (winners != null)
+            {
+                pseudo.CascadedDeclarations = new Dictionary<string, string>(
+                    winners.Count, StringComparer.OrdinalIgnoreCase);
+                foreach (var pair in winners) pseudo.CascadedDeclarations[pair.Key] = pair.Value.Value;
+            }
+            if (customWinners != null)
+            {
+                pseudo.CustomProperties = new Dictionary<string, string>(
+                    customWinners.Count, StringComparer.Ordinal);
+                foreach (var pair in customWinners) pseudo.CustomProperties[pair.Key] = pair.Value.Value;
+            }
         }
 
         private static void CollectUseTarget(
@@ -1667,16 +1795,21 @@ namespace FenBrowser.FenEngine.Svg
         private static SvgElement MatchedPreviousSibling(SvgElement element, SvgElement shadowRoot) =>
             ReferenceEquals(element, shadowRoot) ? null : element.PreviousElementSibling;
 
-        private static SelectorSupport ClassifyChain(SvgElement element, SelectorChain chain, int depth)
+        private static SelectorSupport ClassifyChain(
+            SvgElement element, SelectorChain chain, int depth, bool firstLetter = false)
         {
             if (chain == null || chain.Segments.Count == 0 || depth > MaxSelectorMatchDepth)
             {
                 return SelectorSupport.Unsupported;
             }
+            bool firstLetterChain = IsFirstLetterChain(chain);
             foreach (var segment in chain.Segments)
             {
-                if (segment.PseudoElements.Count > 0)
+                if (segment.PseudoElements.Count > 0 && !(firstLetter && firstLetterChain))
                 {
+                    // ::first-letter styles a synthetic element (ApplyFirstLetter), never
+                    // the element itself; ::first-line is not modelled.
+                    if (firstLetterChain) return SelectorSupport.NotApplicable;
                     return HasPaintedPseudoElement(segment) && HostsStyledText(element)
                         ? SelectorSupport.Unsupported
                         : SelectorSupport.NotApplicable;
