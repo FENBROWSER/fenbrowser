@@ -81,16 +81,8 @@ namespace FenBrowser.FenEngine.Svg
                     report.RejectResource("SVG external resource reference rejected");
                     continue;
                 }
-                if (element.Name == "use" &&
-                    (string.Equals(attribute.Key, "href", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(attribute.Key, "xlink:href", StringComparison.OrdinalIgnoreCase)) &&
-                    !string.IsNullOrWhiteSpace(attribute.Value) &&
-                    !SvgValues.TryParseLocalReference(attribute.Value, out _) &&
-                    !ResolvesToNoElement(attribute.Value))
-                {
-                    report.RejectResource($"SVG {element.Name} external reference rejected");
-                    continue;
-                }
+                // A use href into another document is decided when the instance is
+                // drawn: loaded through the authorized resolver, or refused there.
                 if ((element.Name == "text" || element.Name == "tspan") &&
                     AdvancedTextAttributes.Contains(attribute.Key) &&
                     RequiresParseTimeTextFallback(attribute.Key, attribute.Value))

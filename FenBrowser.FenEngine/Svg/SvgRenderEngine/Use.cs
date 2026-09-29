@@ -25,16 +25,12 @@ namespace FenBrowser.FenEngine.Svg
             }
             if (!SvgValues.TryParseLocalReference(href, out string rawId))
             {
-                if (!IsOpaqueOriginUseReference(href))
+                if (IsOpaqueOriginUseReference(href))
                 {
-                    // A reference into another document is one a browser may paint,
-                    // so the frame cannot be settled without fetching it. Log and
-                    // fail closed rather than report Success for a document with a
-                    // hole in it.
-                    _report.RejectResource("use external reference rejected by SVG resource policy");
+                    WarnOpaqueOriginUseReferenceOnce();
                     return;
                 }
-                WarnOpaqueOriginUseReferenceOnce();
+                DrawExternalUse(el, href, canvas, viewport, inherited);
                 return;
             }
 
@@ -52,6 +48,25 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
+            InstantiateUse(el, target, this, id, canvas, viewport, inherited);
+        }
+
+        /// <summary>
+        /// Instantiates a use element's target (SVG 2 §5.6.2): the use's transform,
+        /// clip, x/y translation, effects and opacity apply here, and the target is
+        /// drawn by <paramref name="owner"/>, the engine of the document it lives in
+        /// (this one, or an external document's), inheriting the use's style.
+        /// </summary>
+        private void InstantiateUse(
+            SvgElement el,
+            SvgElement target,
+            SvgRenderEngine owner,
+            string cycleKey,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited)
+        {
+            string id = cycleKey;
             _activeUseIds ??= new HashSet<string>(System.StringComparer.Ordinal);
             _activeUseElements ??= new HashSet<SvgElement>();
             if (_activeUseIds.Contains(id) || _activeUseElements.Contains(target))
@@ -104,17 +119,17 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         if (target.Name == "svg")
                         {
-                            DrawNestedSvg(target, canvas, viewport, next, el);
+                            owner.DrawNestedSvg(target, canvas, viewport, next, el);
                         }
                         else if (target.Name == "symbol")
                         {
                             // A used symbol establishes an svg-equivalent viewport whose
                             // default width/height is 100% of the referencing viewport.
-                            DrawSymbolInstance(target, canvas, viewport, next, el);
+                            owner.DrawSymbolInstance(target, canvas, viewport, next, el);
                         }
                         else
                         {
-                            DrawElement(target, canvas, viewport, next);
+                            owner.DrawElement(target, canvas, viewport, next);
                         }
                     }
                     finally
@@ -143,6 +158,124 @@ namespace FenBrowser.FenEngine.Svg
         private HashSet<string> _activeUseIds;
         private HashSet<SvgElement> _activeUseElements;
         private bool _warnedOpaqueOriginUseReference;
+
+        /// <summary>External documents loaded for use elements in this render, by URI;
+        /// null records a document that failed, so it is not retried.</summary>
+        private Dictionary<Uri, SvgRenderEngine> _externalUseDocuments;
+
+        /// <summary>
+        /// A use element referencing an element in another document (SVG 2 §5.6,
+        /// "href" on use: a URL with a fragment). The document is obtained only
+        /// through the authorized resolver, same-origin, like an external image; it
+        /// is parsed, cascaded with its own style sheets and sampled at this
+        /// document's time by an engine of its own, which then draws the target.
+        /// A refused document is a rejected resource (fail closed); a missing
+        /// fragment or element is a dangling reference and paints nothing.
+        /// </summary>
+        private void DrawExternalUse(
+            SvgElement el,
+            string href,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited)
+        {
+            int hash = href.IndexOf('#');
+            if (hash < 0 || hash == href.Length - 1)
+            {
+                _report.Warn("use reference to another document names no element; instance omitted");
+                return;
+            }
+
+            string fragment = DecodeFragmentEscapes(href.Substring(hash + 1).Trim());
+            SvgRenderEngine external = LoadExternalUseDocument(href.Substring(0, hash), viewport);
+            if (external == null)
+            {
+                return;
+            }
+            if (!external._doc.ElementsById.TryGetValue(fragment, out var target) ||
+                IsTextContentElement(target))
+            {
+                return;
+            }
+
+            InstantiateUse(el, target, external, external._baseUri + "#" + fragment, canvas, viewport, inherited);
+        }
+
+        private SvgRenderEngine LoadExternalUseDocument(string documentReference, ViewportContext viewport)
+        {
+            // A URL naming this very document is a reference into it, not a fetch
+            // (sprite sheets often point at themselves by file name).
+            if (_baseUri != null &&
+                Uri.TryCreate(_baseUri, documentReference, out Uri self) &&
+                Uri.Compare(new UriBuilder(self) { Fragment = string.Empty }.Uri,
+                            new UriBuilder(_baseUri) { Fragment = string.Empty }.Uri,
+                            UriComponents.HttpRequestUrl, UriFormat.UriEscaped,
+                            StringComparison.Ordinal) == 0)
+            {
+                return this;
+            }
+
+            int maxDepth = Math.Min(16, _limits.MaxReferenceDepth);
+            if (_resourceDepth >= maxDepth)
+            {
+                _report.RejectResource("external use document depth budget exceeded");
+                return null;
+            }
+            if (!TryResolveResource(documentReference, SvgResourceKind.SvgDocument, out var resource))
+            {
+                return null;
+            }
+
+            _externalUseDocuments ??= new Dictionary<Uri, SvgRenderEngine>();
+            if (_externalUseDocuments.TryGetValue(resource.Uri, out var cached))
+            {
+                return cached;
+            }
+
+            SvgRenderEngine engine = null;
+            try
+            {
+                string source = new UTF8Encoding(false, true).GetString(resource.Content.Span);
+                if (!SvgMarkupParser.TryParse(source, _limits, out SvgParsedDocument doc, out string error))
+                {
+                    _report.RejectResource("external use document failed bounded parsing: " + error);
+                }
+                else
+                {
+                    engine = new SvgRenderEngine(
+                        doc, _limits, _resources, _resourceDepth + 1,
+                        resource.Uri, _resourceResolver, _documentTimeSeconds);
+                    doc.Report.TextAreasOnOneLine = _limits.LayOutTextAreasOnOneLine;
+                    SvgCssCascade.Apply(doc, viewport.Width, engine._report, engine.CheckDeadline);
+                    engine.ApplySmilSnapshot(doc.Root);
+                }
+            }
+            catch (DecoderFallbackException)
+            {
+                _report.RejectResource("external use document is not valid UTF-8");
+            }
+
+            _externalUseDocuments[resource.Uri] = engine;
+            return engine;
+        }
+
+        /// <summary>
+        /// Folds what the external use documents reported into this render's report,
+        /// so their refusals decide admission exactly as this document's own do.
+        /// </summary>
+        private void AbsorbExternalUseReports()
+        {
+            if (_externalUseDocuments == null)
+            {
+                return;
+            }
+            foreach (var engine in _externalUseDocuments.Values)
+            {
+                if (engine == null) continue;
+                engine.AbsorbExternalUseReports();
+                _report.Absorb(engine._report);
+            }
+        }
 
         /// <summary>
         /// A data: URL is not a same-origin external document, and the use href is

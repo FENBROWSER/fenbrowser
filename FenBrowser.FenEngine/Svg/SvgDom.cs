@@ -294,6 +294,20 @@ namespace FenBrowser.FenEngine.Svg
             Warn(reason);
         }
 
+        /// <summary>
+        /// Takes in a nested document's findings (an external use document): its
+        /// fallback and rejection verdicts count as this render's own.
+        /// </summary>
+        public void Absorb(SvgParseReport nested)
+        {
+            if (nested == null || ReferenceEquals(nested, this)) return;
+            foreach (string warning in nested.Warnings) Warn(warning);
+            foreach (string code in nested.FallbackReasonCodes) AddReason(FallbackReasonCodes, code);
+            foreach (string code in nested.ResourceRejectionReasonCodes) AddReason(ResourceRejectionReasonCodes, code);
+            UnsupportedFeatureIgnored |= nested.UnsupportedFeatureIgnored;
+            ResourceRejected |= nested.ResourceRejected;
+        }
+
         private static void AddReason(List<string> target, string code)
         {
             if (target.Count < MaxWarnings && !target.Contains(code)) target.Add(code);

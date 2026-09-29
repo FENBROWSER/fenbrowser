@@ -189,6 +189,7 @@ namespace FenBrowser.FenEngine.Svg
             {
                 engine.ApplySmilSnapshot(doc.Root);
                 engine.RenderRoot(out picture, out width, out height);
+                engine.AbsorbExternalUseReports();
                 warnings = engine._report.Warnings.ToArray();
                 fallbackReasonCodes = engine._report.FallbackReasonCodes.ToArray();
                 resourceRejectionReasonCodes = engine._report.ResourceRejectionReasonCodes.ToArray();

@@ -241,6 +241,7 @@ namespace FenBrowser.FenEngine.Svg
             {
                 nested.ApplySmilSnapshot(doc.Root);
                 nested.RenderRoot(out picture, out width, out height);
+                nested.AbsorbExternalUseReports();
             }
             catch (SvgTimeBudgetExceededException)
             {
