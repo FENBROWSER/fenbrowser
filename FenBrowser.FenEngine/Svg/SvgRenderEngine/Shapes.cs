@@ -334,51 +334,8 @@ namespace FenBrowser.FenEngine.Svg
                 el, "rx", viewport, viewport.Width, fontSize, rootFontSize, out float rx);
             bool hasRy = TryParsePositive(
                 el, "ry", viewport, viewport.Height, fontSize, rootFontSize, out float ry);
-            if (!hasRx) rx = 0f;
-            if (!hasRy) ry = 0f;
-
-            if (hasRx && !hasRy) ry = rx;
-            else if (hasRy && !hasRx) rx = ry;
-
-            // Clamp radii to half side lengths (spec auto-scaling).
-            rx = System.Math.Min(System.Math.Max(rx, 0f), w / 2f);
-            ry = System.Math.Min(System.Math.Max(ry, 0f), h / 2f);
-
-            var rect = new SKRect(x, y, x + w, y + h);
-            if (rx <= 0f || ry <= 0f)
-            {
-                path.AddRect(rect);
-            }
-            else
-            {
-                AppendSvgRoundRect(path, x, y, w, h, rx, ry);
-            }
+            SvgGeometryOutline.AppendRect(path, x, y, w, h, hasRx ? rx : null, hasRy ? ry : null);
             return true;
-        }
-
-        private const float QuarterConicWeight = 0.70710678f;
-
-        private static void AppendSvgRoundRect(
-            SKPathBuilder path,
-            float x,
-            float y,
-            float width,
-            float height,
-            float rx,
-            float ry)
-        {
-            float right = x + width;
-            float bottom = y + height;
-            path.MoveTo(x + rx, y);
-            path.LineTo(right - rx, y);
-            path.ConicTo(right, y, right, y + ry, QuarterConicWeight);
-            path.LineTo(right, bottom - ry);
-            path.ConicTo(right, bottom, right - rx, bottom, QuarterConicWeight);
-            path.LineTo(x + rx, bottom);
-            path.ConicTo(x, bottom, x, bottom - ry, QuarterConicWeight);
-            path.LineTo(x, y + ry);
-            path.ConicTo(x, y, x + rx, y, QuarterConicWeight);
-            path.Close();
         }
 
         /// <summary>Parses once; true only for a specified positive value.</summary>
@@ -476,57 +433,8 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
-        private bool AppendPoints(SvgElement el, SKPathBuilder path, bool closePolygon)
-        {
-            string raw = el.GetAttribute("points");
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return false;
-            }
-
-            // Streaming pair consumption: no token list is materialized, and the
-            // emitted-point budget bounds output regardless of input length.
-            var tok = SvgValues.CreateTokenizer(raw.AsSpan());
-            int emitted = 0;
-            while (true)
-            {
-                if (!tok.Next(out var tx) || !tok.Next(out var ty))
-                {
-                    break; // Odd trailing coordinate: ignored (browser-style).
-                }
-                if (emitted >= SvgPathParser.MaxSegments)
-                {
-                    _report.Warn("points list truncated at segment budget");
-                    break;
-                }
-                if (!SvgValues.TryParseNumber(tx, out float x) ||
-                    !SvgValues.TryParseNumber(ty, out float y))
-                {
-                    break; // Render the valid prefix (browser-style recovery).
-                }
-                x = SvgValues.ClampCoord(x);
-                y = SvgValues.ClampCoord(y);
-                if (emitted == 0)
-                {
-                    path.MoveTo(x, y);
-                }
-                else
-                {
-                    path.LineTo(x, y);
-                }
-                emitted++;
-            }
-
-            if (emitted < 1)
-            {
-                return false;
-            }
-            if (closePolygon)
-            {
-                path.Close();
-            }
-            return true;
-        }
+        private bool AppendPoints(SvgElement el, SKPathBuilder path, bool closePolygon) =>
+            SvgGeometryOutline.AppendPoints(path, el.GetAttribute("points"), closePolygon, _report.Warn);
 
     }
 }
