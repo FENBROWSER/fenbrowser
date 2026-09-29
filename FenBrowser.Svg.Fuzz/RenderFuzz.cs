@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Text;
+using System.Text.RegularExpressions;
 using FenBrowser.FenEngine.Adapters;
 using Xunit;
 using Xunit.Abstractions;
@@ -54,6 +56,50 @@ public sealed class RenderFuzz(ITestOutputHelper output)
         ReportCoverage(seed);
     }
 
+    // External use documents under the worst case: every same-origin URL resolves to
+    // the mutated document itself, and the document instantiates its own ids through
+    // them, so loads recurse until the resource depth, time and fail-closed rules hold.
+    [Theory]
+    [InlineData(307)]
+    [InlineData(308)]
+    public void RendererFailsClosedWithSelfReferencingExternalDocuments(int seed)
+    {
+        var mutator = new SvgMutator(seed);
+        var renderer = new FenSvgRenderer();
+        for (int iteration = 0; iteration < FuzzSettings.Iterations; iteration++)
+        {
+            FuzzCase.Run(nameof(RenderFuzz), seed, iteration, WithExternalUses(mutator.Next(SeedCorpus.Seeds)),
+                input => RenderOnce(renderer, input, scriptsInert: true, externalDocuments: true));
+        }
+        ReportCoverage(seed);
+    }
+
+    private static readonly Regex IdAttribute = new(@"id=['""]([A-Za-z_][\w-]{0,40})['""]", RegexOptions.CultureInvariant);
+
+    private static string WithExternalUses(string input)
+    {
+        int close = input.LastIndexOf("</svg>", StringComparison.Ordinal);
+        if (close < 0) return input;
+        var uses = new StringBuilder();
+        foreach (Match match in IdAttribute.Matches(input).Take(3))
+        {
+            string id = match.Groups[1].Value;
+            uses.Append("<use href='sprites.svg#").Append(id).Append("'/>")
+                .Append("<use href='other/../sprites.svg#").Append(id).Append("' x='3'/>");
+        }
+        return input.Insert(close, uses.ToString());
+    }
+
+    private sealed class SelfResolver(string document) : ISvgResourceResolver
+    {
+        public bool TryResolve(Uri absoluteUri, SvgResourceKind kind, out SvgResolvedResource resource, out string error)
+        {
+            resource = new SvgResolvedResource(absoluteUri, "image/svg+xml", Encoding.UTF8.GetBytes(document));
+            error = string.Empty;
+            return true;
+        }
+    }
+
     [Fact]
     public void RendererFailsClosedOnEverySeed()
     {
@@ -72,11 +118,13 @@ public sealed class RenderFuzz(ITestOutputHelper output)
     private void ReportCoverage(int seed) =>
         output.WriteLine($"seed={seed} seeds={SeedCorpus.Seeds.Count} admitted={_admitted} rejected={_rejected}");
 
-    private void RenderOnce(FenSvgRenderer renderer, string input, bool scriptsInert)
+    private void RenderOnce(FenSvgRenderer renderer, string input, bool scriptsInert, bool externalDocuments = false)
     {
         var limits = SvgRenderLimits.Strict;
         limits.TreatScriptsAsInert = scriptsInert;
-        long elapsedMs = Measure(renderer, input, limits, out bool admissible);
+        limits.AllowExternalReferences = externalDocuments;
+        var resolver = externalDocuments ? new SelfResolver(input) : null;
+        long elapsedMs = Measure(renderer, input, limits, resolver, out bool admissible);
         if (admissible) _admitted++; else _rejected++;
         long budgetMs = (long)limits.MaxRenderTimeMs * 2 + OverrunSlackMs;
         if (elapsedMs > budgetMs)
@@ -84,17 +132,23 @@ public sealed class RenderFuzz(ITestOutputHelper output)
             long fastest = elapsedMs;
             for (int i = 0; i < OverrunConfirmations && fastest > budgetMs; i++)
             {
-                fastest = Math.Min(fastest, Measure(renderer, input, limits, out _));
+                fastest = Math.Min(fastest, Measure(renderer, input, limits, resolver, out _));
             }
             FuzzCase.Check(fastest <= budgetMs,
                 $"render stays within its time budget (fastest {fastest} ms > {budgetMs} ms, admissible={admissible})");
         }
     }
 
-    private static long Measure(FenSvgRenderer renderer, string input, SvgRenderLimits limits, out bool admissible)
+    private static long Measure(
+        FenSvgRenderer renderer, string input, SvgRenderLimits limits, ISvgResourceResolver? resolver, out bool admissible)
     {
         long started = Stopwatch.GetTimestamp();
-        using var result = renderer.Render(new SvgRenderRequest(input, limits) { DiagnosticSource = "fuzz" });
+        using var result = renderer.Render(new SvgRenderRequest(input, limits)
+        {
+            DiagnosticSource = "fuzz",
+            BaseUri = resolver != null ? new Uri("https://fuzz.test/doc/page.svg") : null,
+            ResourceResolver = resolver
+        });
         long elapsedMs = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
 
         FuzzCase.Check(result != null, "render returns a result");
