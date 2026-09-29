@@ -27,6 +27,8 @@ public sealed partial class SvgModuleBoundaryTests
         ["FenBrowser.FenEngine/Rendering/ImageLoader.cs"] = new[] { "SvgResourceDiscovery" },
         // Computed-style resolution of SVG geometry properties for DOM scripting.
         ["FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs"] = new[] { "SvgCssLengthEvaluator" },
+        // The SVG DOM transform lists parse and compose with the renderer's own grammar.
+        ["FenBrowser.FenEngine/Scripting/FenJsSvgDom.cs"] = new[] { "SvgValues", "SvgTransformFunction", "SvgTransformKind" },
     };
 
     /// <summary>FenEngine namespaces the module may use, and from which module files.</summary>

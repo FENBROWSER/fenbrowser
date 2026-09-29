@@ -17156,6 +17156,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case FenJsMutationObserverHost mutationObserver:
                     found = _owner.TryGetMutationObserverProperty(mutationObserver, property, out value);
                     break;
+                case FenJsSvgDomHost svgDomHost:
+                    found = _owner.TryGetSvgDomProperty(svgDomHost, property, out value);
+                    break;
                 default:
                     value = JsValue.Undefined;
                     found = false;
@@ -17189,6 +17192,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 FenJsLocationHost => "Location",
                 FenJsHistoryHost => "History",
                 FenJsMutationObserverHost => "MutationObserver",
+                FenJsSvgDomHost svgDomHost => svgDomHost.InterfaceName,
                 _ => hostObject?.GetType().Name ?? "HostObject"
             };
         }
@@ -17445,6 +17449,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                     treeWalker.TreeWalker.CurrentNode = currentNode;
                     return true;
+                case FenJsSvgDomHost svgDomHost:
+                    return _owner.TrySetSvgDomProperty(svgDomHost, property, value);
                 case FenJsAnimationHost animation when string.Equals(property, "id", StringComparison.Ordinal):
                     animation.Id = CoerceToHostString(value);
                     return true;
@@ -19253,6 +19259,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = _owner.CreateComputedStyleObjectForElement(element);
                     return true;
                 default:
+                    if (_owner.TryGetSvgElementProperty(element, property, out value))
+                    {
+                        return true;
+                    }
+
                     // Fall back to user-assigned properties (e.g. Google sets
                     // __gwbp, __jsl on elements for internal bookkeeping).
                     value = _owner.GetStoredHostPropertyOrUndefined(element, property);
