@@ -14648,7 +14648,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             "touchstart", "touchend", "touchmove", "touchcancel"
         };
 
-        var elements = domRoot.Descendants().OfType<Element>();
+        // The root counts too: the engine is often handed the document element, and
+        // its own handlers (<svg onload>, <html onclick>) must be wired like any other.
+        var elements = domRoot.SelfAndDescendants().OfType<Element>();
         foreach (var element in elements)
         {
             foreach (var eventName in eventNames)
