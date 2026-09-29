@@ -18615,6 +18615,65 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         },
                         length: 2);
                     return true;
+                // DOM Standard: namespaced attribute access. A null, undefined or empty
+                // namespace means no namespace ("namespace to null" in the validate and
+                // extract steps).
+                case "setAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "setAttributeNS",
+                        (_, args) =>
+                        {
+                            var namespaceUri = ReadNamespaceArgument(args, 0);
+                            var qualifiedName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            var attributeValue = args.Count > 2 ? CoerceToHostString(args[2]) : string.Empty;
+                            try
+                            {
+                                element.SetAttributeNS(namespaceUri, qualifiedName, attributeValue);
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                            }
+                            return JsValue.Undefined;
+                        },
+                        length: 3);
+                    return true;
+                case "getAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "getAttributeNS",
+                        (_, args) =>
+                        {
+                            var localName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            var attributeValue = element.GetAttributeNS(ReadNamespaceArgument(args, 0), localName);
+                            return attributeValue == null ? JsValue.Null : JsValue.FromString(attributeValue);
+                        },
+                        length: 2);
+                    return true;
+                case "hasAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "hasAttributeNS",
+                        (_, args) =>
+                        {
+                            var localName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            return JsValue.FromBoolean(element.HasAttributeNS(ReadNamespaceArgument(args, 0), localName));
+                        },
+                        length: 2);
+                    return true;
+                case "removeAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "removeAttributeNS",
+                        (_, args) =>
+                        {
+                            var localName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            element.RemoveAttributeNS(ReadNamespaceArgument(args, 0), localName);
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
+                    return true;
                 case "removeAttribute":
                     value = _owner.GetOrCreateHostCallable(
                         element,
@@ -21092,6 +21151,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             }
 
             return raw;
+        }
+
+        private static string ReadNamespaceArgument(IReadOnlyList<JsValue> args, int index)
+        {
+            if (args.Count <= index || args[index].Tag is JsValueTag.Null or JsValueTag.Undefined)
+            {
+                return null;
+            }
+
+            var namespaceUri = CoerceToHostString(args[index]);
+            return string.IsNullOrEmpty(namespaceUri) ? null : namespaceUri;
         }
 
         private static bool IsImageElement(Element element)
