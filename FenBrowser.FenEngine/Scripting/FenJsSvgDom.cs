@@ -286,6 +286,11 @@ public sealed partial class FenJsBrowserScriptEngine
             return false;
         }
 
+        if (TryGetSvgAnimationProperty(element, property, out value))
+        {
+            return true;
+        }
+
         string localName = element.LocalName;
         string attribute = property switch
         {
