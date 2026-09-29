@@ -17789,6 +17789,33 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         (_, _) => _owner.ToHostNodeOrNull(document.CreateDocumentFragment()),
                         length: 0);
                     return true;
+                case "adoptNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "adoptNode",
+                        (_, args) =>
+                        {
+                            var node = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (node == null)
+                            {
+                                _owner.ThrowDomException(
+                                    "TypeError",
+                                    "Failed to execute 'adoptNode': parameter 1 is not of type 'Node'.");
+                                return JsValue.Undefined;
+                            }
+
+                            try
+                            {
+                                return _owner.ToHostNodeOrNull(document.AdoptNode(node));
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 1);
+                    return true;
                 case "importNode":
                     value = _owner.GetOrCreateHostCallable(
                         document,

@@ -62,4 +62,21 @@ public sealed class DomIdIndexTests
         Assert.Null(document.GetElementById("wrapper"));
         Assert.Null(document.GetElementById("nested"));
     }
+
+    [Fact]
+    public void ElementMovedToAnotherDocument_BelongsToThatDocumentOnly()
+    {
+        var first = Document.CreateHtmlDocument();
+        var second = Document.CreateHtmlDocument();
+        var moved = first.CreateElement("div");
+        moved.Id = "moved";
+        first.Body.AppendChild(moved);
+        Assert.Same(moved, first.GetElementById("moved"));
+        Assert.Null(second.GetElementById("moved"));
+
+        second.Body.AppendChild(second.AdoptNode(moved));
+
+        Assert.Null(first.GetElementById("moved"));
+        Assert.Same(moved, second.GetElementById("moved"));
+    }
 }

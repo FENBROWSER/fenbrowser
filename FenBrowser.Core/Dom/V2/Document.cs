@@ -530,6 +530,31 @@ namespace FenBrowser.Core.Dom.V2
             return clone;
         }
 
+        /// <summary>
+        /// Moves a node, with its subtree, into this document: it is removed from its
+        /// parent and becomes owned by this document.
+        /// https://dom.spec.whatwg.org/#dom-document-adoptnode ("adopt")
+        /// </summary>
+        public Node AdoptNode(Node node)
+        {
+            if (node == null)
+                throw new DomException("NotFoundError", "Node cannot be null");
+
+            if (node is Document)
+                throw new DomException("NotSupportedError", "Cannot adopt a Document node");
+
+            if (node is ShadowRoot)
+                throw new DomException("HierarchyRequestError", "Cannot adopt a ShadowRoot");
+
+            if (node.ParentNode is ContainerNode parent)
+                parent.RemoveChild(node);
+
+            if (!ReferenceEquals(node._ownerDocument, this))
+                SetOwnerDocumentRecursive(node, this);
+
+            return node;
+        }
+
         private static void SetOwnerDocumentRecursive(Node node, Document ownerDocument)
         {
             node._ownerDocument = ownerDocument;
