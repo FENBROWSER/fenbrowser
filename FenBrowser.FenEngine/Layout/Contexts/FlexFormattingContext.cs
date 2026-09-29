@@ -436,6 +436,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (remainingSpace < 0 && totalWeightedShrink > 0 && !isWrap)
             {
                 float overflow = -remainingSpace;
+                var rowShrinkTargets = isRow
+                    ? ResolveRowShrinkTargets(items, flexContentBases, rowFlexShrinkFloors, overflow, state.ViewportWidth)
+                    : null;
                 foreach (var item in items)
                 {
                     float shrink = (float)(ResolveFlexShrink(item.ComputedStyle) ?? 1);
@@ -450,11 +453,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         if (isRow)
                         {
                             // Shrink from basis, not from measured size
-                            float targetWidth = Math.Max(0, contentBasis - shrinkAmount);
-                            if (rowFlexShrinkFloors.TryGetValue(item, out float shrinkFloor))
-                            {
-                                targetWidth = Math.Max(targetWidth, shrinkFloor);
-                            }
+                            float targetWidth = rowShrinkTargets[item];
 
                             LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, item.Geometry.ContentBox.Height);
 
@@ -2127,6 +2126,261 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     ref minTop,
                     ref maxBottom);
             }
+        }
+
+        /// <summary>
+        /// CSS Flexbox §9.7 "resolve the flexible lengths" for a shrinking row: each
+        /// unfrozen item gives up overflow in proportion to its scaled shrink factor, an
+        /// item that would drop below its minimum is frozen there, and what it could not
+        /// give up is shared among the rest until nothing violates. The minimum is the
+        /// §4.5 automatic minimum size (its min-content size) unless min-width says
+        /// otherwise. Without the loop github.com's nav shrank below its row of links,
+        /// which then ran under the sign-in buttons, instead of the wide CTA giving way.
+        /// </summary>
+        private static Dictionary<LayoutBox, float> ResolveRowShrinkTargets(
+            List<LayoutBox> items,
+            Dictionary<LayoutBox, float> bases,
+            Dictionary<LayoutBox, float> legacyFloors,
+            float overflow,
+            float viewportWidth)
+        {
+            var targets = new Dictionary<LayoutBox, float>();
+            var floors = new Dictionary<LayoutBox, float>();
+            var weights = new Dictionary<LayoutBox, float>();
+            foreach (var item in items)
+            {
+                float basis = bases.TryGetValue(item, out var b) ? b : 0f;
+                float shrink = (float)(ResolveFlexShrink(item.ComputedStyle) ?? 1);
+                weights[item] = shrink > 0 ? shrink * Math.Max(1f, basis) : 0f;
+                float floor = ResolveAutomaticMinimumContentWidth(item, basis, viewportWidth);
+                if (legacyFloors.TryGetValue(item, out float legacy))
+                {
+                    floor = Math.Max(floor, legacy);
+                }
+
+                floors[item] = floor;
+                targets[item] = basis;
+            }
+
+            var frozen = new HashSet<LayoutBox>();
+            foreach (var item in items)
+            {
+                if (weights[item] <= 0f)
+                {
+                    frozen.Add(item);
+                }
+            }
+
+            float remaining = overflow;
+            for (int pass = 0; pass <= items.Count && remaining > 0.01f; pass++)
+            {
+                float totalWeight = 0f;
+                foreach (var item in items)
+                {
+                    if (!frozen.Contains(item)) totalWeight += weights[item];
+                }
+
+                if (totalWeight <= 0f)
+                {
+                    break;
+                }
+
+                bool anyViolation = false;
+                float taken = 0f;
+                foreach (var item in items)
+                {
+                    if (frozen.Contains(item)) continue;
+                    float want = targets[item] - remaining * weights[item] / totalWeight;
+                    if (want < floors[item])
+                    {
+                        // Frozen at its minimum; a floor above the basis (the legacy
+                        // descendant-extent floor) keeps the old clamp and gives nothing.
+                        anyViolation = true;
+                        taken += Math.Max(0f, targets[item] - floors[item]);
+                        targets[item] = floors[item];
+                        frozen.Add(item);
+                    }
+                }
+
+                if (!anyViolation)
+                {
+                    foreach (var item in items)
+                    {
+                        if (!frozen.Contains(item))
+                        {
+                            targets[item] = Math.Max(0f, targets[item] - remaining * weights[item] / totalWeight);
+                        }
+                    }
+
+                    break;
+                }
+
+                remaining -= taken;
+            }
+
+            return targets;
+        }
+
+        /// <summary>
+        /// CSS Flexbox §4.5: a row item with min-width:auto and visible overflow cannot
+        /// shrink below its content-based minimum - its min-content width, capped by its
+        /// flex basis. An explicit min-width replaces it. Returned as a content-box width.
+        /// </summary>
+        private static float ResolveAutomaticMinimumContentWidth(LayoutBox item, float basis, float viewportWidth)
+        {
+            var style = item?.ComputedStyle;
+            if (style == null)
+            {
+                return 0f;
+            }
+
+            if (style.MinWidth.HasValue)
+            {
+                float specifiedMin = (float)style.MinWidth.Value;
+                if (string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+                {
+                    specifiedMin -= (float)(style.Padding.Left + style.Padding.Right +
+                                            style.BorderThickness.Left + style.BorderThickness.Right);
+                }
+
+                return Math.Max(0f, specifiedMin);
+            }
+
+            string overflow = (style.OverflowX ?? style.Overflow ?? "visible").Trim().ToLowerInvariant();
+            if (overflow is "auto" or "scroll" or "hidden")
+            {
+                return 0f;
+            }
+
+            if (item.SourceNode is Element element &&
+                ReplacedElementSizing.IsReplacedElementTag(element.TagName?.ToUpperInvariant() ?? string.Empty))
+            {
+                return 0f;
+            }
+
+            float contentMin = 0f;
+            foreach (var child in item.Children)
+            {
+                contentMin = AggregateMinContent(style, contentMin, MeasureMinContentOuterWidth(child, viewportWidth));
+            }
+
+            if (IsNoWrapRowFlex(style))
+            {
+                contentMin += ResolveColumnGap(style) * Math.Max(0, CountInFlow(item) - 1);
+            }
+
+            return Math.Min(contentMin, basis);
+        }
+
+        private static float MeasureMinContentOuterWidth(LayoutBox box, float viewportWidth)
+        {
+            if (box == null || box.IsOutOfFlow || box.Geometry == null)
+            {
+                return 0f;
+            }
+
+            var style = box.ComputedStyle;
+            if (style?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                return 0f;
+            }
+
+            if (box.SourceNode is Text)
+            {
+                var (metrics, lines) = TextLayoutComputer.ComputeTextLayout(
+                    box.SourceNode,
+                    style ?? new CssComputed(),
+                    new SKSize(float.PositiveInfinity, float.PositiveInfinity),
+                    viewportWidth);
+                string whiteSpace = style?.WhiteSpace?.Trim().ToLowerInvariant() ?? "normal";
+                if (whiteSpace is "nowrap" or "pre")
+                {
+                    float widest = 0f;
+                    foreach (var line in lines) widest = Math.Max(widest, line.Width);
+                    return widest;
+                }
+
+                return Math.Max(0f, metrics.MinContentWidth);
+            }
+
+            if (style == null)
+            {
+                float anonymous = 0f;
+                foreach (var child in box.Children)
+                {
+                    anonymous = Math.Max(anonymous, MeasureMinContentOuterWidth(child, viewportWidth));
+                }
+
+                return anonymous;
+            }
+
+            float chrome = (float)(style.Padding.Left + style.Padding.Right +
+                                   style.BorderThickness.Left + style.BorderThickness.Right +
+                                   style.Margin.Left + style.Margin.Right);
+
+            if (box.SourceNode is Element element &&
+                ReplacedElementSizing.IsReplacedElementTag(element.TagName?.ToUpperInvariant() ?? string.Empty))
+            {
+                return Math.Max(0f, box.Geometry.MarginBox.Width);
+            }
+
+            if (style.Width.HasValue)
+            {
+                float width = (float)style.Width.Value;
+                return string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase)
+                    ? width + (float)(style.Margin.Left + style.Margin.Right)
+                    : width + chrome;
+            }
+
+            float content = 0f;
+            foreach (var child in box.Children)
+            {
+                content = AggregateMinContent(style, content, MeasureMinContentOuterWidth(child, viewportWidth));
+            }
+
+            if (IsNoWrapRowFlex(style))
+            {
+                content += ResolveColumnGap(style) * Math.Max(0, CountInFlow(box) - 1);
+            }
+
+            return content + chrome;
+        }
+
+        // A single-line row flex container's min-content size is the sum of its items'
+        // min-content contributions (CSS Flexbox §9.9.1); anything else stacks or wraps,
+        // so its widest piece decides.
+        private static float AggregateMinContent(CssComputed style, float total, float child)
+            => IsNoWrapRowFlex(style) ? total + child : Math.Max(total, child);
+
+        private static bool IsNoWrapRowFlex(CssComputed style)
+        {
+            string display = style?.Display?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (display is not ("flex" or "inline-flex"))
+            {
+                return false;
+            }
+
+            string direction = style.FlexDirection?.Trim().ToLowerInvariant() ?? "row";
+            string wrap = style.FlexWrap?.Trim().ToLowerInvariant() ?? "nowrap";
+            return direction is "row" or "row-reverse" && wrap == "nowrap";
+        }
+
+        private static float ResolveColumnGap(CssComputed style)
+            => (float)Math.Max(0d, style.ColumnGap ?? style.Gap ?? 0d);
+
+        private static int CountInFlow(LayoutBox box)
+        {
+            int count = 0;
+            foreach (var child in box.Children)
+            {
+                if (child != null && !child.IsOutOfFlow &&
+                    child.ComputedStyle?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) != true)
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
 
         private static bool TryResolveRowFlexItemShrinkFloor(LayoutBox item, out float width)

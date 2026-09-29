@@ -163,5 +163,33 @@ namespace FenBrowser.Tests.Layout
             var line = Box(doc, computer, "line");
             Assert.InRange(line.BorderBox.Height, 31.5f, 32.5f);
         }
+
+        private const string FourBlocksInARow =
+            "<div style='display:flex'>" +
+            "<span style='display:block;width:100px;height:10px'></span><span style='display:block;width:100px;height:10px'></span>" +
+            "<span style='display:block;width:100px;height:10px'></span><span style='display:block;width:100px;height:10px'></span></div>";
+
+        // github.com's header: a nav whose links form a nowrap flex row next to a
+        // width:100% CTA container. CSS Flexbox §4.5 stops the nav at its min-content
+        // width (the whole row) and §9.7 hands the rest of the overflow to the CTA; an
+        // item that opts out (overflow:hidden, min-width:0) shrinks in proportion.
+        // Each row is Chrome's used x/width for the two items.
+        [Theory]
+        [InlineData("", FourBlocksInARow, "margin-left:16px", 400f, 184f)]
+        [InlineData("overflow:hidden", FourBlocksInARow, "margin-left:16px", 233.6f, 350.4f)]
+        [InlineData("min-width:0", FourBlocksInARow, "margin-left:16px", 233.6f, 350.4f)]
+        public async Task ShrinkingRow_StopsAnItemAtItsAutomaticMinimum_AndGivesTheRestToItsSiblings(
+            string firstStyle, string firstContent, string secondStyle, float expectedFirst, float expectedSecond)
+        {
+            var (doc, computer) = await LayoutAsync(
+                "<div style='display:flex;width:600px'>" +
+                "<div id='first' style='" + firstStyle + "'>" + firstContent + "</div>" +
+                "<div id='second' style='width:100%;height:10px;" + secondStyle + "'></div></div>");
+
+            var first = Box(doc, computer, "first");
+            var second = Box(doc, computer, "second");
+            Assert.InRange(first.BorderBox.Width, expectedFirst - 0.5f, expectedFirst + 0.5f);
+            Assert.InRange(second.BorderBox.Width, expectedSecond - 0.5f, expectedSecond + 0.5f);
+        }
     }
 }
