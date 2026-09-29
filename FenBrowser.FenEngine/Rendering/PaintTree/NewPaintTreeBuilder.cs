@@ -4077,7 +4077,8 @@ namespace FenBrowser.FenEngine.Rendering
                 // Re-rasterize with resolved colors
                  var bitmap = RenderSvgToCachedBitmap(
                      elem, svgContent, box.ContentBox.Width, box.ContentBox.Height,
-                     SvgZoomAndPanState.ForPainting(elem));
+                     SvgZoomAndPanState.ForPainting(elem),
+                     ResolveSvgDocumentTime(elem));
 
                 return new ImagePaintNode
                 {
@@ -4101,6 +4102,10 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             ApplySvgComputedPresentation(svgElement, clone);
+            if (SvgAnimationTimeline.HasAnimations(svgElement))
+            {
+                ApplySvgAnimationInstanceTimes(svgElement, clone);
+            }
 
             var references = new StringBuilder();
             CollectCustomPropertyReferences(clone, references);
@@ -4132,6 +4137,44 @@ namespace FenBrowser.FenEngine.Rendering
                 "style",
                 (string.IsNullOrEmpty(existing) ? context : context + " " + existing) + viewportDeclarations);
             return clone.ToHtml();
+        }
+
+        /// <summary>
+        /// The document time an SVG is painted at: its time container's SMIL timeline
+        /// when it holds animations, else 0 (time cannot change it, and a constant keeps
+        /// the rendered bitmap cacheable).
+        /// </summary>
+        private static double ResolveSvgDocumentTime(Element svgElement) =>
+            SvgAnimationTimeline.HasAnimations(svgElement)
+                ? SvgAnimationTimeline.CurrentTime(SvgAnimationTimeline.TimeContainerOf(svgElement))
+                : 0d;
+
+        /// <summary>
+        /// Adds the instance times that beginElement and endElement created to the
+        /// clone's begin and end lists, so the renderer's SMIL model sees them. The
+        /// clone mirrors the source node for node, so the two are walked together.
+        /// </summary>
+        private static void ApplySvgAnimationInstanceTimes(Element source, Element clone)
+        {
+            if (SvgAnimationTimeline.IsAnimationElement(source))
+            {
+                string begin = SvgAnimationTimeline.ComposeTimingAttribute(source, isEnd: false);
+                if (begin != null) clone.SetAttributeUnsafe("begin", begin);
+                string end = SvgAnimationTimeline.ComposeTimingAttribute(source, isEnd: true);
+                if (end != null) clone.SetAttributeUnsafe("end", end);
+            }
+
+            Node sourceChild = source.FirstChild;
+            Node cloneChild = clone.FirstChild;
+            while (sourceChild != null && cloneChild != null)
+            {
+                if (sourceChild is Element sourceElement && cloneChild is Element cloneElement)
+                {
+                    ApplySvgAnimationInstanceTimes(sourceElement, cloneElement);
+                }
+                sourceChild = sourceChild.NextSibling;
+                cloneChild = cloneChild.NextSibling;
+            }
         }
 
         /// <summary>
@@ -4270,7 +4313,8 @@ namespace FenBrowser.FenEngine.Rendering
             string svgContent,
             float width,
             float height,
-            FenBrowser.FenEngine.Adapters.SvgZoomAndPan? zoomAndPan = null)
+            FenBrowser.FenEngine.Adapters.SvgZoomAndPan? zoomAndPan = null,
+            double documentTimeSeconds = 0d)
         {
             if (!LayoutValidator.IsNonNegativeNumber(width) ||
                 !LayoutValidator.IsNonNegativeNumber(height) ||
@@ -4295,7 +4339,8 @@ namespace FenBrowser.FenEngine.Rendering
                 (int)Math.Ceiling(height),
                 baseUri,
                 source?.OwnerDocument,
-                zoomAndPan);
+                zoomAndPan,
+                documentTimeSeconds);
         }
 
         private static string ResolveSvgPresentationProperty(CssComputed style, string propertyName)
