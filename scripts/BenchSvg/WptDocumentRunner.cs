@@ -122,6 +122,18 @@ internal static class WptDocumentRunner
                     if (diagnostics.Count < 20) diagnostics.Add(message.Length > 240 ? message[..240] : message);
                 }
             }
+            else if (evt.Header.Subsystem == LogSubsystem.Svg && evt.Header.Severity >= LogSeverity.Warn)
+            {
+                // SVG render refusals (reported when FEN_SVG_DIAGNOSTICS=failures).
+                string reason = evt.Payload?.Fields != null && evt.Payload.Fields.TryGetValue("error", out var error)
+                    ? error?.ToString() ?? string.Empty
+                    : string.Empty;
+                string message = "svg: " + (evt.Payload?.MessageTemplate ?? string.Empty) + " " + reason;
+                lock (diagnostics)
+                {
+                    if (diagnostics.Count < 20) diagnostics.Add(message.Length > 240 ? message[..240] : message);
+                }
+            }
         }
 
         EngineLog.EngineEventWritten += OnEvent;
