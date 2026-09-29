@@ -659,6 +659,17 @@ namespace FenBrowser.Tooling
             string text = SafeCall(() => host.GetTextContent()) ?? string.Empty;
             var styles = SafeCall(() => host.ComputedStyles);
             var screenshot = CaptureDebugSiteScreenshot(root, styles, host.CurrentUri?.AbsoluteUri ?? url, host.EnterImageLoaderContext);
+            if (Environment.GetEnvironmentVariable("FEN_DEBUG_SITE_FRAME_BENCH") == "1" && root != null && styles != null)
+            {
+                try
+                {
+                    Console.WriteLine(FrameCostBench.Run(root, styles, host.CurrentUri?.AbsoluteUri ?? url, host.EnterImageLoaderContext));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[debug-site] frame bench threw: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
             if (interaction != null)
             {
                 interaction = interaction with
