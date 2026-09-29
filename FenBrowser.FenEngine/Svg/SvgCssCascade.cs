@@ -1061,6 +1061,7 @@ namespace FenBrowser.FenEngine.Svg
             bool supportedNonScalingStroke =
                 property.Equals("vector-effect", StringComparison.OrdinalIgnoreCase) &&
                 SvgFeatureSupport.SupportsNonScalingStroke(element, value);
+            bool rootCanvasBackground = IsRootCanvasBackground(element, property, value);
             if (!isCustomProperty && IsInertBoxProperty(element, property))
             {
                 if (SvgFeatureSupport.HasExternalUrlReference(value))
@@ -1077,7 +1078,7 @@ namespace FenBrowser.FenEngine.Svg
                 property.Equals("white-space", StringComparison.OrdinalIgnoreCase);
             if (!isCustomProperty && !isFontShorthand && !SupportedProperties.Contains(property) &&
                 !supportedViewportOverflow && !inertOverflow && !supportedNonScalingStroke &&
-                !singleLineWhiteSpace && !IsNoEffectProperty(property, value))
+                !singleLineWhiteSpace && !rootCanvasBackground && !IsNoEffectProperty(property, value))
             {
                 if (EmbeddingOnlyProperties.Contains(property)) return;
                 // Single-line text layout drops the area properties: they have no effect.
@@ -1161,6 +1162,18 @@ namespace FenBrowser.FenEngine.Svg
 
         private static bool EstablishesViewport(SvgElement element) =>
             element.Name is "svg" or "marker";
+
+        /// <summary>
+        /// The root svg element's background paints the document canvas (CSS Backgrounds 3
+        /// §2.11.2). A plain colour is honoured, from background-color or a background
+        /// shorthand that is only a colour; images and other layers are not modelled.
+        /// </summary>
+        private static bool IsRootCanvasBackground(SvgElement element, string property, string value) =>
+            element.Parent == null &&
+            string.Equals(element.Name, "svg", StringComparison.Ordinal) &&
+            (property.Equals("background-color", StringComparison.OrdinalIgnoreCase) ||
+             property.Equals("background", StringComparison.OrdinalIgnoreCase)) &&
+            SvgValues.TryParseColor(value.AsSpan(), out _);
 
         private static bool IsInertBoxProperty(SvgElement element, string property) =>
             InertBoxProperties.Contains(property) &&

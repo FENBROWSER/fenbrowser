@@ -190,6 +190,10 @@ namespace FenBrowser.FenEngine.Svg
                 engine.ApplySmilSnapshot(doc.Root);
                 engine.RenderRoot(out picture, out width, out height);
                 engine.AbsorbExternalUseReports();
+                if (resourceDepth == 0)
+                {
+                    resources.RootHasNaturalSize = engine._rootHasNaturalSize;
+                }
                 warnings = engine._report.Warnings.ToArray();
                 fallbackReasonCodes = engine._report.FallbackReasonCodes.ToArray();
                 resourceRejectionReasonCodes = engine._report.ResourceRejectionReasonCodes.ToArray();
@@ -285,6 +289,24 @@ namespace FenBrowser.FenEngine.Svg
             return false;
         }
 
+        private bool _rootHasNaturalSize = true;
+
+        private static bool TryResolveRootCanvasBackground(SvgElement root, out SKColor color)
+        {
+            color = SKColors.Transparent;
+            string value = root.GetCascadedPresentationProperty("background-color") ??
+                           root.GetCascadedPresentationProperty("background");
+            return !string.IsNullOrWhiteSpace(value) &&
+                   SvgValues.TryParseColor(value.AsSpan(), out color) &&
+                   color.Alpha > 0;
+        }
+
+        private static bool IsConcreteRootLength(string raw) =>
+            !string.IsNullOrWhiteSpace(raw) &&
+            SvgValues.TryParseLength(raw.AsSpan(), out float value, out var unit) &&
+            unit != SvgValues.SvgUnit.Percent &&
+            value > 0f;
+
         private void RenderRoot(out SKPicture picture, out float width, out float height)
         {
             var root = _doc.Root;
@@ -318,6 +340,12 @@ namespace FenBrowser.FenEngine.Svg
             _report.TextAreasOnOneLine = _limits.LayOutTextAreasOnOneLine;
             SvgCssCascade.Apply(_doc, width, _report, CheckDeadline);
             ResolveRootCssViewportSize(root, ref width, ref height);
+            // CSS Images 3 §4.1: an SVG image has a natural size only when its root
+            // gives a concrete width and height; a percentage or no value leaves it to
+            // the default object size where it is used.
+            _rootHasNaturalSize =
+                IsConcreteRootLength(root.GetPresentationProperty("width")) &&
+                IsConcreteRootLength(root.GetPresentationProperty("height"));
             width = System.Math.Min(width, 32767f);
             height = System.Math.Min(height, 32767f);
 
@@ -338,6 +366,12 @@ namespace FenBrowser.FenEngine.Svg
                 // transform the clip rectangle too (e.g. a large-negative
                 // vbY would push the clip entirely off-content).
                 canvas.ClipRect(new SKRect(0f, 0f, width, height));
+                // CSS Backgrounds 3 §2.11.2: the root element's background paints the
+                // canvas of the document, beneath and outside any zoom and pan.
+                if (!IsDisplayNone(root) && TryResolveRootCanvasBackground(root, out SKColor canvasBackground))
+                {
+                    canvas.DrawColor(canvasBackground, SKBlendMode.SrcOver);
+                }
                 // The zoom-and-pan transform (SVG 2 §5.1.1, currentScale and
                 // currentTranslate) acts on the root's user space inside the fixed
                 // viewport clip, so zooming out reveals content beyond the viewport.
@@ -446,6 +480,12 @@ namespace FenBrowser.FenEngine.Svg
         public long FilterWorkUnits => _filterWorkUnits;
 
         public long MaxFilterWorkUnits => _maxFilterWorkUnits;
+
+        /// <summary>
+        /// Whether the top-level document gave a concrete width and height (CSS
+        /// Images 3 §4.1 natural size). Set by the root render only.
+        /// </summary>
+        public bool RootHasNaturalSize { get; set; } = true;
 
         /// <summary>
         /// Charges estimated filter work against the per-render budget shared with

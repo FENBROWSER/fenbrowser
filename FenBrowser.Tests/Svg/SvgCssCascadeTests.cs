@@ -1338,17 +1338,18 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void BackgroundOnAViewportElement_StillFailsClosed()
+        public void BackgroundColorOnTheRootSvg_PaintsTheCanvasUnderContent()
         {
+            // CSS Backgrounds 3 §2.11.2: the root element's background is the canvas.
             const string svg =
                 "<svg width='20' height='20'><style>svg { background-color: red }</style>" +
-                "<rect width='20' height='20' fill='blue'/></svg>";
+                "<rect width='10' height='20' fill='blue'/></svg>";
 
             using var result = new FenSvgRenderer().Render(svg);
 
-            AssertFailsClosed(result);
-            Assert.Contains("css-cascade", result.FallbackReasonCodes);
-            Assert.Contains(result.Warnings, w => w.Contains("background-color", StringComparison.Ordinal));
+            Assert.True(SvgRenderResult.IsAdmissible(result), result.ErrorMessage);
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(5, 10));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(15, 10));
         }
 
         [Fact]

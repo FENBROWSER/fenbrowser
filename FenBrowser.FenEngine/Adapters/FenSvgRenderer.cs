@@ -358,6 +358,7 @@ namespace FenBrowser.FenEngine.Adapters
                         Height = cullRect.Height,
                         RasterScaleX = (float)rasterPlan.ScaleX,
                         RasterScaleY = (float)rasterPlan.ScaleY,
+                        HasNaturalSize = resources.RootHasNaturalSize,
                         Success = true,
                         Warnings = rasterPlan.IsClamped
                             ? WithRasterClampWarning(
