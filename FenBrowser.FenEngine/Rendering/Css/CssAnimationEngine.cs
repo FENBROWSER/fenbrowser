@@ -188,6 +188,14 @@ namespace FenBrowser.FenEngine.Rendering
 
         private void RecordOutcome(int outcome) => Interlocked.Increment(ref _tickOutcomes[outcome]);
 
+        // Every write to a style's AnimationOverlay goes through this one lock. The
+        // overlay lives on the element's shared CssComputed, but each SkiaDomRenderer
+        // owns its own engine and timer, the animation and transition passes hold
+        // different locks, and the render thread writes it too (scroll-driven update).
+        // Two writers on one Dictionary corrupted it and killed the process from a
+        // timer callback (github.com), so the lock is per process, not per engine.
+        private static readonly object _overlayWriteLock = new object();
+
         private sealed class AnimationDocumentState
         {
             public readonly object SyncRoot = new();
@@ -1377,7 +1385,7 @@ namespace FenBrowser.FenEngine.Rendering
                         continue;
                     }
 
-                    if (style != null) style.AnimationOverlay?.Clear();
+                    ClearOverlay(style);
 
                     foreach (var anim in kvp.Value)
                     {
@@ -1522,8 +1530,7 @@ namespace FenBrowser.FenEngine.Rendering
                             var currentStyle = element.GetComputedStyle();
                             if (currentStyle != null)
                             {
-                                currentStyle.AnimationOverlay ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                                currentStyle.AnimationOverlay[trans.Property] = interpolated;
+                                SetOverlayValue(currentStyle, trans.Property, interpolated);
                                 elementDirty = true;
                                 // Phase 1: use authoritative classification. Composite-only
                                 // transitions (transform, opacity) must not mark PaintDirty.
@@ -1641,8 +1648,29 @@ namespace FenBrowser.FenEngine.Rendering
         {
             var style = element.GetComputedStyle();
             if (style == null || properties == null || properties.Count == 0) return;
-            style.AnimationOverlay ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var kvp in properties) style.AnimationOverlay[kvp.Key] = kvp.Value;
+            lock (_overlayWriteLock)
+            {
+                style.AnimationOverlay ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kvp in properties) style.AnimationOverlay[kvp.Key] = kvp.Value;
+            }
+        }
+
+        private static void SetOverlayValue(CssComputed style, string property, string value)
+        {
+            lock (_overlayWriteLock)
+            {
+                style.AnimationOverlay ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                style.AnimationOverlay[property] = value;
+            }
+        }
+
+        private static void ClearOverlay(CssComputed style)
+        {
+            if (style?.AnimationOverlay == null) return;
+            lock (_overlayWriteLock)
+            {
+                style.AnimationOverlay?.Clear();
+            }
         }
 
         private void ApplyKeyframeAt(ActiveAnimation anim, double progress)
