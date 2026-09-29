@@ -256,8 +256,17 @@ namespace FenBrowser.FenEngine.Rendering
                     var result = await fetcher(uri).ConfigureAwait(false);
                     if (result?.Succeeded == true && result.Body != null && result.Body.Length > 0)
                     {
-                        using var stream = new MemoryStream(result.Body, writable: false);
-                        typeface = SKTypeface.FromStream(stream);
+                        // DirectWrite (Skia's Windows backend) reads plain sfnt only, so a
+                        // WOFF/WOFF2 container is unwrapped first; an invalid one is rejected.
+                        var fontBytes = result.Body;
+                        if (WebFontDecoder.IsWebFontContainer(fontBytes) &&
+                            !WebFontDecoder.TryDecode(fontBytes, out fontBytes))
+                        {
+                            fontBytes = null;
+                        }
+
+                        using var stream = fontBytes == null ? null : new MemoryStream(fontBytes, writable: false);
+                        typeface = stream == null ? null : SKTypeface.FromStream(stream);
                         undecodable = typeface == null;
                         if (undecodable)
                         {
