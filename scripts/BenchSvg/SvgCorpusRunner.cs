@@ -39,6 +39,7 @@ internal sealed record SvgCorpusOptions(
             throw new ArgumentException("--corpus-kind must be generic, wpt, or captured-site");
         string? manifest = ReadString(args, "--manifest");
         var includePrefixes = ReadPrefixes(args, "--include-prefix");
+        SvgCorpusRunner.BrowserPolicy = args.Contains("--browser-policy", StringComparer.Ordinal);
         if (corpusKind == "captured-site" && string.IsNullOrWhiteSpace(manifest))
             throw new ArgumentException("captured-site corpus requires --manifest");
         if (corpusKind == "captured-site" && includePrefixes.Count != 0)
@@ -111,6 +112,13 @@ internal sealed record SvgCorpusOptions(
 
 internal static class SvgCorpusRunner
 {
+    /// <summary>
+    /// --browser-policy: render under the policy the browser ships (ImageLoader and the
+    /// target-process decode) instead of the strict renderer contract: script is inert
+    /// and text areas lay out on one line. Workers receive the flag too.
+    /// </summary>
+    internal static bool BrowserPolicy { get; set; }
+
     public static int Run(SvgCorpusOptions options)
     {
         bool manifestValidated = false;
@@ -121,7 +129,9 @@ internal static class SvgCorpusRunner
                 options.CorpusKind == "wpt" ? options.CorpusDirectory : null);
             if (wptFont != null) Environment.SetEnvironmentVariable("FEN_SVG_FONT_PATH", wptFont);
         }
-        string checkpointPath = Path.Combine(options.OutputDirectory, "corpus-checkpoint.jsonl");
+        // A separate checkpoint per policy, so --resume never mixes the two.
+        string checkpointPath = Path.Combine(
+            options.OutputDirectory, BrowserPolicy ? "corpus-checkpoint.browser.jsonl" : "corpus-checkpoint.jsonl");
         string rendererBuildId = typeof(SvgCorpusRunner).Assembly.ManifestModule.ModuleVersionId.ToString("D");
         RendererSourceProvenance provenance = RendererSourceProvenanceReader.Capture();
         var checkpoint = options.Resume
@@ -358,6 +368,7 @@ internal static class SvgCorpusRunner
         {
             probe = "svg-corpus",
             ok = options.Gate ? gateOk : routingOk,
+            policy = BrowserPolicy ? "browser" : "strict",
             selected = summary.SelectedFiles,
             corpusKind = summary.CorpusKind,
             manifestValidated = summary.ManifestValidated,
@@ -579,6 +590,11 @@ internal static class SvgCorpusRunner
     {
         SvgRenderLimits limits = SvgRenderLimits.Default;
         if (resolver != null) limits.AllowExternalReferences = true;
+        if (BrowserPolicy)
+        {
+            limits.TreatScriptsAsInert = true;
+            limits.LayOutTextAreasOnOneLine = true;
+        }
         return limits;
     }
 
@@ -608,6 +624,11 @@ internal static class SvgCorpusRunner
         var parsed = new List<WptReference>();
         for (int i = 0; i < args.Length; i++)
         {
+            if (args[i] == "--browser-policy")
+            {
+                BrowserPolicy = true;
+                continue;
+            }
             if (args[i] == "--wpt-root")
             {
                 if (++i >= args.Length || wptRoot != null)
@@ -728,6 +749,7 @@ internal static class SvgCorpusRunner
         start.ArgumentList.Add("--corpus-worker");
         start.ArgumentList.Add(inputPath);
         start.ArgumentList.Add(outputPath);
+        if (BrowserPolicy) start.ArgumentList.Add("--browser-policy");
         if (wptRoot != null)
         {
             start.ArgumentList.Add("--wpt-root");
