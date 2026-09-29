@@ -503,15 +503,39 @@ namespace FenBrowser.FenEngine.Svg
 
         // ----------------------------------------------------------- transform
 
+        /// <summary>
+        /// Parses a transform list (SVG 2 §8.5 "The 'transform' property", legacy
+        /// attribute grammar) and composes it into one bounded matrix. Rendering and
+        /// the SVG DOM transform lists share this grammar through
+        /// <see cref="TryParseTransformFunctions"/>.
+        /// </summary>
         public static bool TryParseTransformList(ReadOnlySpan<char> s, out SKMatrix matrix)
         {
             matrix = SKMatrix.Identity;
-            s = s.Trim();
-            if (s.IsEmpty)
+            if (s.Trim().IsEmpty)
             {
                 return true;
             }
 
+            var functions = new List<SvgTransformFunction>();
+            if (!TryParseTransformFunctions(s, functions) ||
+                !TryComposeTransformFunctions(functions, out SKMatrix composed))
+            {
+                return false;
+            }
+            matrix = composed;
+            return true;
+        }
+
+        /// <summary>
+        /// Parses a transform list into its functions. False, with
+        /// <paramref name="functions"/> cleared, for any malformed list; an empty or
+        /// whitespace-only list is valid and has no functions.
+        /// </summary>
+        public static bool TryParseTransformFunctions(ReadOnlySpan<char> s, List<SvgTransformFunction> functions)
+        {
+            functions.Clear();
+            s = s.Trim();
             int i = 0;
             int n = s.Length;
             while (i < n)
@@ -521,17 +545,12 @@ namespace FenBrowser.FenEngine.Svg
 
                 int nameStart = i;
                 while (i < n && char.IsLetter(s[i])) i++;
-                if (i == nameStart)
-                {
-                    matrix = SKMatrix.Identity;
-                    return false;
-                }
                 var fn = s.Slice(nameStart, i - nameStart);
 
                 while (i < n && char.IsWhiteSpace(s[i])) i++;
-                if (i >= n || s[i] != '(')
+                if (fn.IsEmpty || i >= n || s[i] != '(')
                 {
-                    matrix = SKMatrix.Identity;
+                    functions.Clear();
                     return false;
                 }
                 i++;
@@ -539,29 +558,52 @@ namespace FenBrowser.FenEngine.Svg
                 while (i < n && s[i] != ')') i++;
                 if (i >= n)
                 {
-                    matrix = SKMatrix.Identity;
+                    functions.Clear();
                     return false;
                 }
                 var args = s.Slice(argStart, i - argStart);
                 i++;
 
-                if (!ApplyTransformFunction(fn, args, ref matrix))
+                if (!TryParseTransformFunction(fn, args, out SvgTransformFunction function) ||
+                    !TryCreateTransformMatrix(function, out _))
                 {
-                    matrix = SKMatrix.Identity;
+                    functions.Clear();
+                    return false;
+                }
+                functions.Add(function);
+            }
+            return true;
+        }
+
+        /// <summary>Post-multiplies the functions in list order into one bounded matrix.</summary>
+        public static bool TryComposeTransformFunctions(IReadOnlyList<SvgTransformFunction> functions, out SKMatrix matrix)
+        {
+            matrix = SKMatrix.Identity;
+            SKMatrix m = SKMatrix.Identity;
+            foreach (var function in functions)
+            {
+                if (!TryCreateTransformMatrix(function, out SKMatrix t))
+                {
+                    return false;
+                }
+                m = SKMatrix.Concat(m, t);
+                if (!TryNormalizeMatrix(m, out m))
+                {
                     return false;
                 }
             }
-            if (!TryNormalizeMatrix(matrix, out SKMatrix normalized))
+            if (!TryNormalizeMatrix(m, out SKMatrix normalized))
             {
-                matrix = SKMatrix.Identity;
                 return false;
             }
             matrix = normalized;
             return true;
         }
 
-        private static bool ApplyTransformFunction(ReadOnlySpan<char> fn, ReadOnlySpan<char> args, ref SKMatrix m)
+        private static bool TryParseTransformFunction(
+            ReadOnlySpan<char> fn, ReadOnlySpan<char> args, out SvgTransformFunction function)
         {
+            function = default;
             var tok = new Tokenizer(args);
             Span<float> nums = stackalloc float[8];
             int count = 0;
@@ -576,62 +618,68 @@ namespace FenBrowser.FenEngine.Svg
                     return false;
                 }
             }
-            if (count == 0)
-            {
-                return false;
-            }
 
-            int n = count;
+            SvgTransformKind kind;
+            if (EqIgnoreCase(fn, "matrix")) kind = SvgTransformKind.Matrix;
+            else if (EqIgnoreCase(fn, "translate")) kind = SvgTransformKind.Translate;
+            else if (EqIgnoreCase(fn, "scale")) kind = SvgTransformKind.Scale;
+            else if (EqIgnoreCase(fn, "rotate")) kind = SvgTransformKind.Rotate;
+            else if (EqIgnoreCase(fn, "skewx")) kind = SvgTransformKind.SkewX;
+            else if (EqIgnoreCase(fn, "skewy")) kind = SvgTransformKind.SkewY;
+            else return false;
 
+            function = new SvgTransformFunction(kind, nums.Slice(0, count).ToArray());
+            return true;
+        }
+
+        /// <summary>
+        /// The matrix of one transform function. False for a wrong argument count or a
+        /// non-finite result; translations are clamped like every other coordinate.
+        /// </summary>
+        public static bool TryCreateTransformMatrix(SvgTransformFunction function, out SKMatrix matrix)
+        {
+            matrix = SKMatrix.Identity;
+            float[] a = function.Arguments ?? System.Array.Empty<float>();
+            int n = a.Length;
             SKMatrix t;
-            if (EqIgnoreCase(fn, "matrix"))
+            switch (function.Kind)
             {
-                if (n != 6) return false;
-                t = new SKMatrix(
-                    nums[0], nums[2], ClampCoord(nums[4]),
-                    nums[1], nums[3], ClampCoord(nums[5]),
-                    0f, 0f, 1f);
-            }
-            else if (EqIgnoreCase(fn, "translate"))
-            {
-                if (n != 1 && n != 2) return false;
-                t = SKMatrix.CreateTranslation(
-                    ClampCoord(nums[0]),
-                    n == 2 ? ClampCoord(nums[1]) : 0f);
-            }
-            else if (EqIgnoreCase(fn, "scale"))
-            {
-                if (n != 1 && n != 2) return false;
-                if (!IsFinite(nums[0]) || (n == 2 && !IsFinite(nums[1]))) return false;
-                t = SKMatrix.CreateScale(nums[0], n == 2 ? nums[1] : nums[0]);
-            }
-            else if (EqIgnoreCase(fn, "rotate"))
-            {
-                if (n != 1 && n != 3) return false;
-                if (!TryCreateRotation(
-                        nums[0],
-                        n == 3 ? ClampCoord(nums[1]) : 0f,
-                        n == 3 ? ClampCoord(nums[2]) : 0f,
-                        out t)) return false;
-            }
-            else if (EqIgnoreCase(fn, "skewx"))
-            {
-                if (n != 1 || !TryCreateSkew(DegreesToRadians(nums[0]), 0f, out t)) return false;
-            }
-            else if (EqIgnoreCase(fn, "skewy"))
-            {
-                if (n != 1 || !TryCreateSkew(0f, DegreesToRadians(nums[0]), out t)) return false;
-            }
-            else
-            {
-                return false;
+                case SvgTransformKind.Matrix:
+                    if (n != 6) return false;
+                    t = new SKMatrix(
+                        a[0], a[2], ClampCoord(a[4]),
+                        a[1], a[3], ClampCoord(a[5]),
+                        0f, 0f, 1f);
+                    break;
+                case SvgTransformKind.Translate:
+                    if (n != 1 && n != 2) return false;
+                    t = SKMatrix.CreateTranslation(ClampCoord(a[0]), n == 2 ? ClampCoord(a[1]) : 0f);
+                    break;
+                case SvgTransformKind.Scale:
+                    if (n != 1 && n != 2) return false;
+                    if (!IsFinite(a[0]) || (n == 2 && !IsFinite(a[1]))) return false;
+                    t = SKMatrix.CreateScale(a[0], n == 2 ? a[1] : a[0]);
+                    break;
+                case SvgTransformKind.Rotate:
+                    if (n != 1 && n != 3) return false;
+                    if (!TryCreateRotation(
+                            a[0],
+                            n == 3 ? ClampCoord(a[1]) : 0f,
+                            n == 3 ? ClampCoord(a[2]) : 0f,
+                            out t)) return false;
+                    break;
+                case SvgTransformKind.SkewX:
+                    if (n != 1 || !TryCreateSkew(DegreesToRadians(a[0]), 0f, out t)) return false;
+                    break;
+                case SvgTransformKind.SkewY:
+                    if (n != 1 || !TryCreateSkew(0f, DegreesToRadians(a[0]), out t)) return false;
+                    break;
+                default:
+                    return false;
             }
 
             if (!IsFinite(t)) return false;
-            m = SKMatrix.Concat(m, t);
-            if (!TryNormalizeMatrix(m, out SKMatrix normalized))
-                return false;
-            m = normalized;
+            matrix = t;
             return true;
         }
 
@@ -751,4 +799,21 @@ namespace FenBrowser.FenEngine.Svg
             return -1;
         }
     }
+
+    /// <summary>The functions of the SVG transform list grammar.</summary>
+    public enum SvgTransformKind
+    {
+        Matrix,
+        Translate,
+        Scale,
+        Rotate,
+        SkewX,
+        SkewY
+    }
+
+    /// <summary>
+    /// One parsed transform function with its arguments as written: translate and
+    /// scale carry one or two, rotate one or three, matrix six, the skews one.
+    /// </summary>
+    public readonly record struct SvgTransformFunction(SvgTransformKind Kind, float[] Arguments);
 }
