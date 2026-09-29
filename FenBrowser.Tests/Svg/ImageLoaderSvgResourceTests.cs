@@ -716,6 +716,54 @@ public sealed class ImageLoaderSvgResourceTests
     }
 
     [Fact]
+    public async Task InlineSvg_PreloadsASameOriginSpriteSheetForUse()
+    {
+        var baseUri = new Uri("https://example.test/page.html");
+        byte[] sprites = System.Text.Encoding.UTF8.GetBytes(
+            "<svg xmlns='http://www.w3.org/2000/svg'><symbol id='dot' viewBox='0 0 4 4'>" +
+            "<rect width='4' height='4'/></symbol></svg>");
+        var repainted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var context = new ImageLoader.ImageLoaderRequestContext
+        {
+            OwnerId = Guid.NewGuid().ToString("N"),
+            RequestRepaint = () => repainted.TrySetResult(),
+            FetchDetailedAsync = async uri =>
+            {
+                await Task.Yield();
+                Assert.Equal(new Uri("https://example.test/icons/sprites.svg"), uri);
+                return new BinaryFetchResult
+                {
+                    Body = sprites,
+                    ContentType = "image/svg+xml",
+                    FinalUri = uri,
+                    FailureReason = BinaryFetchFailureReason.None
+                };
+            }
+        };
+        const string svg =
+            "<svg width='16' height='16' fill='red'><use href='icons/sprites.svg#dot' width='16' height='16'/></svg>";
+        ImageLoader.ClearCache();
+        try
+        {
+            using var scope = ImageLoader.EnterRequestContext(context);
+
+            SKBitmap? bitmap = ImageLoader.GetInlineSvgImage(svg, 16, 16, baseUri);
+            if (bitmap == null)
+            {
+                await repainted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                bitmap = ImageLoader.GetInlineSvgImage(svg, 16, 16, baseUri);
+            }
+
+            Assert.NotNull(bitmap);
+            Assert.Equal(SKColors.Red, bitmap.GetPixel(8, 8));
+        }
+        finally
+        {
+            ImageLoader.ClearCache();
+        }
+    }
+
+    [Fact]
     public void InlineSvg_CrossOriginImagesAreNeverFetched()
     {
         int fetches = 0;

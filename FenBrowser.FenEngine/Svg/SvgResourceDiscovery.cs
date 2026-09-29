@@ -28,7 +28,10 @@ internal static class SvgResourceDiscovery
         while (stack.Count > 0 && resources.Count < remaining)
         {
             SvgElement element = stack.Pop();
-            if (element.Name == "image")
+            // Images, and the documents that use elements reference with a URL
+            // (same-origin sprite sheets): both are preloaded before rendering.
+            if (element.Name == "image" ||
+                (element.Name == "use" && IsExternalDocumentReference(element)))
             {
                 string href = element.GetAttribute("href") ?? element.GetLookup("xlink:href");
                 if (!string.IsNullOrWhiteSpace(href) &&
@@ -44,6 +47,12 @@ internal static class SvgResourceDiscovery
                 stack.Push(element.Children[i]);
         }
         return resources;
+    }
+
+    private static bool IsExternalDocumentReference(SvgElement use)
+    {
+        string href = use.GetAttribute("href") ?? use.GetLookup("xlink:href");
+        return !string.IsNullOrWhiteSpace(href) && !href.TrimStart().StartsWith("#", StringComparison.Ordinal);
     }
 
     internal static bool IsSameOrigin(Uri first, Uri second) =>
