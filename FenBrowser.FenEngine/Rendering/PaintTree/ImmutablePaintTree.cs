@@ -388,7 +388,7 @@ namespace FenBrowser.FenEngine.Rendering
             return true;
         }
 
-        private static bool HasEquivalentVisualState(PaintNodeBase previous, PaintNodeBase current)
+        internal static bool HasEquivalentVisualState(PaintNodeBase previous, PaintNodeBase current)
         {
             if (previous == null || current == null)
             {

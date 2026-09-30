@@ -1,11 +1,17 @@
 using System;
 using System.Collections.Generic;
+using FenBrowser.Core.Dom.V2;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
 {
     /// <summary>
-    /// Computes viewport-clamped damage regions from paint-tree deltas.
+    /// Computes viewport-clamped damage regions from paint-tree deltas, in canvas space.
+    /// Every changed, added or removed node contributes its whole paint extent
+    /// (<see cref="PaintExtent"/>: descendants, shadows, filter reach) mapped through its
+    /// ancestors' transforms and scroll/sticky offsets. Raw node bounds are not enough:
+    /// a node under a transform, a scroller or a sticky offset paints somewhere else,
+    /// and a retained raster trusting that rectangle kept stale pixels.
     /// Applies a bounded online merge policy so large DOM changes cannot turn damage
     /// normalization into an unbounded quadratic pass.
     /// </summary>
@@ -22,6 +28,10 @@ namespace FenBrowser.FenEngine.Rendering
             _mergeTolerancePx = Math.Max(0.0f, mergeTolerancePx);
         }
 
+        /// <summary>
+        /// Damage between two trees, clamped to <paramref name="viewport"/>. Empty when
+        /// nothing visible changed; the whole viewport when the change cannot be bounded.
+        /// </summary>
         public IReadOnlyList<SKRect> ComputeDamageRegions(
             ImmutablePaintTree previousTree,
             ImmutablePaintTree currentTree,
@@ -37,31 +47,22 @@ namespace FenBrowser.FenEngine.Rendering
                 return new[] { viewport };
             }
 
-            var diff = currentTree.Diff(previousTree);
-            if (!diff.HasChanges)
+            if (ReferenceEquals(previousTree, currentTree))
             {
                 return Array.Empty<SKRect>();
             }
 
             var regions = new List<SKRect>(Math.Min(_maxDamageRegions, 16));
+            var work = new Stack<Level>();
+            work.Push(new Level(currentTree.Roots, previousTree.Roots, SKMatrix.Identity));
 
-            foreach (var node in diff.AddedNodes)
+            while (work.Count > 0)
             {
-                AddSubtreeDamage(regions, node, viewport);
-            }
-
-            foreach (var node in diff.RemovedNodes)
-            {
-                AddSubtreeDamage(regions, node, viewport);
-            }
-
-            foreach (var change in diff.ModifiedNodes)
-            {
-                // A parent transform/filter/opacity/style change can alter descendants
-                // that paint outside the parent's nominal box. Damage both old and new
-                // subtrees instead of assuming the root bounds contain all visual ink.
-                AddSubtreeDamage(regions, change.OldNode, viewport);
-                AddSubtreeDamage(regions, change.NewNode, viewport);
+                var level = work.Pop();
+                if (!DiffLevel(level, work, regions, viewport))
+                {
+                    return new[] { viewport };
+                }
             }
 
             if (regions.Count == 0)
@@ -77,25 +78,145 @@ namespace FenBrowser.FenEngine.Rendering
             return regions;
         }
 
-        private void AddSubtreeDamage(List<SKRect> regions, PaintNodeBase root, SKRect viewport)
+        private readonly record struct Level(
+            IReadOnlyList<PaintNodeBase> Current,
+            IReadOnlyList<PaintNodeBase> Previous,
+            SKMatrix ToCanvas);
+
+        /// <summary>
+        /// Pairs one level's nodes and records damage; false when some change cannot be bounded.
+        /// </summary>
+        private bool DiffLevel(Level level, Stack<Level> work, List<SKRect> regions, SKRect viewport)
         {
-            if (root == null) return;
+            var current = level.Current ?? Array.Empty<PaintNodeBase>();
+            var previous = level.Previous ?? Array.Empty<PaintNodeBase>();
 
-            var stack = new Stack<PaintNodeBase>();
-            stack.Push(root);
-
-            while (stack.Count > 0)
+            // Nodes pair by (type, stable id or source node); nodes with neither pair by
+            // type and order among their unkeyed siblings. Several nodes can share a key
+            // (an element's text fragments), so each key holds a queue in sibling order.
+            var previousByKey = new Dictionary<NodeKey, Queue<PaintNodeBase>>();
+            var unkeyedOrdinal = new Dictionary<Type, int>();
+            foreach (var node in previous)
             {
-                var node = stack.Pop();
-                AddMergedDamageRect(regions, node.Bounds, viewport);
-
-                var children = node.Children;
-                if (children == null) continue;
-                for (var i = children.Count - 1; i >= 0; i--)
+                if (node == null) continue;
+                var key = KeyOf(node, unkeyedOrdinal);
+                if (!previousByKey.TryGetValue(key, out var bucket))
                 {
-                    if (children[i] != null) stack.Push(children[i]);
+                    bucket = new Queue<PaintNodeBase>();
+                    previousByKey.Add(key, bucket);
+                }
+                bucket.Enqueue(node);
+            }
+
+            unkeyedOrdinal.Clear();
+            foreach (var node in current)
+            {
+                if (node == null) continue;
+                var key = KeyOf(node, unkeyedOrdinal);
+                if (!previousByKey.TryGetValue(key, out var bucket) || bucket.Count == 0)
+                {
+                    if (!AddNodeDamage(regions, node, level.ToCanvas, viewport)) return false;
+                    continue;
+                }
+
+                var old = bucket.Dequeue();
+                if (bucket.Count == 0) previousByKey.Remove(key);
+
+                // Subtrees are shared between trees wherever nothing changed.
+                if (ReferenceEquals(old, node)) continue;
+
+                if (!SameOwnPaint(old, node))
+                {
+                    if (!AddNodeDamage(regions, old, level.ToCanvas, viewport)) return false;
+                    if (!AddNodeDamage(regions, node, level.ToCanvas, viewport)) return false;
+                    continue;
+                }
+
+                // Same transform and offsets on both sides, so the children share a space.
+                work.Push(new Level(node.Children, old.Children, ChildSpace(node, level.ToCanvas)));
+            }
+
+            foreach (var bucket in previousByKey.Values)
+            {
+                while (bucket.Count > 0)
+                {
+                    if (!AddNodeDamage(regions, bucket.Dequeue(), level.ToCanvas, viewport)) return false;
                 }
             }
+
+            return true;
+        }
+
+        private static bool SameOwnPaint(PaintNodeBase previous, PaintNodeBase current)
+        {
+            return previous.GetType() == current.GetType() &&
+                   previous.Bounds == current.Bounds &&
+                   previous.Transform == current.Transform &&
+                   previous.Opacity == current.Opacity &&
+                   previous.ClipRect == current.ClipRect &&
+                   previous.IsHovered == current.IsHovered &&
+                   previous.IsFocused == current.IsFocused &&
+                   ImmutablePaintTree.HasEquivalentVisualState(previous, current);
+        }
+
+        /// <summary>The space a node's children paint in: its own transform, then its scroll or sticky offset.</summary>
+        private static SKMatrix ChildSpace(PaintNodeBase node, SKMatrix toCanvas)
+        {
+            var space = node.Transform.HasValue ? toCanvas.PreConcat(node.Transform.Value) : toCanvas;
+            if (node is ScrollPaintNode scroll && (scroll.ScrollX != 0 || scroll.ScrollY != 0))
+            {
+                space = space.PreConcat(SKMatrix.CreateTranslation(-scroll.ScrollX, -scroll.ScrollY));
+            }
+            else if (node is StickyPaintNode sticky && (sticky.StickyOffset.X != 0 || sticky.StickyOffset.Y != 0))
+            {
+                space = space.PreConcat(SKMatrix.CreateTranslation(sticky.StickyOffset.X, sticky.StickyOffset.Y));
+            }
+
+            return space;
+        }
+
+        private bool AddNodeDamage(List<SKRect> regions, PaintNodeBase node, SKMatrix toCanvas, SKRect viewport)
+        {
+            if (!PaintExtent.TryGet(node, out var extent))
+            {
+                return false;
+            }
+
+            if (extent.IsEmpty)
+            {
+                return true;
+            }
+
+            extent.Inflate(PaintExtent.InkMargin, PaintExtent.InkMargin);
+            var nodeToCanvas = node.Transform.HasValue ? toCanvas.PreConcat(node.Transform.Value) : toCanvas;
+            AddMergedDamageRect(regions, nodeToCanvas.MapRect(extent), viewport);
+            return true;
+        }
+
+        private static NodeKey KeyOf(PaintNodeBase node, Dictionary<Type, int> unkeyedOrdinal)
+        {
+            var type = node.GetType();
+            if (node.StableNodeId != 0) return new NodeKey(type, node.StableNodeId, null, -1);
+            if (node.SourceNode != null) return new NodeKey(type, 0, node.SourceNode, -1);
+
+            unkeyedOrdinal.TryGetValue(type, out var ordinal);
+            unkeyedOrdinal[type] = ordinal + 1;
+            return new NodeKey(type, 0, null, ordinal);
+        }
+
+        private readonly record struct NodeKey(Type Type, ulong StableId, Node Source, int UnkeyedOrdinal)
+        {
+            public bool Equals(NodeKey other) =>
+                ReferenceEquals(Type, other.Type) &&
+                StableId == other.StableId &&
+                ReferenceEquals(Source, other.Source) &&
+                UnkeyedOrdinal == other.UnkeyedOrdinal;
+
+            public override int GetHashCode() => HashCode.Combine(
+                Type,
+                StableId,
+                Source == null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Source),
+                UnkeyedOrdinal);
         }
 
         private void AddMergedDamageRect(List<SKRect> regions, SKRect candidate, SKRect viewport)
