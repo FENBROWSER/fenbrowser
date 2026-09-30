@@ -130,16 +130,17 @@ public sealed partial class FenJsBrowserScriptEngine
                         };
                     }
 
-                    // Web Authentication Level 3. No authenticator is attached - no
-                    // platform authenticator and no roaming transport - so this is a
-                    // client whose ceremonies have nothing to talk to: the platform
-                    // authenticator and conditional mediation report unavailable
-                    // (5.1.7, 5.1.8), and a publicKey create() or get() ends as a
-                    // ceremony with no usable authenticator ends, in NotAllowedError
-                    // (5.1.3 / 5.1.4.1, lifetime timer expiry). A conditional get()
-                    // waits for an autofill pick that never comes, until its signal
-                    // aborts. Sites gate their whole passkey and federated sign-in
-                    // block on PublicKeyCredential existing (github.com's login).
+                    // Web Authentication Level 3. When this process has an authenticator
+                    // (Windows Hello, directly or through the broker) a publicKey get() or
+                    // create() runs a real ceremony through __fenWebAuthn: BufferSources go
+                    // over as base64url and the credential comes back as ArrayBuffers on a
+                    // PublicKeyCredential. Without one this is a client whose ceremonies have
+                    // nothing to talk to: the platform authenticator and conditional
+                    // mediation report unavailable (5.1.7, 5.1.8) and a ceremony ends in
+                    // NotAllowedError (5.1.3 / 5.1.4.1). A conditional get() waits for an
+                    // autofill pick FenBrowser does not offer, until its signal aborts. Sites
+                    // gate their passkey and federated sign-in block on PublicKeyCredential
+                    // existing (github.com's login).
                     {
                         function webAuthnError(name, message) {
                             if (typeof DOMException === 'function') return new DOMException(message, name);
@@ -147,49 +148,180 @@ public sealed partial class FenJsBrowserScriptEngine
                             error.name = name;
                             return error;
                         }
-                        function publicKeyCeremony(options) {
-                            var signal = options && options.signal;
-                            if (signal && signal.aborted) {
-                                return Promise.reject(signal.reason !== undefined ? signal.reason : webAuthnError('AbortError', 'The operation was aborted.'));
+                        function hasAuthenticator() {
+                            return typeof __fenWebAuthnAvailable === 'function' && !!__fenWebAuthnAvailable();
+                        }
+                        function bytesOf(source) {
+                            if (source instanceof ArrayBuffer) return new Uint8Array(source);
+                            if (source && ArrayBuffer.isView(source)) return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+                            throw new TypeError("Failed to execute 'credentials': a BufferSource is required.");
+                        }
+                        function toB64u(source) {
+                            var bytes = bytesOf(source), binary = '';
+                            for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+                            return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                        }
+                        function fromB64u(text) {
+                            if (text === null || text === undefined) return null;
+                            var s = String(text).replace(/-/g, '+').replace(/_/g, '/');
+                            while (s.length % 4) s += '=';
+                            var binary = atob(s), bytes = new Uint8Array(binary.length);
+                            for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                            return bytes.buffer;
+                        }
+                        function descriptors(list) {
+                            var out = [];
+                            if (!list) return out;
+                            for (var i = 0; i < list.length; i++) {
+                                out.push({ id: toB64u(list[i].id), transports: Array.isArray(list[i].transports) ? list[i].transports.slice() : [] });
                             }
+                            return out;
+                        }
+                        function AuthenticatorResponse() { throw new TypeError('Illegal constructor'); }
+                        function AuthenticatorAssertionResponse() { throw new TypeError('Illegal constructor'); }
+                        function AuthenticatorAttestationResponse() { throw new TypeError('Illegal constructor'); }
+                        AuthenticatorAssertionResponse.prototype = Object.create(AuthenticatorResponse.prototype);
+                        AuthenticatorAttestationResponse.prototype = Object.create(AuthenticatorResponse.prototype);
+                        var PublicKeyCredential = typeof globalThis.PublicKeyCredential === 'function'
+                            ? globalThis.PublicKeyCredential
+                            : function PublicKeyCredential() { throw new TypeError('Illegal constructor'); };
+
+                        function makeCredential(kind, r) {
+                            var response = Object.create(kind === 'create'
+                                ? AuthenticatorAttestationResponse.prototype
+                                : AuthenticatorAssertionResponse.prototype);
+                            response.clientDataJSON = fromB64u(r.clientDataJson);
+                            if (kind === 'create') {
+                                response.attestationObject = fromB64u(r.attestationObject);
+                                var transports = (r.transports || []).slice();
+                                var authData = r.authenticatorData;
+                                response.getTransports = function () { return transports.slice(); };
+                                response.getAuthenticatorData = function () { return fromB64u(authData); };
+                                response.getPublicKey = function () { return null; };
+                                response.getPublicKeyAlgorithm = function () { return -7; };
+                            } else {
+                                response.authenticatorData = fromB64u(r.authenticatorData);
+                                response.signature = fromB64u(r.signature);
+                                response.userHandle = r.userHandle ? fromB64u(r.userHandle) : null;
+                            }
+                            var credential = Object.create(PublicKeyCredential.prototype);
+                            credential.id = r.credentialId;
+                            credential.rawId = fromB64u(r.credentialId);
+                            credential.type = 'public-key';
+                            credential.authenticatorAttachment = r.authenticatorAttachment || null;
+                            credential.response = response;
+                            credential.getClientExtensionResults = function () { return {}; };
+                            credential.toJSON = function () {
+                                var json = { id: r.credentialId, rawId: r.credentialId, type: 'public-key',
+                                    authenticatorAttachment: credential.authenticatorAttachment, clientExtensionResults: {},
+                                    response: { clientDataJSON: r.clientDataJson } };
+                                if (kind === 'create') {
+                                    json.response.attestationObject = r.attestationObject;
+                                    json.response.authenticatorData = r.authenticatorData;
+                                    json.response.transports = (r.transports || []).slice();
+                                } else {
+                                    json.response.authenticatorData = r.authenticatorData;
+                                    json.response.signature = r.signature;
+                                    json.response.userHandle = r.userHandle || null;
+                                }
+                                return json;
+                            };
+                            return credential;
+                        }
+
+                        function requestFor(kind, pk) {
+                            if (kind === 'create') {
+                                var rp = pk.rp || {}, user = pk.user || {}, selection = pk.authenticatorSelection || {};
+                                var algorithms = [];
+                                (pk.pubKeyCredParams || []).forEach(function (p) {
+                                    if (p && p.type === 'public-key' && typeof p.alg === 'number') algorithms.push(p.alg);
+                                });
+                                return {
+                                    rpId: rp.id, rpName: rp.name, challenge: toB64u(pk.challenge),
+                                    userId: toB64u(user.id), userName: user.name, userDisplayName: user.displayName,
+                                    algorithms: algorithms, excludeCredentials: descriptors(pk.excludeCredentials),
+                                    authenticatorAttachment: selection.authenticatorAttachment,
+                                    residentKey: selection.residentKey || (selection.requireResidentKey ? 'required' : undefined),
+                                    userVerification: selection.userVerification || 'preferred',
+                                    attestation: pk.attestation || 'none', timeoutMs: pk.timeout | 0
+                                };
+                            }
+                            return {
+                                rpId: pk.rpId, challenge: toB64u(pk.challenge), timeoutMs: pk.timeout | 0,
+                                userVerification: pk.userVerification || 'preferred',
+                                allowCredentials: descriptors(pk.allowCredentials)
+                            };
+                        }
+
+                        function publicKeyCeremony(options, kind) {
+                            var signal = options && options.signal;
+                            function abortReason() {
+                                return signal.reason !== undefined ? signal.reason : webAuthnError('AbortError', 'The operation was aborted.');
+                            }
+                            if (signal && signal.aborted) return Promise.reject(abortReason());
                             if (!globalThis.isSecureContext) {
                                 return Promise.reject(webAuthnError('SecurityError', 'The operation is insecure.'));
                             }
-                            if (options.mediation === 'conditional') {
+                            if (kind === 'get' && options.mediation === 'conditional') {
                                 return new Promise(function (resolve, reject) {
                                     if (signal && typeof signal.addEventListener === 'function') {
-                                        signal.addEventListener('abort', function () {
-                                            reject(signal.reason !== undefined ? signal.reason : webAuthnError('AbortError', 'The operation was aborted.'));
-                                        });
+                                        signal.addEventListener('abort', function () { reject(abortReason()); });
                                     }
                                 });
                             }
-                            return Promise.reject(webAuthnError('NotAllowedError',
-                                'The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.'));
+                            if (!hasAuthenticator()) {
+                                return Promise.reject(webAuthnError('NotAllowedError',
+                                    'The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.'));
+                            }
+                            var request;
+                            try { request = requestFor(kind, options.publicKey); }
+                            catch (e) { return Promise.reject(e); }
+                            var ceremony = __fenWebAuthn(kind, JSON.stringify(request)).then(function (json) {
+                                var r = JSON.parse(json);
+                                if (r.errorName) {
+                                    if (r.errorName === 'TypeError') throw new TypeError(r.errorMessage || 'Invalid options.');
+                                    throw webAuthnError(r.errorName, r.errorMessage || r.errorName);
+                                }
+                                return makeCredential(kind, r);
+                            });
+                            if (!signal || typeof signal.addEventListener !== 'function') return ceremony;
+                            return new Promise(function (resolve, reject) {
+                                signal.addEventListener('abort', function () { reject(abortReason()); });
+                                ceremony.then(resolve, reject);
+                            });
                         }
                         navigatorFillers.credentials = {
                             get: function (options) {
-                                if (options && options.publicKey) return publicKeyCeremony(options);
+                                if (options && options.publicKey) return publicKeyCeremony(options, 'get');
                                 return Promise.resolve(null);
                             },
                             store: function (credential) { return Promise.resolve(credential); },
                             create: function (options) {
-                                if (options && options.publicKey) return publicKeyCeremony(options);
+                                if (options && options.publicKey) return publicKeyCeremony(options, 'create');
                                 return Promise.resolve(null);
                             },
                             preventSilentAccess: function () { return Promise.resolve(); }
                         };
 
-                        if (typeof globalThis.PublicKeyCredential === 'undefined') {
-                            var PublicKeyCredential = function PublicKeyCredential() {
-                                throw new TypeError('Illegal constructor');
-                            };
-                            PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = function () { return Promise.resolve(false); };
-                            PublicKeyCredential.isConditionalMediationAvailable = function () { return Promise.resolve(false); };
-                            Object.defineProperty(globalThis, 'PublicKeyCredential', {
-                                value: PublicKeyCredential, writable: true, configurable: true, enumerable: false
-                            });
-                        }
+                        PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = function () {
+                            return hasAuthenticator() && typeof __fenWebAuthnUvpaa === 'function'
+                                ? __fenWebAuthnUvpaa()
+                                : Promise.resolve(false);
+                        };
+                        PublicKeyCredential.isConditionalMediationAvailable = function () { return Promise.resolve(false); };
+                        var webAuthnGlobals = {
+                            PublicKeyCredential: PublicKeyCredential,
+                            AuthenticatorResponse: AuthenticatorResponse,
+                            AuthenticatorAssertionResponse: AuthenticatorAssertionResponse,
+                            AuthenticatorAttestationResponse: AuthenticatorAttestationResponse
+                        };
+                        Object.keys(webAuthnGlobals).forEach(function (name) {
+                            if (typeof globalThis[name] === 'undefined' || name === 'PublicKeyCredential') {
+                                Object.defineProperty(globalThis, name, {
+                                    value: webAuthnGlobals[name], writable: true, configurable: true, enumerable: false
+                                });
+                            }
+                        });
                     }
 
                     {

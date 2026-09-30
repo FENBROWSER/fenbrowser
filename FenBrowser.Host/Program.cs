@@ -294,6 +294,15 @@ namespace FenBrowser.Host
                     }
                 }
 
+                // Web Authentication runs on Windows' platform API (Windows Hello, security
+                // keys, phone passkeys). An in-process tab calls it directly; a brokered tab's
+                // renderer asks this process, which owns the window, through the broker relay.
+                if (FenBrowser.Host.WebAuthn.WindowsWebAuthnAuthenticator.IsSupported)
+                {
+                    FenBrowser.FenEngine.WebAPIs.WebAuthn.WebAuthnPlatform.Authenticator =
+                        new FenBrowser.Host.WebAuthn.WindowsWebAuthnAuthenticator();
+                }
+
                 string initialUrl = ResolveInitialUrl(args) ?? "https://www.google.com";
                 EngineLog.Write(LogSubsystem.General, LogSeverity.Info, $"[Host] Starting FenBrowser with URL: {initialUrl}");
 
@@ -519,6 +528,11 @@ namespace FenBrowser.Host
             // socket handler.
             using var networkClient = new RendererNetworkClient(tabId, envelope => SendRendererEnvelope(writer, envelope));
             FenBrowser.Core.Network.HttpClientFactory.ConfigureRequestTransport(networkClient.SendAsync);
+
+            // The renderer has no window to parent the platform authenticator's dialog, so
+            // WebAuthn ceremonies go to the broker, which runs them on Windows Hello.
+            var webAuthnClient = new RendererWebAuthnClient(tabId, envelope => SendRendererEnvelope(writer, envelope));
+            FenBrowser.FenEngine.WebAPIs.WebAuthn.WebAuthnPlatform.Authenticator = webAuthnClient;
 
             // Container parsing and codec decoding run in the media process (design
             // §2.2, ADR-0004); the renderer keeps the element, the renderer and the
@@ -1110,6 +1124,9 @@ namespace FenBrowser.Host
                         return true;
                     case RendererIpcMessageType.NetworkFetchFailed:
                         networkClient.OnFailed(reply);
+                        return true;
+                    case RendererIpcMessageType.WebAuthnResult:
+                        webAuthnClient.OnResult(reply);
                         return true;
                     default:
                         return false;

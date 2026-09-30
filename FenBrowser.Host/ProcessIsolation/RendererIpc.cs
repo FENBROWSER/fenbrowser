@@ -48,7 +48,11 @@ namespace FenBrowser.Host.ProcessIsolation
         // or the reason it failed.
         NetworkFetchBodyPipe,
         NetworkFetchResponseHead,
-        NetworkFetchFailed
+        NetworkFetchFailed,
+        // Renderer -> broker: run a Web Authentication ceremony (the renderer holds no
+        // window and cannot reach the platform authenticator). Broker -> renderer: its result.
+        WebAuthn,
+        WebAuthnResult
     }
 
     public sealed class RendererIpcEnvelope
@@ -310,7 +314,8 @@ namespace FenBrowser.Host.ProcessIsolation
                    messageType == RendererIpcMessageType.Ack ||
                    messageType == RendererIpcMessageType.Pong ||
                    messageType == RendererIpcMessageType.NetworkFetch ||
-                   messageType == RendererIpcMessageType.NetworkFetchCancel;
+                   messageType == RendererIpcMessageType.NetworkFetchCancel ||
+                   messageType == RendererIpcMessageType.WebAuthn;
         }
 
         public static string SerializePayload<T>(T payload)
@@ -450,6 +455,11 @@ namespace FenBrowser.Host.ProcessIsolation
         private int _outboundFaulted;
         private FrameSharedMemory _frameSharedMemory;
         private readonly Network.RendererNetworkRelay _networkRelay;
+        private readonly RendererWebAuthnRelay _webAuthnRelay;
+        // The URL of the document this tab last committed: what the broker navigated it
+        // to, then what the renderer reports committing. WebAuthn ceremonies must come
+        // from that document's origin.
+        private string _committedUrl;
         private readonly int _parentPid = Environment.ProcessId;
 
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
@@ -491,6 +501,7 @@ namespace FenBrowser.Host.ProcessIsolation
             });
             _outboundLoop = Task.Run(OutboundLoopAsync);
             _networkRelay = new Network.RendererNetworkRelay(tabId, Send);
+            _webAuthnRelay = new RendererWebAuthnRelay(tabId, Send, () => Volatile.Read(ref _committedUrl));
         }
 
         public void AttachProcess(System.Diagnostics.Process childProcess)
@@ -525,6 +536,11 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public void SendNavigate(string url, bool isUserInput, float viewportWidth = 0f, float viewportHeight = 0f, string navigationCorrelationId = null)
         {
+            if (!string.IsNullOrEmpty(url))
+            {
+                Volatile.Write(ref _committedUrl, url);
+            }
+
             var payload = new RendererNavigatePayload
             {
                 Url = url ?? string.Empty,
@@ -776,6 +792,11 @@ namespace FenBrowser.Host.ProcessIsolation
                         var payload = RendererIpc.DeserializePayload<RendererMetadataChangedPayload>(envelope);
                         if (payload != null)
                         {
+                            if (!string.IsNullOrEmpty(payload.Url))
+                            {
+                                Volatile.Write(ref _committedUrl, payload.Url);
+                            }
+
                             MetadataChanged?.Invoke(TabId, payload);
                         }
                     }
@@ -792,6 +813,15 @@ namespace FenBrowser.Host.ProcessIsolation
                         var payload = RendererIpc.DeserializePayload<RendererNavigationLifecyclePayload>(envelope);
                         if (payload != null)
                         {
+                            if (string.Equals(payload.Phase, "Interactive", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(payload.Phase, "Complete", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (!string.IsNullOrEmpty(payload.EffectiveUrl))
+                                {
+                                    Volatile.Write(ref _committedUrl, payload.EffectiveUrl);
+                                }
+                            }
+
                             NavigationLifecycleReceived?.Invoke(TabId, payload);
                         }
                     }
@@ -802,6 +832,10 @@ namespace FenBrowser.Host.ProcessIsolation
                     else if (messageType == RendererIpcMessageType.NetworkFetchCancel)
                     {
                         _networkRelay.HandleCancel(envelope);
+                    }
+                    else if (messageType == RendererIpcMessageType.WebAuthn)
+                    {
+                        _webAuthnRelay.Handle(envelope);
                     }
                     else if (messageType == RendererIpcMessageType.Error)
                     {

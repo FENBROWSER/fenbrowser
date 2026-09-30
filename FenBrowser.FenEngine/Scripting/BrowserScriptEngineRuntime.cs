@@ -7698,6 +7698,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsMediaStream();
         InstallFenJsAudioOutputDevices();
         InstallFenJsUserMedia();
+        InstallFenJsWebAuthn();
         InstallFenJsPermissionsPolicyApi();
         InstallFenJsWebAudio();
         InstallFenJsDocumentAll();

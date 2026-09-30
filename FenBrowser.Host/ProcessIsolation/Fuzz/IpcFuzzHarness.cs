@@ -327,6 +327,27 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
                     }
                 }
 
+                // A WebAuthn request names the origin and RP ID a ceremony runs for; the
+                // broker's checks on them must hold for any bytes a renderer sends.
+                if (string.Equals(env.Type, RendererIpcMessageType.WebAuthn.ToString(), StringComparison.Ordinal))
+                {
+                    var request = RendererIpc.DeserializePayload<RendererWebAuthnRequestPayload>(env);
+                    string origin = request?.Get?.Origin ?? request?.Create?.Origin;
+                    string rpId = request?.Get?.RpId ?? request?.Create?.RpId;
+                    if (FenBrowser.FenEngine.WebAPIs.WebAuthn.WebAuthnClient.TryResolveRpId(origin, rpId, out var resolved, out _))
+                    {
+                        // An accepted RP ID is always the origin's host or a dot-suffix of it.
+                        var host = new Uri(origin).IdnHost.ToLowerInvariant();
+                        if (!(host == resolved || host.EndsWith("." + resolved, StringComparison.Ordinal)))
+                        {
+                            return false;
+                        }
+                    }
+
+                    _ = FenBrowser.FenEngine.WebAPIs.WebAuthn.WebAuthnClient.BuildClientDataJson(
+                        "webauthn.get", request?.Get?.Challenge ?? string.Empty, origin ?? string.Empty);
+                }
+
                 return true;
             }
             catch (Exception ex) when (!(ex is OutOfMemoryException || ex is StackOverflowException))
@@ -511,6 +532,7 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
             AddSeed(Encoding.UTF8.GetBytes("{\"type\":\"hello\",\"tabId\":1,\"correlationId\":\"abc\",\"token\":\"tok\",\"payload\":\"\",\"timestampUnixMs\":0}"));
             AddSeed(Encoding.UTF8.GetBytes("{\"type\":\"frameReady\",\"tabId\":1,\"correlationId\":\"c\",\"payload\":\"{\\\"url\\\":\\\"https://example.com\\\"}\",\"timestampUnixMs\":1}"));
             AddSeed(Encoding.UTF8.GetBytes(FrameReadySeed()));
+            AddSeed(Encoding.UTF8.GetBytes(WebAuthnSeed()));
             AddSeed(Encoding.UTF8.GetBytes("{\"type\":\"fetchRequest\",\"requestId\":\"r1\",\"capabilityToken\":\"tok\",\"payload\":\"{\\\"url\\\":\\\"https://a.com\\\",\\\"method\\\":\\\"GET\\\"}\",\"timestampUnixMs\":0}"));
             foreach (var seed in MediaIpcSeeds())
             {
@@ -542,6 +564,26 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
                 ScrollY = 4000,
                 SurfaceTopOffset = 465,
                 ContentHeight = 14000
+            })
+        });
+
+        /// <summary>A WebAuthn get request as a renderer child sends it to the broker.</summary>
+        public static string WebAuthnSeed() => RendererIpc.SerializeEnvelope(new RendererIpcEnvelope
+        {
+            Type = RendererIpcMessageType.WebAuthn.ToString(),
+            TabId = 1,
+            CorrelationId = "c",
+            Payload = RendererIpc.SerializePayload(new RendererWebAuthnRequestPayload
+            {
+                Kind = "get",
+                Get = new FenBrowser.FenEngine.WebAPIs.WebAuthn.WebAuthnGetRequest
+                {
+                    Origin = "https://github.com",
+                    RpId = "github.com",
+                    Challenge = "EgLSx2Qfomy_4frKHAFfnq5jhRrr7aHinqeR-yB-f7k",
+                    TimeoutMs = 60000,
+                    UserVerification = "required",
+                }
             })
         });
 
