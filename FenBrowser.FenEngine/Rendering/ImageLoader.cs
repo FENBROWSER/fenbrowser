@@ -1369,8 +1369,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (!IsAdmissibleSvgPixels(result))
             {
+                // The category alone ("unsupported-feature") does not say which property or
+                // element forced the fallback; the renderer's warnings do.
                 EngineLogCompat.Debug(
-                    $"[ImageLoader] SVG render rejected: {SvgRenderResult.DescribeRejection(result) ?? "non-first-party backend"}",
+                    $"[ImageLoader] SVG render rejected: {SvgRenderResult.DescribeRejection(result) ?? "non-first-party backend"}" +
+                    (result.Warnings is { Count: > 0 } warnings ? " | " + string.Join(" | ", warnings.Take(3)) : string.Empty),
                     LogCategory.Rendering);
                 return null;
             }
