@@ -1085,6 +1085,37 @@ namespace FenBrowser.Host
             // of every second spent at the loop top, ~5 input envelopes read per second
             // against ~90 sent, and pointer events reaching the page 18-23s after the
             // click once the broker's bounded queue had filled.
+            //
+            // The broker's replies to this child's fetches are handled on the inbox's
+            // reader task, not here: this loop awaits input dispatch, and a click on a
+            // link or a submit button awaits the navigation whose fetch waits for those
+            // replies (see RendererChildInbox).
+            using var inbox = new RendererChildInbox(reader, line =>
+            {
+                if (!handshakeComplete ||
+                    !RendererIpc.TryDeserializeEnvelope(line, out var reply) ||
+                    !RendererIpc.TryValidateInboundEnvelope(reply, tabId, out var replyType, out _) ||
+                    !string.IsNullOrWhiteSpace(reply.Token))
+                {
+                    return false;
+                }
+
+                switch (replyType)
+                {
+                    case RendererIpcMessageType.NetworkFetchBodyPipe:
+                        networkClient.OnBodyPipe(reply);
+                        return true;
+                    case RendererIpcMessageType.NetworkFetchResponseHead:
+                        networkClient.OnResponseHead(reply);
+                        return true;
+                    case RendererIpcMessageType.NetworkFetchFailed:
+                        networkClient.OnFailed(reply);
+                        return true;
+                    default:
+                        return false;
+                }
+            });
+
             while (running)
             {
                 var loopTopStart = Stopwatch.GetTimestamp();
@@ -1099,8 +1130,7 @@ namespace FenBrowser.Host
                     break;
                 }
 
-                var readResult = await RendererChildLoopIo.ReadLineWithTimeoutAsync(
-                    reader,
+                var readResult = await inbox.ReadLineWithTimeoutAsync(
                     childRenderer.AnimationEngine.IsRunning
                         ? TimeSpan.FromMilliseconds(8)
                         : TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
