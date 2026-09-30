@@ -183,6 +183,8 @@ namespace FenBrowser.Core.Css
         public double? FlexGrow { get; set; }  // Individual flex item alignment override
         public double? FlexShrink { get; set; }
         public double? FlexBasis { get; set; }
+        /// <summary>A percentage flex-basis, resolved against the flex container's inner main size.</summary>
+        public double? FlexBasisPercent { get; set; }
         public int? Order { get; set; }  // Flex item ordering
 
         // Image object-fit and object-position (for img, video, etc.)

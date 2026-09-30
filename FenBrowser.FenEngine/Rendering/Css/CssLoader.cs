@@ -4551,6 +4551,7 @@ private static double? ExtractPx(string text, string prop)
                     if (!double.IsNaN(fb)) css.FlexBasis = fb;
                 }
             }
+            ApplyFlexBasisPercent(css);
             
             // Interaction
             css.PointerEvents = Safe(DictGet(css.Map, "pointer-events"))?.ToLowerInvariant();
@@ -5811,7 +5812,7 @@ private static double? ExtractPx(string text, string prop)
             // flex-basis
             double basisVal;
             if (TryPx(DictGet(css.Map, "flex-basis"), out basisVal)) css.FlexBasis = basisVal;
-            else if (TryPercent(DictGet(css.Map, "flex-basis"), out basisVal)) css.FlexBasis = basisVal; // simplified percent as px for basis
+            ApplyFlexBasisPercent(css);
             
             // align-self for individual flex item alignment override
             css.AlignSelf = Safe(DictGet(css.Map, "align-self"));
@@ -7452,6 +7453,36 @@ private static double? ExtractPx(string text, string prop)
 
 
 
+
+        /// <summary>
+        /// CSS Flexbox 1 §7.3.1: a percentage flex-basis is resolved against the flex
+        /// container's inner main size, not read as pixels. `flex-basis: 50%` came out as
+        /// 50px, so accounts.google.com's two half-width columns (flex-basis:50%; flex-grow:1;
+        /// max-width:50%) sized to their content instead of splitting the card.
+        /// </summary>
+        private static void ApplyFlexBasisPercent(CssComputed css)
+        {
+            string token = DictGet(css.Map, "flex-basis")?.Trim();
+            if (string.IsNullOrEmpty(token))
+            {
+                var parts = SplitCssValues(DictGet(css.Map, "flex") ?? string.Empty);
+                token = parts.Count switch
+                {
+                    1 => parts[0],
+                    2 => parts[1],
+                    >= 3 => parts[2],
+                    _ => null
+                };
+            }
+
+            css.FlexBasisPercent = null;
+            if (!string.IsNullOrEmpty(token) && token.EndsWith("%", StringComparison.Ordinal) &&
+                TryPercent(token, out var percent))
+            {
+                css.FlexBasisPercent = percent;
+                css.FlexBasis = null;
+            }
+        }
 
         private static bool TryFlexShorthand(string raw, out double grow, out double shrink, out double basis)
         {
