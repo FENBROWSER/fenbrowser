@@ -402,6 +402,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         itemHeightForMetrics,
                         itemBaselineForMetrics,
                         atomicChild.ComputedStyle,
+                        GetParentContentArea(atomicChild, box),
                         out float itemAscentForLine,
                         out float itemDescentForLine);
                     currentLine.IncludeMetrics(itemAscentForLine, itemDescentForLine);
@@ -856,7 +857,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     // Calculate position relative to parent's content area
                     float segX = seg.X + lineXOffset;
-                    float segY = lineY + ComputeVerticalAlignOffset(line, seg.Height, seg.Baseline, textBox.ComputedStyle);
+                    float segY = lineY + ComputeVerticalAlignOffset(line, seg.Height, seg.Baseline, textBox.ComputedStyle, GetParentContentArea(textBox, box));
 
                     minX = Math.Min(minX, segX);
                     minY = Math.Min(minY, segY);
@@ -1028,7 +1029,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     float itemBaseline = ResolveInlineItemBaseline(item, itemHeight);
-                    float itemY = lineY + ComputeVerticalAlignOffset(line, itemHeight, itemBaseline, item.ComputedStyle);
+                    float itemY = lineY + ComputeVerticalAlignOffset(line, itemHeight, itemBaseline, item.ComputedStyle, GetParentContentArea(item, box));
 
                     LayoutBoxOps.PositionSubtree(item, itemX, itemY, placementState);
                 }
@@ -2421,7 +2422,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return string.Equals(style?.WhiteSpace?.Trim(), "nowrap", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static float ComputeVerticalAlignOffset(LineBox line, float itemHeight, float itemAscent, CssComputed style)
+        private static float ComputeVerticalAlignOffset(LineBox line, float itemHeight, float itemAscent, CssComputed style, (float Ascent, float Descent) parentContentArea)
         {
             float safeHeight = float.IsFinite(itemHeight) && itemHeight > 0f ? itemHeight : 0f;
             float safeAscent = float.IsFinite(itemAscent) && itemAscent >= 0f ? itemAscent : safeHeight;
@@ -2462,11 +2463,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     // when a line-relative box is the tallest thing on the line.
                     verticalOffset = Math.Max(lineAscent + lineDescent, line?.Height ?? 0f) - safeHeight - baseOffset;
                     break;
+                // CSS 2.1 §10.8.1: text-top/text-bottom align with the top/bottom of the
+                // parent's content area - its font's ascent/descent from the baseline,
+                // not the line's half-leading-inflated extent.
                 case "text-top":
-                    verticalOffset = -(lineAscent - safeAscent);
+                    verticalOffset = safeAscent - parentContentArea.Ascent;
                     break;
                 case "text-bottom":
-                    verticalOffset = lineDescent - safeDescent;
+                    verticalOffset = parentContentArea.Descent - safeDescent;
                     break;
                 default:
                     if (TryResolveNumericVerticalAlignShift(value, style, lineAscent + lineDescent, out var parsedShift))
@@ -2496,6 +2500,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float itemHeight,
             float itemBaseline,
             CssComputed style,
+            (float Ascent, float Descent) parentContentArea,
             out float ascent,
             out float descent)
         {
@@ -2511,6 +2516,22 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (string.IsNullOrWhiteSpace(verticalAlign))
             {
                 return;
+            }
+
+            // The box hangs from the parent's content-area edge, so that edge - not the
+            // box's own baseline - decides how far it reaches above and below the
+            // baseline. Measuring it as baseline-aligned and shifting it afterwards pushed
+            // a 48px text-bottom logo 5px out of the bottom of its line (github.com).
+            switch (verticalAlign.Trim().ToLowerInvariant())
+            {
+                case "text-bottom":
+                    descent = parentContentArea.Descent;
+                    ascent = safeHeight - parentContentArea.Descent;
+                    return;
+                case "text-top":
+                    ascent = parentContentArea.Ascent;
+                    descent = safeHeight - parentContentArea.Ascent;
+                    return;
             }
 
             if (TryResolveNumericVerticalAlignShift(
@@ -3148,6 +3169,29 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         // Resolve and cache the per-style font metrics (lineHeight, baseline, descent,
         // resolved fontFamily/Size/Weight). All InlineTextMetrics callers reuse these
         // to avoid the LRU lookup in SkiaFontService for every measurement.
+        /// <summary>
+        /// The ascent and descent of the font of an inline item's parent inline box (the
+        /// block container when the item sits directly in it) - the content area that
+        /// vertical-align text-top/text-bottom align with.
+        /// </summary>
+        private (float Ascent, float Descent) GetParentContentArea(LayoutBox item, LayoutBox container)
+        {
+            var parentStyle = item?.Parent?.ComputedStyle ?? container?.ComputedStyle;
+            float fontSize = (float)(parentStyle?.FontSize ?? 16.0);
+            if (!float.IsFinite(fontSize) || fontSize <= 0f)
+            {
+                fontSize = 16f;
+            }
+
+            var metrics = _fontService.GetMetrics(
+                parentStyle?.FontFamilyName ?? "sans-serif",
+                fontSize,
+                parentStyle?.FontWeight ?? 400);
+            float ascent = float.IsFinite(metrics.Ascent) && metrics.Ascent > 0f ? metrics.Ascent : fontSize * 0.8f;
+            float descent = float.IsFinite(metrics.Descent) && metrics.Descent >= 0f ? metrics.Descent : fontSize * 0.2f;
+            return (ascent, descent);
+        }
+
         private StyleFontInfo GetStyleFontInfo(CssComputed style)
         {
             if (style != null && s_styleFontCache.TryGetValue(style, out var cached))
