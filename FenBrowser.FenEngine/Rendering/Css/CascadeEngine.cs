@@ -1506,6 +1506,8 @@ return computed;
                     return IsValidSizingValue(value);
                 case "background":
                     return IsValidBackgroundShorthand(value);
+                case "flex":
+                    return IsValidFlexShorthand(value);
                 default:
                     return !KeywordProperties.TryGetValue(property, out var keywords) || IsKeywordValue(value, keywords);
             }
@@ -1564,6 +1566,115 @@ return computed;
             Add("scroll-behavior", "auto", "smooth");
             Add("user-select", "auto", "text", "none", "contain", "all", "-webkit-auto", "-moz-none");
             return table;
+        }
+
+        /// <summary>
+        /// CSS Flexbox 1 §7.1: flex = none | [ &lt;'flex-grow'&gt; &lt;'flex-shrink'&gt;? || &lt;'flex-basis'&gt; ].
+        /// Grow and shrink are adjacent non-negative numbers; the basis goes before or after
+        /// them. `flex: 1 0% 1` matches nothing and is dropped, leaving the initial 0 1 auto.
+        /// </summary>
+        private static bool IsValidFlexShorthand(string value)
+        {
+            var trimmed = value.Trim();
+            var bang = trimmed.IndexOf('!');
+            if (bang > 0)
+            {
+                trimmed = trimmed.Substring(0, bang).Trim();
+            }
+
+            switch (trimmed.ToLowerInvariant())
+            {
+                case "none":
+                case "auto":
+                case "initial":
+                case "inherit":
+                case "unset":
+                case "revert":
+                case "revert-layer":
+                    return true;
+            }
+
+            // var() and calc() are resolved later; their grammar is not modelled here.
+            if (trimmed.IndexOf('(') >= 0)
+            {
+                return true;
+            }
+
+            var tokens = trimmed.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var kinds = new char[tokens.Length];
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                if (double.TryParse(tokens[i], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var number))
+                {
+                    if (number < 0) return false;
+                    kinds[i] = 'n';
+                }
+                else if (IsFlexBasisToken(tokens[i]))
+                {
+                    kinds[i] = 'b';
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
+            // A unitless zero is a valid <length>, so `flex: 1 1 0` has a basis.
+            if (kinds.Length == 3 && kinds[2] == 'n' && double.TryParse(tokens[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var last) && last == 0)
+            {
+                kinds[2] = 'b';
+            }
+
+            string pattern = new string(kinds);
+            return pattern is "n" or "b" or "nn" or "nb" or "bn" or "nnb" or "bnn";
+        }
+
+        private static bool IsFlexBasisToken(string token)
+        {
+            switch (token.ToLowerInvariant())
+            {
+                case "auto":
+                case "content":
+                case "min-content":
+                case "max-content":
+                case "fit-content":
+                    return true;
+            }
+
+            int unitStart = 0;
+            while (unitStart < token.Length)
+            {
+                char c = token[unitStart];
+                if (char.IsDigit(c) || c == '.' || ((c == '+' || c == '-') && unitStart == 0))
+                {
+                    unitStart++;
+                    continue;
+                }
+
+                // An exponent only when digits follow ("1e3px"); "4em" is 4 and em.
+                if ((c == 'e' || c == 'E') && unitStart > 0 && char.IsDigit(token[unitStart - 1]))
+                {
+                    int next = unitStart + 1;
+                    if (next < token.Length && (token[next] == '+' || token[next] == '-')) next++;
+                    if (next < token.Length && char.IsDigit(token[next]))
+                    {
+                        unitStart = next;
+                        continue;
+                    }
+                }
+
+                break;
+            }
+
+            if (unitStart == 0 || unitStart == token.Length ||
+                !double.TryParse(token.AsSpan(0, unitStart), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var amount) ||
+                amount < 0)
+            {
+                return false;
+            }
+
+            string unit = token.Substring(unitStart);
+            return unit == "%" || unit.All(char.IsLetter);
         }
 
         private static bool IsKeywordValue(string value, HashSet<string> keywords)
