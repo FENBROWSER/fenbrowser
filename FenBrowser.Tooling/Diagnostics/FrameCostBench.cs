@@ -106,7 +106,7 @@ internal static class FrameCostBench
         canvas.Flush();
         var t = result.Telemetry;
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
-            $"[frame-bench] scrollY={scrollY,6:F0} rebuilt={t?.PaintTreeRebuilt} layout={t?.LayoutDurationMs,7:F1} paint={t?.PaintDurationMs,7:F1} raster={t?.RasterDurationMs,8:F1} total={t?.TotalDurationMs,8:F1} paintNodes={t?.PaintNodeCount} boxes={t?.BoxCount} layers={t?.CompositedLayerCount}/{t?.PromotedLayerCount} saveCount={canvas.SaveCount}"));
+            $"[frame-bench] scrollY={scrollY,6:F0} rebuilt={t?.PaintTreeRebuilt} layout={t?.LayoutDurationMs,7:F1} paint={t?.PaintDurationMs,7:F1} raster={t?.RasterDurationMs,8:F1} total={t?.TotalDurationMs,8:F1} paintNodes={t?.PaintNodeCount} boxes={t?.BoxCount} layers={t?.CompositedLayerCount}/{t?.PromotedLayerCount} tiles={renderer.LastRetainedTileRasterization.RasterizedTileCount}/{renderer.LastRetainedTileRasterization.VisibleTileCount}"));
         return t;
     }
 
