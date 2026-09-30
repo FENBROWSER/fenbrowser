@@ -49,6 +49,71 @@ public sealed class NetworkProcessCoordinatorTests
         Assert.Equal("text/plain", response.Content.Headers.ContentType?.MediaType);
     }
 
+    // A renderer's fetch goes renderer -> broker (RendererNetworkClient/RendererNetworkRelay)
+    // -> network child (NetworkProcessCoordinator). A form POST has to survive both hops as
+    // the server would see it from Chrome: the body, its Content-Length (it went out
+    // chunked, which servers commonly refuse for a login form) and headers such as
+    // User-Agent, whose parts were re-joined with commas.
+    [Fact]
+    public async Task RendererFetchWithBody_ReachesTheNetworkChildThroughTheBroker()
+    {
+        var pipeName = $"fen_network_test_{Guid.NewGuid():N}";
+        var authToken = Guid.NewGuid().ToString("N");
+        using var session = new NetworkProcessSession(pipeName, authToken);
+        using var coordinator = new NetworkProcessCoordinator();
+        session.Start(childProcess: null);
+        var childTask = RunDeterministicChildAsync(pipeName, authToken);
+        Assert.True(await session.WaitForReadyAsync(TimeSpan.FromSeconds(5)));
+        coordinator.AttachSession(session);
+
+        var coordinatorProperty = typeof(FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime)
+            .GetProperty(nameof(FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.NetworkCoordinator))!;
+        var previousCoordinator = coordinatorProperty.GetValue(null);
+        coordinatorProperty.SetValue(null, coordinator);
+
+        RendererNetworkClient? client = null;
+        using var relay = new RendererNetworkRelay(tabId: 7, envelope =>
+        {
+            if (envelope.Type == nameof(FenBrowser.Host.ProcessIsolation.RendererIpcMessageType.NetworkFetchBodyPipe)) client!.OnBodyPipe(envelope);
+            else if (envelope.Type == nameof(FenBrowser.Host.ProcessIsolation.RendererIpcMessageType.NetworkFetchResponseHead)) client!.OnResponseHead(envelope);
+            else if (envelope.Type == nameof(FenBrowser.Host.ProcessIsolation.RendererIpcMessageType.NetworkFetchFailed)) client!.OnFailed(envelope);
+        });
+        client = new RendererNetworkClient(tabId: 7, envelope =>
+        {
+            if (envelope.Type == nameof(FenBrowser.Host.ProcessIsolation.RendererIpcMessageType.NetworkFetch)) relay.HandleFetch(envelope);
+            else if (envelope.Type == nameof(FenBrowser.Host.ProcessIsolation.RendererIpcMessageType.NetworkFetchCancel)) relay.HandleCancel(envelope);
+        });
+
+        try
+        {
+            const string userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://fixture.test/session");
+            request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+            request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+            request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["login"] = "alice",
+                ["password"] = "secret"
+            });
+
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var response = await client.SendAsync(request, cancellation.Token);
+            await response.Content.ReadAsStringAsync(cancellation.Token);
+
+            var observed = await childTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal("POST", observed.Payload.Method);
+            Assert.Equal("login=alice&password=secret", observed.Body);
+            Assert.Equal("27", observed.Payload.Headers!["Content-Length"]);
+            Assert.Equal(userAgent, observed.Payload.Headers["User-Agent"]);
+            Assert.Equal("en-US,en;q=0.9", observed.Payload.Headers["Accept-Language"]);
+        }
+        finally
+        {
+            client.Dispose();
+            coordinatorProperty.SetValue(null, previousCoordinator);
+        }
+    }
+
     // The per-request capability token authenticates a response (5dba7747); its URL
     // may be on another origin, as it is after a cross-origin redirect, and origin
     // policy is left to CORS rather than the IPC layer.

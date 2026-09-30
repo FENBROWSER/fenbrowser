@@ -23,16 +23,24 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             ArgumentNullException.ThrowIfNull(request);
 
+            // Raw values, joined with each header's own separator. Re-joining the parsed
+            // values with ", " turned User-Agent into "Mozilla/5.0, (Windows NT 10.0; ...)".
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var h in request.Headers)
+            foreach (var h in request.Headers.NonValidated)
             {
-                headers[h.Key] = string.Join(", ", h.Value);
+                headers[h.Key] = h.Value.ToString();
             }
             if (request.Content != null)
             {
-                foreach (var h in request.Content.Headers)
+                // Reading ContentLength computes it for a sized body (form fields, strings,
+                // bytes) and records it among the content headers. Without it the body was
+                // re-sent from the pipe with Transfer-Encoding: chunked, which servers
+                // commonly refuse for a form post. A length the body does not match fails
+                // the request when HttpClient sends it.
+                _ = request.Content.Headers.ContentLength;
+                foreach (var h in request.Content.Headers.NonValidated)
                 {
-                    headers[h.Key] = string.Join(", ", h.Value);
+                    headers[h.Key] = h.Value.ToString();
                 }
             }
 
