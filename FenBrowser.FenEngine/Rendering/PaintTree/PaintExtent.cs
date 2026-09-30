@@ -107,6 +107,15 @@ namespace FenBrowser.FenEngine.Rendering
                         entry.Bounded = false;
                     }
                 }
+
+                // DrawNode pushes the clip before the node's own drawing, its children and
+                // its filter layer, so nothing it paints leaves the clip.
+                if (entry.Bounded && !entry.Extent.IsEmpty && TryGetClip(node, out var clip))
+                {
+                    entry.Extent = entry.Extent.IntersectsWith(clip)
+                        ? SKRect.Intersect(entry.Extent, clip)
+                        : SKRect.Empty;
+                }
             }
 
             s_cache.AddOrUpdate(node, entry);
@@ -116,6 +125,18 @@ namespace FenBrowser.FenEngine.Rendering
         private static SKRect OwnExtent(PaintNodeBase node)
         {
             var bounds = node.Bounds;
+
+            // Grouping nodes paint nothing themselves (SkiaRenderer.DrawSelf); their Bounds
+            // is the element's box, which for a menu bar or a mega-menu host can be far
+            // larger than anything visible. A hover highlight or focus ring and a
+            // backdrop filter are the exceptions, drawn within the box.
+            bool grouping = node is OpacityGroupPaintNode or ClipPaintNode or ScrollPaintNode or StickyPaintNode ||
+                            (node is StackingContextPaintNode context && string.IsNullOrWhiteSpace(context.BackdropFilter));
+            if (grouping && !node.IsHovered && !node.IsFocused)
+            {
+                return SKRect.Empty;
+            }
+
             if (node is BoxShadowPaintNode shadow && !shadow.Inset)
             {
                 var shadowRect = bounds;
@@ -126,6 +147,24 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return bounds;
+        }
+
+        private static bool TryGetClip(PaintNodeBase node, out SKRect clip)
+        {
+            if (node.ClipRect.HasValue)
+            {
+                clip = node.ClipRect.Value;
+                return true;
+            }
+
+            if (node is ClipPaintNode clipNode && clipNode.ClipPath != null)
+            {
+                clip = clipNode.ClipPath.Bounds;
+                return true;
+            }
+
+            clip = default;
+            return false;
         }
 
         private static SKRect Union(SKRect a, SKRect b)
