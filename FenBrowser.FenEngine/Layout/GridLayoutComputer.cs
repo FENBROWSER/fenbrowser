@@ -1406,6 +1406,46 @@ namespace FenBrowser.FenEngine.Layout
 
 
 
+        /// <summary>
+        /// CSS Grid 2 §11.6 (Maximize Tracks): positive free space grows every
+        /// content-sized track's base size toward its growth limit (the max-content
+        /// contribution for auto and max-content maxima, clamped for fit-content), shared equally and frozen at
+        /// the limit. A minmax(0, auto) track otherwise stayed 0 wide once §11.8 stopped
+        /// stretching it under justify-content:center, and its content overflowed.
+        /// </summary>
+        private static void MaximizeContentTracks(List<GridTrack> tracks, float availableSpace, float gap)
+        {
+            float Limit(GridTrack t) => t.MaxLimit.Type == GridUnitType.FitContent && t.MaxLimit.FitContentLimit > 0f
+                ? Math.Min(t.GrowthLimit, t.MaxLimit.FitContentLimit)
+                : t.GrowthLimit;
+
+            var growable = tracks
+                .Where(t => (t.MaxLimit.IsAuto || t.MaxLimit.Type == GridUnitType.MaxContent || t.MaxLimit.Type == GridUnitType.FitContent) &&
+                            float.IsFinite(t.GrowthLimit) && Limit(t) > t.BaseSize)
+                .ToList();
+            if (growable.Count == 0)
+            {
+                return;
+            }
+
+            float used = tracks.Sum(static t => Math.Max(0f, t.BaseSize)) + Math.Max(0, tracks.Count - 1) * gap;
+            float free = availableSpace - used;
+            while (free > 0.01f && growable.Count > 0)
+            {
+                float share = free / growable.Count;
+                foreach (var track in growable.ToList())
+                {
+                    float grow = Math.Min(share, Limit(track) - track.BaseSize);
+                    track.BaseSize += grow;
+                    free -= grow;
+                    if (Limit(track) - track.BaseSize <= 0.01f)
+                    {
+                        growable.Remove(track);
+                    }
+                }
+            }
+        }
+
         private static void ResolveFlexibleTracks(List<GridTrack> tracks, float availableSpace, float gap, string contentDistribution)
         {
             if (tracks.Count == 0) return;
@@ -1421,6 +1461,8 @@ namespace FenBrowser.FenEngine.Layout
                     track.BaseSize = Math.Max(track.BaseSize, track.MaxLimit.Value);
                 }
             }
+
+            MaximizeContentTracks(tracks, availableSpace, gap);
 
             float usedSpace = tracks
                 .Where(static track => !track.MaxLimit.IsFlex)
@@ -1672,6 +1714,12 @@ namespace FenBrowser.FenEngine.Layout
 
             if (track.MaxLimit.Type == GridUnitType.MaxContent || track.MaxLimit.Type == GridUnitType.Auto)
                 track.GrowthLimit = Math.Max(track.GrowthLimit, maxSize);
+            else if (track.MaxLimit.Type == GridUnitType.FitContent)
+            {
+                // CSS Grid 2 §7.2.4: fit-content(limit) grows like max-content, clamped at limit.
+                float limit = track.MaxLimit.FitContentLimit;
+                track.GrowthLimit = Math.Max(track.GrowthLimit, limit > 0f ? Math.Min(maxSize, limit) : maxSize);
+            }
         }
 
         private static float ResolveGridItemMinimumContribution(CssComputed style, float minContentWidth)
