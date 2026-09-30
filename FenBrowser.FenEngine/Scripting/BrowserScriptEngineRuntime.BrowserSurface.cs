@@ -130,13 +130,66 @@ public sealed partial class FenJsBrowserScriptEngine
                         };
                     }
 
+                    // Web Authentication Level 3. No authenticator is attached - no
+                    // platform authenticator and no roaming transport - so this is a
+                    // client whose ceremonies have nothing to talk to: the platform
+                    // authenticator and conditional mediation report unavailable
+                    // (5.1.7, 5.1.8), and a publicKey create() or get() ends as a
+                    // ceremony with no usable authenticator ends, in NotAllowedError
+                    // (5.1.3 / 5.1.4.1, lifetime timer expiry). A conditional get()
+                    // waits for an autofill pick that never comes, until its signal
+                    // aborts. Sites gate their whole passkey and federated sign-in
+                    // block on PublicKeyCredential existing (github.com's login).
                     {
+                        function webAuthnError(name, message) {
+                            if (typeof DOMException === 'function') return new DOMException(message, name);
+                            var error = new Error(message);
+                            error.name = name;
+                            return error;
+                        }
+                        function publicKeyCeremony(options) {
+                            var signal = options && options.signal;
+                            if (signal && signal.aborted) {
+                                return Promise.reject(signal.reason !== undefined ? signal.reason : webAuthnError('AbortError', 'The operation was aborted.'));
+                            }
+                            if (!globalThis.isSecureContext) {
+                                return Promise.reject(webAuthnError('SecurityError', 'The operation is insecure.'));
+                            }
+                            if (options.mediation === 'conditional') {
+                                return new Promise(function (resolve, reject) {
+                                    if (signal && typeof signal.addEventListener === 'function') {
+                                        signal.addEventListener('abort', function () {
+                                            reject(signal.reason !== undefined ? signal.reason : webAuthnError('AbortError', 'The operation was aborted.'));
+                                        });
+                                    }
+                                });
+                            }
+                            return Promise.reject(webAuthnError('NotAllowedError',
+                                'The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.'));
+                        }
                         navigatorFillers.credentials = {
-                            get: function () { return Promise.resolve(null); },
+                            get: function (options) {
+                                if (options && options.publicKey) return publicKeyCeremony(options);
+                                return Promise.resolve(null);
+                            },
                             store: function (credential) { return Promise.resolve(credential); },
-                            create: function () { return Promise.resolve(null); },
+                            create: function (options) {
+                                if (options && options.publicKey) return publicKeyCeremony(options);
+                                return Promise.resolve(null);
+                            },
                             preventSilentAccess: function () { return Promise.resolve(); }
                         };
+
+                        if (typeof globalThis.PublicKeyCredential === 'undefined') {
+                            var PublicKeyCredential = function PublicKeyCredential() {
+                                throw new TypeError('Illegal constructor');
+                            };
+                            PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = function () { return Promise.resolve(false); };
+                            PublicKeyCredential.isConditionalMediationAvailable = function () { return Promise.resolve(false); };
+                            Object.defineProperty(globalThis, 'PublicKeyCredential', {
+                                value: PublicKeyCredential, writable: true, configurable: true, enumerable: false
+                            });
+                        }
                     }
 
                     {
