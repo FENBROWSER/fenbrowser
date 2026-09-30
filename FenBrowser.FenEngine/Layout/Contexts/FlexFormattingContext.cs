@@ -1154,11 +1154,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 intrinsicState.ContainingBlockHeight = container.Geometry.ContentBox.Height;
                 context.Layout(oof, intrinsicState);
 
-                LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry, state);
+                var staticPosition = ResolveOutOfFlowStaticPosition(
+                    oof, container.Geometry.ContentBox, isRow, isReverse, isWrapReverse, justifyContent, alignItems,
+                    safeAgainstFlexContainer: IsContainingBlockFor(container, oof));
+                oof.OutOfFlowStaticPosition = new SKPoint(
+                    staticPosition.X - container.Geometry.ContentBox.Left,
+                    staticPosition.Y - container.Geometry.ContentBox.Top);
+
+                LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry, state, staticPosition: staticPosition);
 
                 LayoutPositioningLogic.LayoutAtSolvedSize(oof, container.Geometry.PaddingBox, state);
 
-                LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry, state);
+                LayoutPositioningLogic.ResolvePositionedBox(
+                    oof, container, container.Geometry, state,
+                    collapsePositioningMarginsInFinalGeometry: true,
+                    staticPosition: staticPosition);
             }
         }
 
@@ -2596,6 +2606,100 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// Resolves the effective cross-axis alignment for a flex item.
         /// align-self on the item overrides align-items on the container.
         /// </summary>
+        /// <summary>
+        /// CSS Flexbox 1 §4.1: the static position of an absolutely-positioned child of a
+        /// flex container is found by treating it as the sole flex item - justify-content
+        /// places it on the main axis, align-self on the cross axis. Returns the margin-box
+        /// origin in document space. github.com's "or" divider draws its rule this way (an
+        /// abs ::after with no top in an align-items:center row); the flow-origin fallback
+        /// put the rule above the text.
+        /// </summary>
+        private static SKPoint ResolveOutOfFlowStaticPosition(
+            LayoutBox oof,
+            SKRect content,
+            bool isRow,
+            bool isReverse,
+            bool isWrapReverse,
+            string justifyContent,
+            string alignItems,
+            bool safeAgainstFlexContainer)
+        {
+            var marginBox = oof.Geometry.MarginBox;
+            float mainFree = (isRow ? content.Width : content.Height) - (isRow ? marginBox.Width : marginBox.Height);
+            float crossFree = (isRow ? content.Height : content.Width) - (isRow ? marginBox.Height : marginBox.Width);
+            if (!float.IsFinite(mainFree)) mainFree = 0f;
+            if (!float.IsFinite(crossFree)) crossFree = 0f;
+
+            // "safe" guards against overflowing the containing block (csswg-drafts#11934).
+            // Only when that is the flex container itself is its free space the test; an
+            // outer containing block is at least as large here, so the alignment holds.
+            float safeMainFree = safeAgainstFlexContainer ? mainFree : 0f;
+            float safeCrossFree = safeAgainstFlexContainer ? crossFree : 0f;
+
+            // A sole item: space-between packs at the start, space-around/evenly centre it.
+            // start/end/left/right are writing-mode relative, which here is horizontal-tb ltr.
+            string justify = StripOverflowPosition(justifyContent ?? "flex-start", safeMainFree);
+            float mainOffset = justify switch
+            {
+                "center" or "space-around" or "space-evenly" => mainFree / 2f,
+                "flex-end" => isReverse ? 0f : mainFree,
+                "end" or "right" => mainFree,
+                "start" or "left" => 0f,
+                _ => isReverse ? mainFree : 0f
+            };
+            // left/right name the inline axis; on a column's main axis they act as start.
+            if (!isRow && justify is "left" or "right")
+            {
+                mainOffset = 0f;
+            }
+
+            float crossOffset = StripOverflowPosition(ResolveItemAlignment(oof.ComputedStyle, alignItems), safeCrossFree) switch
+            {
+                "center" => crossFree / 2f,
+                "flex-end" => isWrapReverse ? 0f : crossFree,
+                "end" or "self-end" => crossFree,
+                "flex-start" => isWrapReverse ? crossFree : 0f,
+                _ => isWrapReverse ? crossFree : 0f
+            };
+
+            return isRow
+                ? new SKPoint(content.Left + mainOffset, content.Top + crossOffset)
+                : new SKPoint(content.Left + crossOffset, content.Top + mainOffset);
+        }
+
+        /// <summary>
+        /// CSS Box Alignment 3 §4.4: "unsafe X" aligns as X; "safe X" aligns as X unless the
+        /// box would overflow the alignment container, and then as start.
+        /// </summary>
+        private static bool IsContainingBlockFor(LayoutBox container, LayoutBox oof)
+        {
+            var position = LayoutStyleResolver.GetEffectivePosition(oof.ComputedStyle);
+            if (string.Equals(position, "fixed", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var containerPosition = LayoutStyleResolver.GetEffectivePosition(container.ComputedStyle);
+            return !string.IsNullOrEmpty(containerPosition) &&
+                   !string.Equals(containerPosition, "static", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string StripOverflowPosition(string alignment, float freeSpace)
+        {
+            var value = (alignment ?? string.Empty).Trim().ToLowerInvariant();
+            if (value.StartsWith("unsafe ", StringComparison.Ordinal))
+            {
+                return value.Substring(7).Trim();
+            }
+
+            if (value.StartsWith("safe ", StringComparison.Ordinal))
+            {
+                return freeSpace < 0f ? "start" : value.Substring(5).Trim();
+            }
+
+            return value;
+        }
+
         private static string ResolveItemAlignment(CssComputed itemStyle, string containerAlignItems)
         {
             var containerAlign = string.IsNullOrWhiteSpace(containerAlignItems)
