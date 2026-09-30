@@ -116,6 +116,30 @@ namespace FenBrowser.Tests.Core
             Assert.Contains(surface.UserAgentData.FullVersionList, brand => brand.Brand == " Not;A Brand" && brand.Version == "99.0.0.0");
         }
 
+        [Fact]
+        public void SystemTheme_FollowsTheOperatingSystemAppTheme()
+        {
+            var previousTheme = BrowserSettings.Instance.Theme;
+
+            try
+            {
+                BrowserSettings.Instance.Theme = ThemePreference.System;
+                bool osDark = OperatingSystem.IsWindows() &&
+                    Microsoft.Win32.Registry.GetValue(
+                        @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                        "AppsUseLightTheme",
+                        null) is int useLight && useLight == 0;
+
+                var surface = BrowserSettings.GetBrowserSurface(UserAgentType.Edge);
+
+                Assert.Equal(osDark ? "dark" : "light", surface.Viewport.PreferredColorScheme);
+            }
+            finally
+            {
+                BrowserSettings.Instance.Theme = previousTheme;
+            }
+        }
+
         [Theory]
         [InlineData("dark")]
         [InlineData("light")]

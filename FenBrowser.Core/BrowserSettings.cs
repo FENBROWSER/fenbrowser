@@ -422,8 +422,35 @@ namespace FenBrowser.Core
             {
                 ThemePreference.Dark => "dark",
                 ThemePreference.Light => "light",
-                _ => "light"
+                _ => SystemPrefersDark() ? "dark" : "light"
             };
+        }
+
+        /// <summary>
+        /// The operating system's app theme, which "System" follows as a browser's
+        /// prefers-color-scheme does (Media Queries 5 §11.5). It resolved to light
+        /// regardless, so a site honouring the preference (github.com's login page)
+        /// stayed light on a dark desktop. Windows records it as AppsUseLightTheme.
+        /// </summary>
+        private static bool SystemPrefersDark()
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                return false;
+            }
+
+            try
+            {
+                var value = Microsoft.Win32.Registry.GetValue(
+                    @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                    "AppsUseLightTheme",
+                    null);
+                return value is int useLight && useLight == 0;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         public static void ApplyBrowserRequestHeaders(
