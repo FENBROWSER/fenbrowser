@@ -2677,6 +2677,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 h = (float)(box.ComputedStyle.HeightPercent.Value / 100.0 * cbHeight);
             }
 
+            // CSS Box Sizing 3 §3: a border-box width or height includes padding and
+            // border; everything below, including the min/max clamp, works on the content
+            // box. Without this a `width: 100%` field in a 352px form was 378px wide.
+            if (ReplacedElementSizing.IsBorderBox(box.ComputedStyle))
+            {
+                if (w > 0f) w = Math.Max(0f, w - ReplacedElementSizing.HorizontalChrome(box.ComputedStyle));
+                if (h > 0f) h = Math.Max(0f, h - ReplacedElementSizing.VerticalChrome(box.ComputedStyle));
+            }
+
             var padding = box.ComputedStyle?.Padding ?? new Thickness();
             bool hasPadding = padding.Left > 0 || padding.Right > 0 || padding.Top > 0 || padding.Bottom > 0;
             float defaultPaddingComp = hasPadding ? 0f : 24f;

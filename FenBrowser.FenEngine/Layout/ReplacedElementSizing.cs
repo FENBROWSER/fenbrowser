@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using FenBrowser.Core.Css;
+using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
@@ -522,6 +523,14 @@ namespace FenBrowser.FenEngine.Layout
 
             bool hasSpecifiedWidth = TryResolveSpecifiedWidth(style, availableSize, out float specifiedWidth);
             bool hasSpecifiedHeight = TryResolveSpecifiedHeight(style, availableSize, out float specifiedHeight);
+            // CSS Box Sizing 3 §3: under border-box the specified width and height include
+            // padding and border, and callers take this result as the content box. Left
+            // as-is, a `width: 100%` control inside a 352px form came out 378px wide.
+            if (IsBorderBox(style))
+            {
+                if (hasSpecifiedWidth) specifiedWidth = Math.Max(0f, specifiedWidth - HorizontalChrome(style));
+                if (hasSpecifiedHeight) specifiedHeight = Math.Max(0f, specifiedHeight - VerticalChrome(style));
+            }
             bool hasAttributeWidth = attributeWidth > 0f;
             bool hasAttributeHeight = attributeHeight > 0f;
 
@@ -609,6 +618,23 @@ namespace FenBrowser.FenEngine.Layout
             if (!float.IsFinite(height) || height < 0f) height = 0f;
 
             return new SKSize(width, height);
+        }
+
+        internal static bool IsBorderBox(CssComputed style) =>
+            string.Equals(style?.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
+
+        internal static float HorizontalChrome(CssComputed style)
+        {
+            var padding = style?.Padding ?? new Thickness();
+            var border = style?.BorderThickness ?? new Thickness();
+            return (float)(padding.Left + padding.Right + border.Left + border.Right);
+        }
+
+        internal static float VerticalChrome(CssComputed style)
+        {
+            var padding = style?.Padding ?? new Thickness();
+            var border = style?.BorderThickness ?? new Thickness();
+            return (float)(padding.Top + padding.Bottom + border.Top + border.Bottom);
         }
 
         private static bool TryResolveSpecifiedWidth(CssComputed style, SKSize availableSize, out float width)
