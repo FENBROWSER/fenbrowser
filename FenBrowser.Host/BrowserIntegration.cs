@@ -193,6 +193,8 @@ public class BrowserIntegration : IDisposable
     private SKBitmap _remoteFrameBitmap;
     private SKBitmap _remoteFrameBackBitmap;
     private float _remoteFrameScrollY;
+    // Rows of document above _remoteFrameScrollY at the top of _remoteFrameBitmap.
+    private float _remoteFrameTopOffset;
     private uint _remoteFrameSequenceNumber;
     private readonly object _remoteFrameLock = new object();
     
@@ -1373,6 +1375,7 @@ public class BrowserIntegration : IDisposable
 
                     (_remoteFrameBitmap, _remoteFrameBackBitmap) = (_remoteFrameBackBitmap, _remoteFrameBitmap);
                     _remoteFrameScrollY = Math.Max(0f, payload.ScrollY);
+                    _remoteFrameTopOffset = SanitizeRemoteSurfaceTopOffset(payload.SurfaceTopOffset, h);
                     if (frameSequence != 0)
                     {
                         _remoteFrameSequenceNumber = frameSequence;
@@ -2202,7 +2205,9 @@ public class BrowserIntegration : IDisposable
                         effectiveRemoteScrollY = _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
                     }
 
-                    var scrollDelta = effectiveRemoteScrollY - _remoteFrameScrollY;
+                    // The bitmap's top row sits _remoteFrameTopOffset above the frame's
+                    // viewport, which the live scroll may since have moved away from.
+                    var scrollDelta = effectiveRemoteScrollY - _remoteFrameScrollY + _remoteFrameTopOffset;
                     if (Math.Abs(scrollDelta) > 0.5f)
                     {
                         canvas.Save();
@@ -3565,6 +3570,14 @@ public class BrowserIntegration : IDisposable
         }
     }
 
+    /// <summary>
+    /// The renderer child's <see cref="FenBrowser.Host.ProcessIsolation.RendererFrameReadyPayload.SurfaceTopOffset"/>
+    /// is untrusted input: one outside the surface would shift the frame off screen, so it
+    /// counts as none.
+    /// </summary>
+    internal static float SanitizeRemoteSurfaceTopOffset(float offset, int surfaceHeight) =>
+        float.IsFinite(offset) && offset >= 0f && offset < surfaceHeight ? offset : 0f;
+
     private bool IsRemoteFrameAheadOfLiveScroll(float remoteScrollY)
     {
         float effectiveScrollY;
@@ -3605,6 +3618,7 @@ public class BrowserIntegration : IDisposable
             _remoteFrameBackBitmap?.Dispose();
             _remoteFrameBackBitmap = null;
             _remoteFrameScrollY = 0f;
+            _remoteFrameTopOffset = 0f;
             _remoteFrameSequenceNumber = 0;
         }
     }

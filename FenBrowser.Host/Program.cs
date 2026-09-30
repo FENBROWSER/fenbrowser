@@ -187,6 +187,23 @@ namespace FenBrowser.Host
                 visibleHeight + overdrawHeight);
         }
 
+        /// <summary>
+        /// The document band a brokered frame rasterizes around the viewport at
+        /// <paramref name="scrollY"/>: <see cref="ComputeBrokeredFrameRasterHeight"/>'s band
+        /// below it and as much again above, so the host's scroll preview has real pixels
+        /// whichever way the user scrolls before the next frame lands. Scrolling up used
+        /// to expose white at once, since the frame began at the viewport's top edge.
+        /// </summary>
+        /// <returns>The band's top in document space and its height.</returns>
+        internal static (float Top, float Height) ComputeBrokeredFrameRasterBand(float viewportHeight, float scrollY)
+        {
+            float belowHeight = ComputeBrokeredFrameRasterHeight(viewportHeight);
+            float overdraw = Math.Max(0f, belowHeight - Math.Min(viewportHeight, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight));
+            float above = Math.Min(Math.Max(0f, scrollY), overdraw);
+            above = Math.Min(above, Math.Max(0f, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight - belowHeight));
+            return (Math.Max(0f, scrollY) - above, above + belowHeight);
+        }
+
         public static async Task Main(string[] args)
         {
             await MainCore(args).ConfigureAwait(false);
@@ -630,7 +647,8 @@ namespace FenBrowser.Host
                 viewportWidth = Math.Max(1f, Math.Min(viewportWidth, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxWidth));
                 viewportHeight = Math.Max(1f, Math.Min(viewportHeight, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight));
                 scrollY = Math.Max(0f, scrollY);
-                float rasterHeight = ComputeBrokeredFrameRasterHeight(viewportHeight);
+                var (rasterTop, rasterHeight) = ComputeBrokeredFrameRasterBand(viewportHeight, scrollY);
+                float surfaceTopOffset = scrollY - rasterTop;
 
                 int iWidth = (int)viewportWidth;
                 int iHeight = (int)rasterHeight;
@@ -697,19 +715,19 @@ namespace FenBrowser.Host
                             var canvas = frameCanvas;
                             canvas.Clear(SkiaSharp.SKColors.White);
 
-                            // Document-space raster viewport (top advances with scroll); the canvas
-                            // is translated by -scrollY so the visible band rasterises at (0,0).
-                            // The raster surface is taller than the visible viewport so compositor
-                            // scroll preview has real pixels for the newly exposed bottom band.
-                            var viewport = new SkiaSharp.SKRect(0, scrollY, viewportWidth, scrollY + actualHeight);
+                            // Document-space raster band: the visible viewport plus overdraw above
+                            // and below, so the host's scroll preview has real pixels for whatever
+                            // a scroll exposes before the next frame. The canvas is translated by
+                            // -rasterTop so the band's top row lands at (0,0).
+                            var viewport = new SkiaSharp.SKRect(0, rasterTop, viewportWidth, rasterTop + actualHeight);
                             canvas.Save();
-                            if (scrollY > 0f)
+                            if (rasterTop > 0f)
                             {
-                                canvas.Translate(0, -scrollY);
+                                canvas.Translate(0, -rasterTop);
                             }
                             var contentHeightHint = Math.Max(
                                 browser.Engine?.LastLayout?.ContentHeight ?? 0f,
-                                scrollY + actualHeight);
+                                rasterTop + actualHeight);
                             childRenderer.ScrollManager.SetScrollBounds(
                                 null,
                                 viewportWidth,
@@ -796,6 +814,7 @@ namespace FenBrowser.Host
                     BoxCount = frameResult?.Telemetry?.BoxCount ?? 0,
                     PaintNodeCount = frameResult?.Telemetry?.PaintNodeCount ?? 0,
                     ScrollY = scrollY,
+                    SurfaceTopOffset = surfaceTopOffset,
                     ContentHeight = frameResult?.Layout?.ContentHeight ?? 0f
                 };
 

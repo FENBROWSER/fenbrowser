@@ -805,6 +805,55 @@ public sealed class BrokeredInputRoutingTests
     }
 
     [Fact]
+    public void BrowserIntegration_RemoteFrameWithRowsAboveTheViewport_ShowsTheViewportRows()
+    {
+        var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
+        System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
+        var coordinator = new RecordingCoordinator();
+        ProcessIsolationRuntime.SetCoordinator(coordinator);
+
+        try
+        {
+            var tab = new BrowserTab();
+            SetScrollableContent(tab, viewportHeight: 2, contentHeight: 100);
+            var receiveMethod = typeof(FenBrowser.Host.BrowserIntegration).GetMethod("OnFrameReceivedFromRenderer", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(receiveMethod);
+
+            // A 4-row surface for scroll 10 holding two rows of overdraw above the viewport:
+            // document rows 8 (red) and 9 (green), then the viewport's rows 10 (blue) and 11.
+            tab.Browser.ScrollToY(10f);
+            receiveMethod!.Invoke(tab.Browser, new object[]
+            {
+                tab.Id,
+                new RendererFrameReadyPayload
+                {
+                    SurfaceWidth = 4,
+                    SurfaceHeight = 4,
+                    FrameSource = new TestFrameSource(CreateRowBgraPixels(4, new[] { SKColors.Red, SKColors.Green, SKColors.Blue, SKColors.Yellow }), 4, 4, 21),
+                    FrameSequenceNumber = 21,
+                    ScrollY = 10f,
+                    SurfaceTopOffset = 2f,
+                    ContentHeight = 100f
+                }
+            });
+
+            using var bitmap = new SKBitmap(4, 2);
+            using var canvas = new SKCanvas(bitmap);
+            canvas.Clear(SKColors.Magenta);
+            tab.Browser.Render(canvas, new SKRect(0, 0, 4, 2));
+            canvas.Flush();
+
+            var top = bitmap.GetPixel(1, 0);
+            Assert.True(top.Blue > 180 && top.Red < 80 && top.Green < 120, $"viewport top should be the blue row, was {top}");
+        }
+        finally
+        {
+            ProcessIsolationRuntime.SetCoordinator(null);
+            System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
+        }
+    }
+
+    [Fact]
     public async Task RendererChildFramePattern_RasterizesScrolledDocumentBand()
     {
         const int viewportWidth = 120;

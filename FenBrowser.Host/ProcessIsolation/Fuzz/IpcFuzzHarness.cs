@@ -310,6 +310,23 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
                 if (env.Token?.Length > 512) return true;
                 if (env.Payload?.Length > 4 * 1024 * 1024) return true; // 4 MB payload cap
 
+                // A frame's geometry positions the shared-memory surface on screen.
+                if (string.Equals(env.Type, RendererIpcMessageType.FrameReady.ToString(), StringComparison.Ordinal))
+                {
+                    var frame = RendererIpc.DeserializePayload<RendererFrameReadyPayload>(env);
+                    if (frame != null)
+                    {
+                        int height = float.IsFinite(frame.SurfaceHeight)
+                            ? (int)Math.Clamp(frame.SurfaceHeight, 0f, FrameSharedMemory.MaxHeight)
+                            : 0;
+                        float offset = BrowserIntegration.SanitizeRemoteSurfaceTopOffset(frame.SurfaceTopOffset, height);
+                        if (!(offset >= 0f && (offset == 0f || offset < height)))
+                        {
+                            return false;
+                        }
+                    }
+                }
+
                 return true;
             }
             catch (Exception ex) when (!(ex is OutOfMemoryException || ex is StackOverflowException))
@@ -493,6 +510,7 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
             // Seed corpus: valid messages that serve as mutation bases
             AddSeed(Encoding.UTF8.GetBytes("{\"type\":\"hello\",\"tabId\":1,\"correlationId\":\"abc\",\"token\":\"tok\",\"payload\":\"\",\"timestampUnixMs\":0}"));
             AddSeed(Encoding.UTF8.GetBytes("{\"type\":\"frameReady\",\"tabId\":1,\"correlationId\":\"c\",\"payload\":\"{\\\"url\\\":\\\"https://example.com\\\"}\",\"timestampUnixMs\":1}"));
+            AddSeed(Encoding.UTF8.GetBytes(FrameReadySeed()));
             AddSeed(Encoding.UTF8.GetBytes("{\"type\":\"fetchRequest\",\"requestId\":\"r1\",\"capabilityToken\":\"tok\",\"payload\":\"{\\\"url\\\":\\\"https://a.com\\\",\\\"method\\\":\\\"GET\\\"}\",\"timestampUnixMs\":0}"));
             foreach (var seed in MediaIpcSeeds())
             {
@@ -509,6 +527,23 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
             BitConverter.TryWriteBytes(new Span<byte>(shmSeed, 20, 4), 64u);    // payload length
             AddSeed(shmSeed);
         }
+
+        /// <summary>A frame-ready envelope as the renderer child sends it, overdraw band included.</summary>
+        public static string FrameReadySeed() => RendererIpc.SerializeEnvelope(new RendererIpcEnvelope
+        {
+            Type = RendererIpcMessageType.FrameReady.ToString(),
+            TabId = 1,
+            CorrelationId = "c",
+            Payload = RendererIpc.SerializePayload(new RendererFrameReadyPayload
+            {
+                Url = "https://example.com/",
+                SurfaceWidth = 1920,
+                SurfaceHeight = 1860,
+                ScrollY = 4000,
+                SurfaceTopOffset = 465,
+                ContentHeight = 14000
+            })
+        });
 
         /// <summary>Valid media envelopes, as the renderer sends them, for the mutator to start from.</summary>
         public static IEnumerable<string> MediaIpcSeeds()

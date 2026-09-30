@@ -128,10 +128,18 @@ namespace FenBrowser.Host.ProcessIsolation
         public int BoxCount { get; set; }
         public int PaintNodeCount { get; set; }
         /// <summary>
-        /// Outer document scroll offset used as the top of this rasterized frame.
-        /// The surface can be taller than the visible viewport to provide scroll overdraw.
+        /// Outer document scroll offset the frame was rasterized for (the viewport's top).
+        /// The surface can reach above and below the visible viewport to provide scroll
+        /// overdraw; see <see cref="SurfaceTopOffset"/>.
         /// </summary>
         public float ScrollY { get; set; }
+
+        /// <summary>
+        /// Rows of document above the viewport at <see cref="ScrollY"/> that the surface
+        /// holds: its top row is document y <c>ScrollY - SurfaceTopOffset</c>.
+        /// </summary>
+        public float SurfaceTopOffset { get; set; }
+
         /// <summary>
         /// Total document content height in CSS pixels (from LayoutResult). Allows the host
         /// to size the viewport scrollbar without re-running layout.
