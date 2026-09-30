@@ -4916,6 +4916,18 @@ namespace FenBrowser.FenEngine.Rendering
                 return null;
             }
 
+            // The cascade has already resolved font-size to pixels; the declared text can
+            // be calc(), clamp(), rem or a var() chain the SVG renderer does not evaluate,
+            // and an unevaluable font-size made it fall back and paint nothing - github.com's
+            // login logo, which has no text at all.
+            if (propertyName.Equals("font-size", StringComparison.OrdinalIgnoreCase) &&
+                style.FontSize is double computedFontSize &&
+                double.IsFinite(computedFontSize) &&
+                computedFontSize > 0)
+            {
+                return computedFontSize.ToString("0.###", CultureInfo.InvariantCulture) + "px";
+            }
+
             var value = raw.Trim();
             if (value.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
             {
