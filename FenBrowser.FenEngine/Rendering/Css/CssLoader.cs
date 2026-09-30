@@ -5221,11 +5221,16 @@ private static double? ExtractPx(string text, string prop)
                 }
             }
             
-            // Explicit margin-left: auto overrides shorthand
-            if (marginLeftRaw == "auto") css.MarginLeftAuto = true;
-            if (marginRightRaw == "auto") css.MarginRightAuto = true;
-            if (marginTopRaw == "auto") css.MarginTopAuto = true;
-            if (marginBottomRaw == "auto") css.MarginBottomAuto = true;
+            // A longhand in the map is the cascaded value for its side: the cascade expands a
+            // later `margin` shorthand into the longhands, so one that survives was declared
+            // after (or outranks) the shorthand and decides whether the side is auto (CSS
+            // Cascade 5 §6.4 - shorthands set their longhands). accounts.google.com's card
+            // is `margin: 0 auto` overridden at 1240px by margin-left/right:200px; keeping the
+            // shorthand's auto stretched the card across the viewport.
+            if (!string.IsNullOrEmpty(marginLeftRaw)) css.MarginLeftAuto = marginLeftRaw == "auto";
+            if (!string.IsNullOrEmpty(marginRightRaw)) css.MarginRightAuto = marginRightRaw == "auto";
+            if (!string.IsNullOrEmpty(marginTopRaw)) css.MarginTopAuto = marginTopRaw == "auto";
+            if (!string.IsNullOrEmpty(marginBottomRaw)) css.MarginBottomAuto = marginBottomRaw == "auto";
 
             bool marginInlineStartIsRight = string.Equals(css.Direction, "rtl", StringComparison.OrdinalIgnoreCase);
             void MarkInlineMarginAuto(string logicalValue, bool isStart)
