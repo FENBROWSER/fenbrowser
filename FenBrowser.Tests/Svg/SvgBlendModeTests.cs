@@ -44,6 +44,25 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
         }
 
+        // github.com's login logo: an inline <svg> styled as a white coin. The rounding,
+        // shadow and outline belong to the CSS box the embedding document paints; a
+        // fallback here left the image empty and the logo invisible.
+        [Theory]
+        [InlineData("border-radius:50%")]
+        [InlineData("border-top-left-radius:4px;border-bottom-right-radius:4px")]
+        [InlineData("box-shadow:0 0 0 1px rgba(0,0,0,.1)")]
+        [InlineData("outline-width:2px;outline-style:solid;outline-color:blue;outline-offset:1px")]
+        public void BoxDecorationOnTheSvgElement_DoesNotChangeSvgPixelsOrRequireFallback(string decoration)
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20' style='background-color:white;" + decoration + "'>" +
+                "<rect width='20' height='20' fill='red'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
         [Fact]
         public void UnknownBlendMode_FailsClosedAsExplicitUnsupported()
         {

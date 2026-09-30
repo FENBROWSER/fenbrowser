@@ -107,7 +107,13 @@ namespace FenBrowser.FenEngine.Svg
             "border-color", "border-style", "border-width", "outline", "cursor", "pointer-events",
             "user-select", "touch-action",
             "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
-            "padding", "padding-top", "padding-right", "padding-bottom", "padding-left"
+            "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+            // The rest of the CSS box's decoration, painted by the embedding document
+            // around the replaced <svg> (CSS Backgrounds 3), never by SVG content. A
+            // github.com login logo styled as a round coin fell back and painted nothing.
+            "border-radius", "border-top-left-radius", "border-top-right-radius",
+            "border-bottom-left-radius", "border-bottom-right-radius", "box-shadow",
+            "outline-width", "outline-style", "outline-color", "outline-offset"
         };
 
         // What each rejected property would need from the engine, so an operator can
