@@ -3229,6 +3229,15 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
 /// <summary>
+/// window.matchMedia's answer (CSSOM View §4.2): the same evaluation stylesheets'
+/// @media rules get, against the current media environment. A separate script-side
+/// evaluator had answered prefers-color-scheme: dark while the stylesheets were
+/// evaluated as light, so github.com's scripts and styles disagreed about the theme.
+/// </summary>
+internal static bool MatchesMediaQueryForScript(string query, double? viewportWidth = null) =>
+    EvaluateMediaQuery(query?.Trim() ?? string.Empty, viewportWidth ?? CssParser.MediaViewportWidth);
+
+/// <summary>
 /// Evaluate a media query condition string
 /// </summary>
 private static bool EvaluateMediaQuery(string header, double? viewportWidth)

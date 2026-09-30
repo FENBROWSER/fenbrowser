@@ -6990,6 +6990,30 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 "__fenCloseMessagePort",
                 (_, args) => CloseMessagePort(args),
                 length: 1));
+        static double? ScriptViewportWidth(IReadOnlyList<JsValue> args)
+        {
+            if (args.Count < 2 || args[1].Tag is not (JsValueTag.Int32 or JsValueTag.Number))
+            {
+                return null;
+            }
+
+            double width = args[1].AsNumber();
+            return double.IsFinite(width) && width > 0 ? width : null;
+        }
+
+        // matchMedia evaluates through the stylesheet evaluator, so scripts and @media
+        // rules always agree (prefers-color-scheme, widths, hover, pointer, ...).
+        _interpreter.RegisterGlobalValue(
+            "__fenMatchMedia",
+            _interpreter.AllocateNativeFunction(
+                "__fenMatchMedia",
+                (_, args) => JsValue.FromBoolean(
+                    FenBrowser.FenEngine.Rendering.CssLoader.MatchesMediaQueryForScript(
+                        args.Count > 0 ? args[0].AsString() : string.Empty,
+                        // The window the script sees (innerWidth), which the layout
+                        // viewport follows; everything else is the shared environment.
+                        ScriptViewportWidth(args))),
+                length: 2));
         // Register a native logging hook that console.log/warn/error forward to.
         // Uses FenLogger so output appears in engine logs and any attached debug console.
         _interpreter.RegisterGlobalValue(
@@ -7228,27 +7252,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             "};" +
             "globalThis.matchMedia = function(query) {" +
             "  var media = String(query);" +
-            "  var w = globalThis.innerWidth || 1024;" +
-            "  var h = globalThis.innerHeight || 768;" +
-            "  var darkMode = true; /* default to dark for SPAs like WhatsApp */" +
-            "  var reducedMotion = false;" +
-            "  var matches = false;" +
-            "  var q = media.toLowerCase().replace(/\\s+/g, ' ').trim();" +
-            "  if (q.indexOf('prefers-color-scheme: dark') >= 0) matches = darkMode;" +
-            "  else if (q.indexOf('prefers-color-scheme: light') >= 0) matches = !darkMode;" +
-            "  else if (q.indexOf('prefers-reduced-motion: reduce') >= 0) matches = reducedMotion;" +
-            "  else if (q.indexOf('prefers-reduced-motion: no-preference') >= 0) matches = !reducedMotion;" +
-            "  else {" +
-            "    var minW = q.match(/\\(min-width:\\s*(\\d+(?:\\.\\d+)?)(px|em|rem)\\)/);" +
-            "    var maxW = q.match(/\\(max-width:\\s*(\\d+(?:\\.\\d+)?)(px|em|rem)\\)/);" +
-            "    var minH = q.match(/\\(min-height:\\s*(\\d+(?:\\.\\d+)?)(px|em|rem)\\)/);" +
-            "    var maxH = q.match(/\\(max-height:\\s*(\\d+(?:\\.\\d+)?)(px|em|rem)\\)/);" +
-            "    matches = true;" +
-            "    if (minW) matches = matches && w >= parseFloat(minW[1]);" +
-            "    if (maxW) matches = matches && w <= parseFloat(maxW[1]);" +
-            "    if (minH) matches = matches && h >= parseFloat(minH[1]);" +
-            "    if (maxH) matches = matches && h <= parseFloat(maxH[1]);" +
-            "  }" +
+            // One evaluator for scripts and stylesheets: this shim used to answer
+            // prefers-color-scheme: dark unconditionally and parse widths itself.
+            "  var matches = !!__fenMatchMedia(media, globalThis.innerWidth);" +
             "  return {" +
             "    media: media," +
             "    matches: matches," +

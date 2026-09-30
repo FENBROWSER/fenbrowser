@@ -116,6 +116,25 @@ namespace FenBrowser.Tests.Core
             Assert.Contains(surface.UserAgentData.FullVersionList, brand => brand.Brand == " Not;A Brand" && brand.Version == "99.0.0.0");
         }
 
+        [Theory]
+        [InlineData("dark")]
+        [InlineData("light")]
+        public void ScriptMatchMedia_AgreesWithStylesheetMediaEvaluation(string scheme)
+        {
+            var previous = FenBrowser.FenEngine.Rendering.CssParser.MediaPrefersColorScheme;
+            try
+            {
+                FenBrowser.FenEngine.Rendering.CssParser.MediaPrefersColorScheme = scheme;
+                Assert.Equal(scheme == "dark", FenBrowser.FenEngine.Rendering.CssLoader.MatchesMediaQueryForScript("(prefers-color-scheme: dark)"));
+                Assert.Equal(scheme == "light", FenBrowser.FenEngine.Rendering.CssLoader.MatchesMediaQueryForScript("(prefers-color-scheme: light)"));
+                Assert.Equal(scheme == "light", FenBrowser.FenEngine.Rendering.CssLoader.MatchesMediaQueryForScript("not all and (prefers-color-scheme: dark)"));
+            }
+            finally
+            {
+                FenBrowser.FenEngine.Rendering.CssParser.MediaPrefersColorScheme = previous;
+            }
+        }
+
         [Fact]
         public void BrowserSurface_UsesConfiguredThemeForPreferredColorScheme()
         {
