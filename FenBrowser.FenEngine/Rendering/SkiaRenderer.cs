@@ -130,7 +130,8 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Records the current immutable paint tree into an SKPicture display list.
         /// </summary>
-        internal SKPicture RecordDisplayList(ImmutablePaintTree tree, SKRect viewport)
+        /// <param name="useRTree">Index the recording so playing back a small region (one tile) skips what lies outside it.</param>
+        internal SKPicture RecordDisplayList(ImmutablePaintTree tree, SKRect viewport, bool useRTree = false)
         {
             if (tree == null || viewport.Width <= 0 || viewport.Height <= 0)
             {
@@ -138,7 +139,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             using var recorder = new SKPictureRecorder();
-            var recordingCanvas = recorder.BeginRecording(viewport);
+            var recordingCanvas = recorder.BeginRecording(viewport, useRTree);
             if (recordingCanvas == null)
             {
                 return null;

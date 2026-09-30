@@ -77,6 +77,11 @@ namespace FenBrowser.FenEngine.Rendering
         private ImmutablePaintTree _lastPaintTree;
         // The viewport scroll offset _lastPaintTree was built at.
         private SKPoint _lastPaintTreeViewportScroll;
+        // Where _lastPaintTree paints differently from _tileContentDamageBase, over the
+        // area the retained tiles cover; null when unknown.
+        private IReadOnlyList<SKRect> _tileContentDamage;
+        private ImmutablePaintTree _tileContentDamageBase;
+        private const float TileDamageMarginPx = 512f;
         private IReadOnlyList<CompositedLayer> _lastCompositedLayers = Array.Empty<CompositedLayer>();
         private IReadOnlyList<SKRect> _lastDamageRegions = Array.Empty<SKRect>();
         private float _viewportWidth;
@@ -1008,6 +1013,15 @@ namespace FenBrowser.FenEngine.Rendering
                             paintTree,
                             currentViewport);
 
+                        // The retained tiles are whole 256px squares that reach past the
+                        // viewport, so they need the damage over the area they cover.
+                        var tileArea = currentViewport;
+                        tileArea.Inflate(TileDamageMarginPx, TileDamageMarginPx);
+                        _tileContentDamageBase = previousPaintTree;
+                        _tileContentDamage = previousPaintTree == null
+                            ? null
+                            : _paintDamageTracker.ComputeDamageRegions(previousPaintTree, paintTree, tileArea);
+
                         // PC-3: Scroll-aware damage strips merged with tree-diff damage.
                         float currentScrollY = GetDocumentScrollY(root);
                         var scrollDamage = _scrollDamageComputer.ComputeScrollDamage(
@@ -1027,6 +1041,10 @@ namespace FenBrowser.FenEngine.Rendering
 
                         if (interactionFullRepaintRequested)
                         {
+                            // A change the tree diff cannot see (an image drawn from a
+                            // raster-time lookup finished decoding): keep no retained tile.
+                            _tileContentDamage = null;
+
                             _lastDamageRegions = new[] { currentViewport };
                             EngineLogCompat.Debug("[SkiaDomRenderer] Forcing full repaint for interaction-state visual change", LogCategory.Rendering);
                         }
@@ -1217,12 +1235,31 @@ namespace FenBrowser.FenEngine.Rendering
                                 DebugScreenshotRequestCount++;
                                 _renderer.CaptureDebugScreenshot(_lastPaintTree, viewport, bgColor);
                             }
-                            _renderer.Render(
+
+                            // Through the retained tiles, which redraw only what the tree
+                            // diff damaged. Bypassing them here, on every frame whose paint
+                            // stage ran long, also left the tiles a tree behind, so the next
+                            // frame found nothing to reuse (github.com: 48 of 48 tiles).
+                            var forcedTileStats = _retainedTileRasterizer.Rasterize(
                                 canvas,
+                                _renderer,
                                 _lastPaintTree,
                                 viewport,
                                 bgColor,
-                                captureDebugScreenshot: false);
+                                _tileContentDamage,
+                                _tileContentDamageBase,
+                                preferGpuSurfaces: _gpuRasterContext != null,
+                                gpuContext: _gpuRasterContext);
+                            LastRetainedTileRasterization = forcedTileStats;
+                            if (!forcedTileStats.Enabled)
+                            {
+                                _renderer.Render(
+                                    canvas,
+                                    _lastPaintTree,
+                                    viewport,
+                                    bgColor,
+                                    captureDebugScreenshot: false);
+                            }
                         }
                     }
                     else if (!caretVisualChanged && hasBaseFrame && (_lastDamageRegions == null || _lastDamageRegions.Count == 0))
@@ -1256,7 +1293,8 @@ namespace FenBrowser.FenEngine.Rendering
                             _lastPaintTree,
                             viewport,
                             bgColor,
-                            useDamageRasterization ? _lastDamageRegions : null,
+                            _tileContentDamage,
+                            _tileContentDamageBase,
                             preferGpuSurfaces: _gpuRasterContext != null,
                             gpuContext: _gpuRasterContext);
                         LastRetainedTileRasterization = tileStats;
