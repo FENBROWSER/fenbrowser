@@ -740,7 +740,7 @@ namespace FenBrowser.FenEngine.Layout
             // Resolve flexible tracks (fr units)
             if (!columnsSubgrid)
             {
-                ResolveFlexibleTracks(columnTracks, availableSize.Width, columnGap);
+                ResolveFlexibleTracks(columnTracks, availableSize.Width, columnGap, style.JustifyContent);
             }
             
             // Measure rows
@@ -749,7 +749,7 @@ namespace FenBrowser.FenEngine.Layout
                 MeasureAutoRowHeights(rowTracks, columnTracks, items, positions, styles, columnGap, depth, measureNode);
                 if (HasDefiniteBlockSize(style, availableSize.Height))
                 {
-                    ResolveFlexibleTracks(rowTracks, availableSize.Height, rowGap);
+                    ResolveFlexibleTracks(rowTracks, availableSize.Height, rowGap, style.AlignContent);
                 }
             }
 
@@ -882,7 +882,7 @@ namespace FenBrowser.FenEngine.Layout
             // measured at their correct column widths (matching the Measure pass).
             if (!columnsSubgrid)
             {
-                ResolveFlexibleTracks(columnTracks, bounds.Width, columnGap);
+                ResolveFlexibleTracks(columnTracks, bounds.Width, columnGap, style.JustifyContent);
             }
 
             // Ensure arrange pass uses the same content-derived auto-row sizing
@@ -895,7 +895,7 @@ namespace FenBrowser.FenEngine.Layout
             // Resolve row Track Sizes (only when block size is definite)
             if (!rowsSubgrid && HasDefiniteBlockSize(style, bounds.Height))
             {
-                ResolveFlexibleTracks(rowTracks, bounds.Height, rowGap);
+                ResolveFlexibleTracks(rowTracks, bounds.Height, rowGap, style.AlignContent);
             }
 
             // Compute effective gaps for justify/align content
@@ -1406,7 +1406,7 @@ namespace FenBrowser.FenEngine.Layout
 
 
 
-        private static void ResolveFlexibleTracks(List<GridTrack> tracks, float availableSpace, float gap)
+        private static void ResolveFlexibleTracks(List<GridTrack> tracks, float availableSpace, float gap, string contentDistribution)
         {
             if (tracks.Count == 0) return;
             if (float.IsNaN(availableSpace) || float.IsInfinity(availableSpace) || availableSpace <= 0)
@@ -1478,8 +1478,15 @@ namespace FenBrowser.FenEngine.Layout
             // Distribute to Auto / MinMax(fixed, fixed) if space remains? 
             // For now, assume minmax(fixed, fixed) stays at min unless we implement specific expansion.
             // Auto tracks handling:
+            // CSS Grid 2 §11.8 (Stretch auto Tracks) runs only when the axis' content
+            // distribution is normal or stretch. Under justify-content:center the tracks
+            // keep their content size and the grid is centred: Primer's .Button-content
+            // (place-content:center over min-content minmax(0,auto) min-content) left
+            // github.com's "Continue with Google" icon at the button's edge otherwise.
+            var distribution = contentDistribution?.Trim().ToLowerInvariant();
+            bool stretchAutoTracks = string.IsNullOrEmpty(distribution) || distribution == "normal" || distribution == "stretch";
             var autoTracks = tracks.Where(t => t.IsAuto && !t.MaxLimit.IsFlex).ToList();
-            if (autoTracks.Count > 0 && totalFlex == 0)
+            if (stretchAutoTracks && autoTracks.Count > 0 && totalFlex == 0)
             {
                 // If no flex tracks, distribute remaining space to auto tracks?
                 // Or if they have content, they use content size.
