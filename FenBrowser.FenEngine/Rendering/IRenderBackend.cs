@@ -47,11 +47,13 @@ namespace FenBrowser.FenEngine.Rendering
         void PushClip(SKRect clipRect, float radiusX, float radiusY);
         void PushClip(SKPath clipPath);
         void PopClip();
-        void PushLayer(float opacity);
+        /// <param name="bounds">Conservative extent of what the layer will hold; a sizing hint, not a clip. Null for canvas-sized.</param>
+        void PushLayer(float opacity, SKRect? bounds = null);
         void PushTransform(SKMatrix transform);
         void PopLayer();
         void ApplyMask(SKImage mask, SKRect bounds);
-        void PushFilter(SKImageFilter filter);
+        /// <param name="bounds">Conservative extent of the filtered content; a sizing hint, not a clip. Null for canvas-sized.</param>
+        void PushFilter(SKImageFilter filter, SKRect? bounds = null);
         void PopFilter();
         void ApplyBackdropFilter(SKRect bounds, SKImageFilter filter);
 

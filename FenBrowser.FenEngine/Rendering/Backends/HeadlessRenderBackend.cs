@@ -106,7 +106,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             _saveDepth = Math.Max(0, _saveDepth - 1);
         }
 
-        public void PushLayer(float opacity)
+        public void PushLayer(float opacity, SKRect? bounds = null)
         {
             if (LogCommands) CommandLog.Add(new RenderCommand("PushLayer", $"opacity={opacity}"));
             _saveDepth++;
@@ -129,7 +129,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             if (LogCommands) CommandLog.Add(new RenderCommand("ApplyMask", $"bounds={bounds}"));
         }
 
-        public void PushFilter(SKImageFilter filter)
+        public void PushFilter(SKImageFilter filter, SKRect? bounds = null)
         {
             if (LogCommands) CommandLog.Add(new RenderCommand("PushFilter", $"filter={(filter != null ? "yes" : "no")}"));
             _saveDepth++;

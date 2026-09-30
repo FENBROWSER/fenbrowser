@@ -488,25 +488,40 @@ namespace FenBrowser.FenEngine.Rendering
             // Cull leaf/visual nodes outside the viewport.
             // Grouping nodes can legitimately carry approximate bounds while their children
             // remain visible after transforms, sticky offsets, or stacking-context wrapping.
-            bool canCullFilteredContext = false;
             float filterVisualOutset = 0f;
-            SKRect filteredVisualBounds = node.Bounds;
-            if (node is StackingContextPaintNode filteredContext &&
-                !node.Transform.HasValue &&
-                !string.IsNullOrWhiteSpace(filteredContext.Filter) &&
-                CssFilterParser.TryGetVisualOutset(filteredContext.Filter, out filterVisualOutset))
-            {
-                filteredVisualBounds.Inflate(filterVisualOutset, filterVisualOutset);
-                canCullFilteredContext = true;
-            }
+            bool hasFilter = node is StackingContextPaintNode filteredContext &&
+                             !string.IsNullOrWhiteSpace(filteredContext.Filter);
+            bool hasKnownFilterOutset = hasFilter && !node.Transform.HasValue &&
+                CssFilterParser.TryGetVisualOutset(((StackingContextPaintNode)node).Filter, out filterVisualOutset);
 
-            var cullBounds = canCullFilteredContext ? filteredVisualBounds : node.Bounds;
-            if ((ShouldCullByOwnBounds(node) || canCullFilteredContext) &&
-                cullBounds.Width > 0 && cullBounds.Height > 0 &&
-                !IntersectsViewportBounds(cullBounds, viewport))
+            if (ShouldCullByOwnBounds(node) &&
+                node.Bounds.Width > 0 && node.Bounds.Height > 0 &&
+                !IntersectsViewportBounds(node.Bounds, viewport))
             {
                 if (stats != null) stats.ViewportCulled++;
                 return;
+            }
+
+            // Opacity groups and filtered contexts each open a Skia layer, and their
+            // Bounds is the element's box, not what the subtree paints. Unbounded, every
+            // such layer was canvas-sized - composited even when the group sat wholly
+            // offscreen (github.com: 23 groups, all but 3 offscreen, ~175ms a frame).
+            // Cull and size them by the subtree's paint extent instead. Layer bounds are
+            // only a hint to Skia, and the extent is conservative, so nothing is clipped.
+            SKRect? layerBounds = null;
+            if ((node is OpacityGroupPaintNode && node.Opacity < 1f) || hasFilter)
+            {
+                if (PaintExtent.TryGet(node, out var paintExtent))
+                {
+                    paintExtent.Inflate(PaintExtent.InkMargin, PaintExtent.InkMargin);
+                    if (!node.Transform.HasValue && !IntersectsViewportBounds(paintExtent, viewport))
+                    {
+                        if (stats != null) stats.ViewportCulled++;
+                        return;
+                    }
+
+                    layerBounds = paintExtent;
+                }
             }
             
             backend.Save();
@@ -541,7 +556,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (isOpacityGroup)
             {
                 float opacity = Math.Clamp(node.Opacity, 0f, 1f);
-                backend.PushLayer(opacity);
+                backend.PushLayer(opacity, layerBounds);
                 pushedOpacity = true;
             }
             
@@ -563,7 +578,7 @@ namespace FenBrowser.FenEngine.Rendering
                 filterLayer = CssFilterParser.Parse(scFilter.Filter);
                 if (filterLayer != null)
                 {
-                    backend.PushFilter(filterLayer);
+                    backend.PushFilter(filterLayer, layerBounds);
                     pushedFilter = true;
                 }
             }
@@ -609,7 +624,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // Expand descendant culling by the known filter support so those
                 // pixels reach the context's filter layer before composition.
                 var childViewport = viewport;
-                if (canCullFilteredContext && filterVisualOutset > 0f)
+                if (hasKnownFilterOutset && filterVisualOutset > 0f)
                 {
                     childViewport.Inflate(filterVisualOutset, filterVisualOutset);
                 }

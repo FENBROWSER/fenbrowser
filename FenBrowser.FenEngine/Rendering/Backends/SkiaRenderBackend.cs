@@ -787,10 +787,17 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             _canvas.Restore();
         }
 
-        public void PushLayer(float opacity)
+        public void PushLayer(float opacity, SKRect? bounds = null)
         {
             using var paint = new SKPaint { Color = new SKColor(255, 255, 255, (byte)(opacity * 255)) };
-            _canvas.SaveLayer(paint);
+            if (bounds.HasValue)
+            {
+                _canvas.SaveLayer(bounds.Value, paint);
+            }
+            else
+            {
+                _canvas.SaveLayer(paint);
+            }
         }
 
         public void PushTransform(SKMatrix transform)
@@ -815,7 +822,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             _canvas.DrawImage(mask, bounds, SKSamplingOptions.Default, paint);
         }
 
-        public void PushFilter(SKImageFilter filter)
+        public void PushFilter(SKImageFilter filter, SKRect? bounds = null)
         {
             if (filter == null)
             {
@@ -823,7 +830,14 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             }
 
             using var paint = new SKPaint { ImageFilter = filter };
-            _canvas.SaveLayer(paint);
+            if (bounds.HasValue)
+            {
+                _canvas.SaveLayer(bounds.Value, paint);
+            }
+            else
+            {
+                _canvas.SaveLayer(paint);
+            }
         }
 
         public void PopFilter()
