@@ -60,6 +60,10 @@ iframe          { display: inline-block; overflow: hidden; }
 
 /* Form element defaults — lowest specificity, site CSS overrides naturally */
 input, textarea { padding: 5px 2px; border: 1px solid gray; border-radius: 4px; background-color: white; }
+/* Chromium/Gecko html.css: a control's text starts at the start edge whatever the
+   page's alignment; an inherited text-align:center centred a login field's value.
+   Buttons re-centre below. */
+input, textarea, select { text-align: start; }
 /* Buttons follow Chromium/Gecko html.css rather than a page-like look: the
    13.333px control font, line-height:normal (a control never inherits the
    page's line-height), 1px 6px padding inside a 2px border, and border-box

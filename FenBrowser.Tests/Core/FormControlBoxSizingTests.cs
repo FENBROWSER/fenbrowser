@@ -34,6 +34,16 @@ public sealed class FormControlBoxSizingTests
         }
     }
 
+    // html.css starts a control's text at the start edge; the login field's value was
+    // centred by the form's inherited text-align. Buttons stay centred.
+    [Fact]
+    public async Task TextControls_StartAligned_InACenteredForm()
+    {
+        var (root, styles, _) = await RenderAsync();
+        Assert.Equal(SKTextAlign.Left, styles[ById(root, "field")].TextAlign);
+        Assert.Equal(SKTextAlign.Center, styles[ById(root, "submit")].TextAlign);
+    }
+
     private static Element ById(Element root, string id) =>
         root.Descendants().OfType<Element>().First(e => e.Id == id);
 
