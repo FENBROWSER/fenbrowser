@@ -467,6 +467,7 @@ namespace FenBrowser.FenEngine.Rendering
             // title back, and the title's text came out upside down.
             bool createsStackingContext = node is not Text &&
                 (DetermineCreatesStackingContext(style) ||
+                 IsZIndexedFlexOrGridItem(node, style) ||
                  (node is Element stackingEl &&
                   string.Equals(stackingEl.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase)));
             int zIndex = style?.ZIndex ?? 0;
@@ -6712,6 +6713,28 @@ namespace FenBrowser.FenEngine.Rendering
         /// Determines if an element creates a new stacking context.
         /// CSS 2.1 + CSS3 rules.
         /// </summary>
+        /// <summary>
+        /// CSS Flexbox 1 §4.3 and CSS Grid 2 §9.5: a flex or grid item whose z-index is not
+        /// auto creates a stacking context even while position is static. github.com's
+        /// "or" divider lifts its label (z-index:1, page background) above the absolutely
+        /// positioned rule this way; without it the rule struck through the text.
+        /// </summary>
+        private bool IsZIndexedFlexOrGridItem(Node node, CssComputed style)
+        {
+            if (style?.ZIndex == null || node is not Element || _styles == null)
+            {
+                return false;
+            }
+
+            if (node.ParentNode is not Element parent || !_styles.TryGetValue(parent, out var parentStyle))
+            {
+                return false;
+            }
+
+            string display = parentStyle?.Display?.Trim().ToLowerInvariant();
+            return display is "flex" or "inline-flex" or "grid" or "inline-grid";
+        }
+
         private static bool DetermineCreatesStackingContext(CssComputed style)
         {
             if (style == null) return false;
