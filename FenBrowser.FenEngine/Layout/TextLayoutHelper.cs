@@ -71,11 +71,14 @@ namespace FenBrowser.FenEngine.Layout
                         return cachedSystemTypeface;
                     }
 
-                    var systemTf = SKTypeface.FromFamilyName(
+                    // CSS Fonts 4 §5: a family that is not installed is skipped for the next
+                    // one in the list. SKTypeface.FromFamilyName never reports a miss - it
+                    // hands back the default family at the default weight - so an unknown
+                    // first family ("Mona Sans VF" on github.com) painted every weight as
+                    // Segoe UI Regular while layout measured the real Semibold.
+                    var systemTf = SKFontManager.Default.MatchFamily(
                         clean,
-                        (SKFontStyleWeight)weight,
-                        SKFontStyleWidth.Normal,
-                        slant);
+                        new SKFontStyle((SKFontStyleWeight)weight, SKFontStyleWidth.Normal, slant));
                     if (TryPublishCreatedSystemTypeface(clean, weight, slant, text, systemTf, out var resolvedSystemTypeface))
                     {
                         return resolvedSystemTypeface;
