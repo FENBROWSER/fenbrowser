@@ -97,4 +97,42 @@ public sealed class FontRegistryWeightMatchingTests
                 Assert.Equal(5, FontRegistry.TryResolve("Pair Probe", 300, SKFontStyleSlant.Upright).GlyphCount);
                 return Task.CompletedTask;
             });
+
+    // CSS Fonts 4 §4.5: a family split into per-script subsets (accounts.google.com's
+    // Google Sans) uses each face only for the code points its unicode-range covers.
+    // Picking by weight alone drew English in a non-Latin subset, as boxes.
+    [Fact]
+    public Task SubsetFaces_AreChosenByUnicodeRange() =>
+        WithFaces(
+            new Dictionary<string, byte[]>
+            {
+                ["khmer.woff2"] = Fixture("valid-005"),
+                ["latin.woff2"] = Fixture("MonaSansMonoVF"),
+            },
+            new[]
+            {
+                "font-family: 'Subset Probe'; src: url('khmer.woff2') format('woff2'); unicode-range: U+1780-17FF, U+200C-200D, U+25CC;",
+                "font-family: 'Subset Probe'; src: url('latin.woff2') format('woff2'); unicode-range: U+0000-00FF, U+0131, U+2000-206F;",
+            },
+            () =>
+            {
+                Assert.Equal(746, FontRegistry.TryResolve("Subset Probe", 400, SKFontStyleSlant.Upright, "Sign in").GlyphCount);
+                Assert.Equal(5, FontRegistry.TryResolve("Subset Probe", 400, SKFontStyleSlant.Upright, "កខ").GlyphCount);
+                // No text: the first available font is the face covering U+0020.
+                Assert.Equal(746, FontRegistry.TryResolve("Subset Probe", 400, SKFontStyleSlant.Upright).GlyphCount);
+                // Nothing in the family covers the run: fall through to the next family.
+                Assert.Null(FontRegistry.TryResolve("Subset Probe", 400, SKFontStyleSlant.Upright, "中文"));
+                return Task.CompletedTask;
+            });
+
+    [Theory]
+    [InlineData("U+0000-00FF, U+0131", 0x00, 0xFF)]
+    [InlineData("U+4??", 0x400, 0x4FF)]
+    [InlineData("u+1F600", 0x1F600, 0x1F600)]
+    public void UnicodeRange_ParsesRangesWildcardsAndSingles(string value, int start, int end)
+    {
+        var ranges = FontRegistry.ParseUnicodeRange(value);
+        Assert.NotNull(ranges);
+        Assert.Equal((start, end), ranges![0]);
+    }
 }

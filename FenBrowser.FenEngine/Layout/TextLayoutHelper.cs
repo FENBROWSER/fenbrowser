@@ -62,7 +62,7 @@ namespace FenBrowser.FenEngine.Layout
                     else if (clean.Equals("monospace", StringComparison.OrdinalIgnoreCase))
                         clean = "Consolas";
 
-                    var tf = FenBrowser.FenEngine.Rendering.FontRegistry.TryResolve(clean, weight, slant);
+                    var tf = FenBrowser.FenEngine.Rendering.FontRegistry.TryResolve(clean, weight, slant, text);
                     if (tf != null && SupportsCharacters(tf, text)) return tf;
 
                     if (TryGetCachedSystemTypeface(clean, weight, slant, out var cachedSystemTypeface) &&

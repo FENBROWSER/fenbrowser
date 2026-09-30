@@ -70,6 +70,26 @@ namespace FenBrowser.FenEngine.Rendering
             public int WeightMax;
             public SKFontStyleSlant Style;
             public SKTypeface Typeface;
+            // Code point ranges from the rule's unicode-range; null covers everything.
+            public (int Start, int End)[] UnicodeRanges;
+
+            public bool Covers(int codePoint)
+            {
+                if (UnicodeRanges == null)
+                {
+                    return true;
+                }
+
+                foreach (var (start, end) in UnicodeRanges)
+                {
+                    if (codePoint >= start && codePoint <= end)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
         }
 
         private static readonly Dictionary<string, List<LoadedFace>> _loadedFaces
@@ -689,6 +709,12 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
+                string unicodeRange = ExtractLastCssPropertyValue(fontFaceBlock, "unicode-range");
+                if (!string.IsNullOrWhiteSpace(unicodeRange))
+                {
+                    descriptor.UnicodeRange = unicodeRange.Trim();
+                }
+
                 // Parse font-style
                 string styleVal = ExtractLastCssPropertyValue(fontFaceBlock, "font-style");
                 if (!string.IsNullOrEmpty(styleVal))
@@ -731,9 +757,10 @@ namespace FenBrowser.FenEngine.Rendering
 
             int min = descriptor.Weight;
             int max = Math.Max(min, descriptor.WeightMax ?? min);
+            var ranges = ParseUnicodeRange(descriptor.UnicodeRange);
             if (!faces.Any(f => ReferenceEquals(f.Typeface, typeface) && f.WeightMin == min && f.WeightMax == max && f.Style == descriptor.Style))
             {
-                faces.Add(new LoadedFace { WeightMin = min, WeightMax = max, Style = descriptor.Style, Typeface = typeface });
+                faces.Add(new LoadedFace { WeightMin = min, WeightMax = max, Style = descriptor.Style, Typeface = typeface, UnicodeRanges = ranges });
             }
 
             var prefix = family + "|";
@@ -749,6 +776,91 @@ namespace FenBrowser.FenEngine.Rendering
         /// otherwise 400-500 look first between the desired weight and 500, then lighter,
         /// then heavier; below 400 look lighter first; above 500 look heavier first.
         /// </summary>
+        /// <summary>
+        /// The faces whose unicode-range covers the run: every non-whitespace code point
+        /// when some face covers them all, otherwise the run's first one; U+0020 when there
+        /// is no text. Null when none covers it.
+        /// </summary>
+        private static List<LoadedFace> SelectCoveringFaces(List<LoadedFace> faces, string text)
+        {
+            if (faces.All(static f => f.UnicodeRanges == null))
+            {
+                return faces;
+            }
+
+            var codePoints = new List<int>();
+            if (!string.IsNullOrEmpty(text))
+            {
+                for (int i = 0; i < text.Length; i++)
+                {
+                    int cp = char.IsSurrogatePair(text, i) ? char.ConvertToUtf32(text, i++) : text[i];
+                    if (!char.IsWhiteSpace((char)Math.Min(cp, char.MaxValue)) && !codePoints.Contains(cp))
+                    {
+                        codePoints.Add(cp);
+                    }
+                }
+            }
+
+            if (codePoints.Count == 0)
+            {
+                codePoints.Add(0x20);
+            }
+
+            var all = faces.Where(f => codePoints.All(f.Covers)).ToList();
+            if (all.Count > 0)
+            {
+                return all;
+            }
+
+            var first = faces.Where(f => f.Covers(codePoints[0])).ToList();
+            return first.Count > 0 ? first : null;
+        }
+
+        /// <summary>CSS Fonts 4 §4.5 unicode-range: U+X, U+X-Y and U+X?? wildcards.</summary>
+        internal static (int Start, int End)[] ParseUnicodeRange(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var ranges = new List<(int, int)>();
+            foreach (var raw in value.Split(','))
+            {
+                var token = raw.Trim();
+                if (token.Length < 3 || (token[0] != 'U' && token[0] != 'u') || token[1] != '+')
+                {
+                    continue;
+                }
+
+                token = token.Substring(2);
+                int dash = token.IndexOf('-');
+                if (dash >= 0)
+                {
+                    if (int.TryParse(token.AsSpan(0, dash), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int start) &&
+                        int.TryParse(token.AsSpan(dash + 1), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int end) &&
+                        start <= end)
+                    {
+                        ranges.Add((start, Math.Min(end, 0x10FFFF)));
+                    }
+                }
+                else if (token.Contains('?'))
+                {
+                    if (int.TryParse(token.Replace('?', '0'), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int start) &&
+                        int.TryParse(token.Replace('?', 'F'), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int end))
+                    {
+                        ranges.Add((start, Math.Min(end, 0x10FFFF)));
+                    }
+                }
+                else if (int.TryParse(token, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int single))
+                {
+                    ranges.Add((single, single));
+                }
+            }
+
+            return ranges.Count > 0 ? ranges.ToArray() : null;
+        }
+
         private static LoadedFace SelectFace(List<LoadedFace> faces, int weight, SKFontStyleSlant style)
         {
             var styleOrder = style switch
@@ -837,6 +949,18 @@ namespace FenBrowser.FenEngine.Rendering
         /// Try to resolve a font-family name to a FontFamily object.
         /// </summary>
         public static SKTypeface TryResolve(string familyName, int weight = 400, SKFontStyleSlant style = SKFontStyleSlant.Upright)
+            => TryResolve(familyName, weight, style, text: null);
+
+        /// <summary>
+        /// Resolves a web font family for a run of text. CSS Fonts 4 §4.5 / §5: a face is
+        /// only used for the code points its unicode-range covers, so a family split into
+        /// per-script subsets (Google Sans ships a dozen) must pick the subset that holds
+        /// the run's characters - picking by weight alone drew English in a Khmer subset,
+        /// as boxes. Without text the family's first available font is the face that
+        /// covers U+0020. Returns null when no face of the family covers the text, so the
+        /// next family in the list is tried.
+        /// </summary>
+        public static SKTypeface TryResolve(string familyName, int weight, SKFontStyleSlant style, string text)
         {
             if (string.IsNullOrEmpty(familyName))
                 return null;
@@ -850,13 +974,21 @@ namespace FenBrowser.FenEngine.Rendering
                 if (_loadedFonts.TryGetValue(cacheKey, out var cached))
                     return cached;
 
-                if (_resolvedFaces.TryGetValue(cacheKey, out cached))
-                    return cached;
-
                 if (_loadedFaces.TryGetValue(familyName, out var faces) && faces.Count > 0)
                 {
-                    var resolved = InstanceAtWeight(SelectFace(faces, weight, style), weight);
-                    _resolvedFaces[cacheKey] = resolved;
+                    var covering = SelectCoveringFaces(faces, text);
+                    if (covering == null)
+                    {
+                        return null;
+                    }
+
+                    var face = SelectFace(covering, weight, style);
+                    var faceKey = cacheKey + "|" + faces.IndexOf(face).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    if (_resolvedFaces.TryGetValue(faceKey, out cached))
+                        return cached;
+
+                    var resolved = InstanceAtWeight(face, weight);
+                    _resolvedFaces[faceKey] = resolved;
                     return resolved;
                 }
 
