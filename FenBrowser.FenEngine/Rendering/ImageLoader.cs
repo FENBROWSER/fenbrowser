@@ -1101,6 +1101,32 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         /// <summary>
+        /// How recently an image must have been drawn to count as in use.
+        /// </summary>
+        internal static readonly TimeSpan InUseWindow = TimeSpan.FromSeconds(5);
+
+        /// <summary>
+        /// How far over its budget the cache may grow to keep in-use images.
+        /// </summary>
+        internal const int InUseOverrunFactor = 4;
+
+        /// <summary>
+        /// Whether an over-budget cache may drop an entry last drawn at
+        /// <paramref name="lastAccessed"/>. Every paint tree build touches every image in
+        /// the document, so a page whose decoded images exceed the budget made pure LRU
+        /// evict one to load another on each frame: github.com re-fetched and re-decoded
+        /// 3-8 large WebP images per frame, and every decode forced a full repaint.
+        /// Images drawn within <see cref="InUseWindow"/> stay unless the cache is past
+        /// <see cref="InUseOverrunFactor"/> times its budget.
+        /// </summary>
+        internal static bool IsEvictable(DateTime lastAccessed, DateTime now, long currentBytes, long maxBytes, int currentCount, int maxCount)
+        {
+            bool pastHardCap = currentBytes > maxBytes * InUseOverrunFactor ||
+                               currentCount > (long)maxCount * InUseOverrunFactor;
+            return pastHardCap || now - lastAccessed > InUseWindow;
+        }
+
+        /// <summary>
         /// Evict oldest images to stay under memory limit
         /// </summary>
         private static void EvictIfNeeded()
@@ -1121,15 +1147,26 @@ namespace FenBrowser.FenEngine.Rendering
             candidates.AddRange(_memoryCache.Select(kvp => (kvp.Key, kvp.Value.LastAccessed, kvp.Value.ByteSize, false)));
             candidates.AddRange(_animatedGifs.Select(kvp => (kvp.Key, kvp.Value.LastAccessed, kvp.Value.ByteSize, true)));
 
+            var now = DateTime.UtcNow;
             foreach (var candidate in candidates.OrderBy(entry => entry.LastAccessed))
             {
                 bool withinBudget;
+                long currentBytes;
+                int currentCount;
                 lock (_cacheLock)
                 {
-                    withinBudget = _currentCacheBytes <= maxBytes && CacheCount <= maxCount;
+                    currentBytes = _currentCacheBytes;
+                    currentCount = CacheCount;
+                    withinBudget = currentBytes <= maxBytes && currentCount <= maxCount;
                 }
 
                 if (withinBudget)
+                {
+                    break;
+                }
+
+                // Oldest first, so once one entry is still in use every later one is too.
+                if (!IsEvictable(candidate.LastAccessed, now, currentBytes, maxBytes, currentCount, maxCount))
                 {
                     break;
                 }
