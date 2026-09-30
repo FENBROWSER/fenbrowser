@@ -19762,6 +19762,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InvokeBodyOnloadAttribute(document);
         DispatchWindowLoadHandlers();
         MarkEventLoopCompleted();
+        ScheduleDeclarativeRefresh(document);
     }
 
     /// <summary>
