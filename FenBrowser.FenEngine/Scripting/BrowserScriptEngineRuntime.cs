@@ -16434,7 +16434,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     // fetched body, the string given for a constructed one, or
                     // decoded from the bytes on demand.
                     this._body = init.__fenBytes ? (body == null ? '' : String(body)) : (this._bytes ? null : (body == null ? '' : String(body)));
-                    this.bodyUsed = false;
+                    this._used = false;
                     this.status = init.status === undefined ? 200 : Number(init.status);
                     this.statusText = init.statusText || '';
                     this.headers = new Headers(init.headers || {});
@@ -16443,23 +16443,75 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     this.type = 'basic';
                     this.redirected = false;
                 };
+                // Fetch §5.3 Body mixin: body is a ReadableStream over the response's
+                // bytes - the same object on every read - and null for a null body
+                // status. Streaming readers depend on it: YouTube's player reads every
+                // media response through body.getReader() and appended nothing without it.
+                // "consume body" (text/json/arrayBuffer/blob) reads that stream to its end,
+                // so afterwards it is locked and disturbed, bodyUsed is true, and a second
+                // consume rejects with a TypeError.
+                var consumedBodyReader = {};
+                function lockConsumedStream(stream) {
+                    stream._reader = consumedBodyReader;
+                    stream._disturbed = true;
+                }
+                function bodyUnusable(response) {
+                    return response.bodyUsed || !!(response._stream && response._stream._reader);
+                }
+                function consumeBody(response) {
+                    if (bodyUnusable(response)) {
+                        return Promise.reject(new TypeError('Body is unusable: it has already been read'));
+                    }
+                    response._used = true;
+                    if (response._stream) lockConsumedStream(response._stream);
+                    return null;
+                }
+                Object.defineProperty(Response.prototype, 'bodyUsed', {
+                    get: function () { return !!(this._used || (this._stream && this._stream._disturbed)); },
+                    enumerable: true,
+                    configurable: true
+                });
+                Object.defineProperty(Response.prototype, 'body', {
+                    get: function () {
+                        if (this._stream !== undefined) return this._stream;
+                        var status = this.status;
+                        if (status === 101 || status === 103 || status === 204 || status === 205 || status === 304) {
+                            return (this._stream = null);
+                        }
+                        var bytes = this._bytes ? new Uint8Array(this._bytes) : Uint8Array.from(__fenTextEncode(this._body || ''));
+                        this._stream = new ReadableStream({
+                            start: function (controller) {
+                                if (bytes.length) controller.enqueue(bytes);
+                                controller.close();
+                            }
+                        });
+                        if (this._used) lockConsumedStream(this._stream);
+                        return this._stream;
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
                 Response.prototype.text = function () {
-                    this.bodyUsed = true;
+                    var unusable = consumeBody(this);
+                    if (unusable) return unusable;
                     return Promise.resolve(this._body != null ? this._body : bytesToText(this._bytes));
                 };
                 Response.prototype.json = function () {
                     return this.text().then(function (text) { return JSON.parse(text || 'null'); });
                 };
                 Response.prototype.arrayBuffer = function () {
-                    this.bodyUsed = true;
+                    var unusable = consumeBody(this);
+                    if (unusable) return unusable;
                     var bytes = this._bytes ? new Uint8Array(this._bytes) : __fenTextEncode(this._body || '');
                     return Promise.resolve(new Uint8Array(bytes).buffer);
                 };
                 Response.prototype.blob = function () {
-                    this.bodyUsed = true;
+                    var unusable = consumeBody(this);
+                    if (unusable) return unusable;
                     return Promise.resolve(new Blob([this._bytes ? new Uint8Array(this._bytes) : (this._body || '')], { type: this.headers.get('content-type') || '' }));
                 };
                 Response.prototype.clone = function () {
+                    if (bodyUnusable(this)) throw new TypeError('Response.clone: the body has already been read');
                     return new Response(this._body, {
                         status: this.status,
                         statusText: this.statusText,

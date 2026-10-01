@@ -89,6 +89,108 @@ public sealed class FenJsFetchBinaryBodyTests
     }
 
 
+    [Fact]
+    public async Task Body_IsAReadableStreamOfTheResponseBytes()
+    {
+        var baseUri = new Uri("https://fixture.test/index.html");
+        var document = new HtmlParser(
+            """
+            <html><body><script>
+            fetch('/media/segment').then(function (response) {
+                globalThis.__same = response.body === response.body;
+                globalThis.__isStream = response.body instanceof ReadableStream;
+                var reader = response.body.getReader();
+                var parts = [];
+                function pump() {
+                    return reader.read().then(function (record) {
+                        if (record.done) return;
+                        parts.push(Array.prototype.join.call(record.value, ','));
+                        return pump();
+                    });
+                }
+                return pump().then(function () { globalThis.__streamed = parts.join('|'); });
+            });
+            globalThis.__nullBody = String(new Response(null, { status: 204 }).body);
+            </script></body></html>
+            """,
+            baseUri).Parse();
+
+        var engine = new FenJsBrowserScriptEngine(CreateHost())
+        {
+            Sandbox = SandboxPolicy.AllowAll,
+            FetchHandler = _ =>
+            {
+                var content = new ByteArrayContent(new byte[] { 0x1A, 0x45, 0xDF, 0xA3, 0x00, 0xFF });
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/vnd.yt-ump");
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+            }
+        };
+
+        try
+        {
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            await WaitForGlobalAsync(engine, "globalThis.__streamed !== undefined");
+
+            Assert.Equal("true", engine.Evaluate("String(globalThis.__same)")?.ToString());
+            Assert.Equal("true", engine.Evaluate("String(globalThis.__isStream)")?.ToString());
+            Assert.Equal("26,69,223,163,0,255", engine.Evaluate("String(globalThis.__streamed)")?.ToString());
+            Assert.Equal("null", engine.Evaluate("String(globalThis.__nullBody)")?.ToString());
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task ConsumingTheBody_LocksItsStream_AndASecondConsumeRejects()
+    {
+        var baseUri = new Uri("https://fixture.test/index.html");
+        var document = new HtmlParser(
+            """
+            <html><body><script>
+            var consumed = new Response('abc');
+            globalThis.__before = consumed.bodyUsed;
+            consumed.text().then(function (text) {
+                globalThis.__text = text;
+                globalThis.__after = consumed.bodyUsed;
+                try { consumed.body.getReader(); globalThis.__reader = 'no throw'; }
+                catch (e) { globalThis.__reader = e instanceof TypeError ? 'TypeError' : String(e); }
+                try { consumed.clone(); globalThis.__clone = 'no throw'; }
+                catch (e) { globalThis.__clone = e instanceof TypeError ? 'TypeError' : String(e); }
+                return consumed.text();
+            }).then(function () { globalThis.__second = 'resolved'; },
+                    function (e) { globalThis.__second = e instanceof TypeError ? 'TypeError' : String(e); });
+
+            var streamed = new Response('xyz');
+            streamed.body.getReader().read().then(function () {
+                globalThis.__streamedUsed = streamed.bodyUsed;
+            });
+            </script></body></html>
+            """,
+            baseUri).Parse();
+
+        var engine = new FenJsBrowserScriptEngine(CreateHost()) { Sandbox = SandboxPolicy.AllowAll };
+
+        try
+        {
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            await WaitForGlobalAsync(engine, "globalThis.__second !== undefined && globalThis.__streamedUsed !== undefined");
+
+            Assert.Equal("false", engine.Evaluate("String(globalThis.__before)")?.ToString());
+            Assert.Equal("abc", engine.Evaluate("String(globalThis.__text)")?.ToString());
+            Assert.Equal("true", engine.Evaluate("String(globalThis.__after)")?.ToString());
+            Assert.Equal("TypeError", engine.Evaluate("String(globalThis.__reader)")?.ToString());
+            Assert.Equal("TypeError", engine.Evaluate("String(globalThis.__clone)")?.ToString());
+            Assert.Equal("TypeError", engine.Evaluate("String(globalThis.__second)")?.ToString());
+            Assert.Equal("true", engine.Evaluate("String(globalThis.__streamedUsed)")?.ToString());
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     // fetch() settles in a later task now that it is asynchronous, so a test
     // waits for the page script's own signal instead of reading it back at once.
     private static async Task WaitForGlobalAsync(FenJsBrowserScriptEngine engine, string expression)
