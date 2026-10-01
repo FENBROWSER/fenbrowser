@@ -1,6 +1,6 @@
 # FenBrowser Real-Site Tracker
 
-Snapshot date: 2026-08-22. Only evidence present in the current workspace is treated as current.
+Snapshot date: 2026-10-01. Only evidence present in the current workspace is treated as current.
 
 ## Minimal smoke matrix
 
@@ -10,7 +10,7 @@ Snapshot date: 2026-08-22. Only evidence present in the current workspace is tre
 | SITE-WIKI-001 | Documentation/wiki | Wikipedia | `https://en.wikipedia.org/` | no | RESEARCHED | article layout, links, scrolling |
 | SITE-GITHUB-001 | GitHub-like app | GitHub | `https://github.com/` | no | RESEARCHED | fresh boot, nav/input, visual fidelity |
 | SITE-SOCIAL-001 | Social/media SPA | X | `https://x.com/` | no for landing | NOT_STARTED | bundle fetch, framework boot, scrolling |
-| SITE-VIDEO-001 | Video | YouTube | `https://www.youtube.com/` | no | NOT_STARTED | custom elements, shadow DOM, media shell |
+| SITE-VIDEO-001 | Video | YouTube | `https://www.youtube.com/` | no | PARTIAL | player shell, media pipeline, googlevideo 403 |
 | SITE-COMMERCE-001 | Ecommerce | Amazon | `https://www.amazon.com/` | no | NOT_STARTED | redirects/cookies, dense layout, search input |
 | SITE-MAIL-001 | Webmail-like | Gmail | `https://mail.google.com/` | yes | NOT_STARTED | unauthenticated shell only unless credentials are supplied manually |
 | SITE-DASHBOARD-001 | Dashboard SPA | Grafana demo | `https://demo.grafana.org/` | target-dependent | NOT_STARTED | module boot, fetch, grid, canvas/SVG |
@@ -109,3 +109,44 @@ Regression test: Pending — deterministic GC-stress regressions are blocked on 
 Evidence: Before bundle logs/real-site/en.wikipedia.org/20260821T184115Z/ (22 callback failures, 14 stale-handle fatals, first_blocker insufficient-evidence). After bundle logs/real-site/en.wikipedia.org/20260821T191613Z/ (8 callback failures, 0 stale-handle fatals, first_blocker none).
 
 Status: RESEARCHED for boot-level acceptance (document loads, scripts execute, lifecycle events fire, layout/paint/screenshot captured, no renderer crash); interaction milestones not yet attempted.
+## SITE-VIDEO-001 triage
+
+Site: YouTube
+
+URL: `https://www.youtube.com/watch?v=jNQXAC9IVRw` (and `https://www.youtube.com/` for the home shell)
+
+Current visible result: The player shell renders. `div#movie_player.html5-video-player` is laid out at 830x467 with the red play button, the video title, and the search control visible in a 1280x800 screenshot. `http://www.youtube.com/` renders the signed-out home shell unchanged ("Try searching to get started" is YouTube's own no-cookies empty state, not an engine defect). The media engine itself is proven working: a `<video src>` page served over HTTP reports readyState 4, duration 52.21, videoWidth 854, videoHeight 480, `play()` resolves, `currentTime` advances, and decoded frames are painted.
+
+Expected visible result: Same player shell plus advancing video frames and audio.
+
+First fatal console error: (fixed this cycle) `Uncaught Error: Regular expression backtracking budget exceeded (pattern /^((http(s)?):)?\/\/((((lh[3-6]...|video\.google\.com|...)[.]?(:[0-9]+)?/|...)/ ...` thrown from `create` in `/s/player/8ab5c328/player_es6.vflset/en_US/base.js:8816` during `playerBootstrap`. Google's host allow-list regex has a bounded host-label run repeated in front of a large alternation; against a 30-character URL the backtracking VM re-explored the same (pc, position) thread states exponentially and aborted the page boot. Root-caused in RegexVM thread-state memoization (26c75c2d): the visited set was cleared on every stack pop, so it only ever covered one straight-line run of instructions.
+
+First fatal network error: All six `GET https://rr1---sn-ntqe6nee.googlevideo.com/videoplayback?...itag=18&mime=video/mp4&c=WEB...` requests returned **HTTP 403** (empty body, `Server: gvs 1.0`, `Content-Length: 0`). This is an external refusal, not an engine assertion: the same URL fetched with `curl` and a plausible Chrome 140 UA also returns 403, with and without the `n=` throttling parameter, and a plain-HTTP `/youtubei/v1/player` call returns `playabilityStatus: UNPLAYABLE / "Video unavailable"` for both the engine's UA and a real Chrome UA. Not attempted: any bypass.
+
+First missing API: `Animation.cancel` (472 retained records, mostly Polymer `HTMLElement.rootPath` / `importPath` / `$` / `$$` expandos and `DocumentFragment` host-property reads that Polymer sets on itself). None confirmed fatal; zero uncaught exceptions in the current run.
+
+First layout blocker: None from the blocker classifier. `div.html5-video-container` is laid out 830x0 with the video element at y=-373 (above the viewport) while `div#movie_player` around it is 830x467. NOT yet root-caused: a minimized fixture reproducing that shape (position:relative container + position:absolute top/left/width:100%/height:100% video) lays out spec-correctly at 830x0, both for a `<div>` and for a `<video>`, so the used size on the real page is being set from somewhere the dumps do not yet show - most likely inline styles written by the player's own sizing code. Recorded as the next lead, not as a fix.
+
+Script loading status: Completed. 51 discovered, 55 executions, 0 failures, 0 fetch failures.
+
+DOMContentLoaded fired: Yes.
+
+Load fired: Yes.
+
+Main framework detected: Polymer 2 (Kevlar) + the player's own imperative DOM, with `custom-elements-es5-adapter` and `webcomponents-sd` polyfills.
+
+Likely failure bucket: Resolved D (JavaScript language / regex VM). Network bucket B for the googlevideo 403. I bucket for the video geometry.
+
+Confirmed failure bucket: D confirmed and fixed (26c75c2d). B confirmed as an external server response with an out-of-engine reproduction.
+
+Minimal reproduction: `dotnet run --project FenBrowser.Tooling -c Release --no-build -- debug-site "https://www.youtube.com/watch?v=jNQXAC9IVRw" 25000`
+
+Engine subsystem owner: FenJs regex VM (FenBrowser.Js/Regex/RegexVM.cs) for the fatal error; googlevideo CDN for the 403.
+
+Fix task: Done for the boot blocker. Follow-ups: (1) root-cause the `div.html5-video-container` 0-height / video at y=-373 geometry from the live page's inline styles; (2) ECMA-262 22.2.2.13 RepeatMatcher empty-iteration guard is still absent, so `/(a?b??)*/` against "ab" reports the wrong match (`built-ins/RegExp/nullable-quantifier.js`) - a real spec gap that is not on the YouTube path.
+
+Regression test: FenBrowser.Js.Tests/RegexExecutionLimitTests - `MemoStopsRepeatedLabelRunsAgainstAnAlternation` (minimized host-allow-list shape), `MemoStopsRedosShapedSearches`, and the two budget tests retargeted at a backreference pattern, which is the shape the memo cannot cover and where the budget is still the protection.
+
+Evidence: Before bundle logs/real-site/www.youtube.com/20261001T044037Z/ (1 uncaught regex-budget error, 0 console messages otherwise, rendered text 2352 chars of which the error dominated, layout boxes 70). After bundle logs/real-site/www.youtube.com/20261001T072644Z/ (0 exceptions, 0 fatal console errors, rendered text "Me at the zoo / Play / Search", layout boxes 105, first_blocker none confidence 1).
+
+Status: PARTIAL. The page boots, the player renders, and the media pipeline decodes and paints video. Playback itself is blocked by an HTTP 403 from googlevideo that reproduces outside the engine.
