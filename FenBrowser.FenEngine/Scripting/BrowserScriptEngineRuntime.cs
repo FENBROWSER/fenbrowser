@@ -16379,23 +16379,37 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     };
                 }
 
+                // Fetch §5.4 Request class: a Request's state is its internal
+                // [[request]], not its JS-visible properties. new Request(request)
+                // and fetch(request) read that slot, so a page that defines its own
+                // url/method/body over a Request (YouTube's fetch-tampering probe
+                // shadows them on a data: request) does not change what is sent.
+                var requestSlots = new WeakMap();
                 globalThis.Request = function Request(input, init) {
                     init = init || {};
-                    if (input instanceof Request) {
-                        this.url = input.url;
-                        this.method = input.method;
-                        this.headers = new Headers(input.headers);
-                        this.body = input.body;
-                    } else {
-                        this.url = String(input);
-                        this.method = 'GET';
-                        this.headers = new Headers();
-                        this.body = null;
-                    }
-                    if (init.method) this.method = String(init.method).toUpperCase();
-                    if (init.headers) this.headers = new Headers(init.headers);
-                    if (init.body !== undefined) this.body = init.body;
+                    var source = input instanceof Request ? requestSlots.get(input) : null;
+                    var state = source
+                        ? { url: source.url, method: source.method, headers: new Headers(source.headers),
+                            body: source.body, mode: source.mode, credentials: source.credentials, signal: source.signal }
+                        : { url: String(input), method: 'GET', headers: new Headers(), body: null,
+                            mode: 'cors', credentials: 'same-origin', signal: null };
+                    if (init.method) state.method = String(init.method).toUpperCase();
+                    if (init.headers) state.headers = new Headers(init.headers);
+                    if (init.body !== undefined) state.body = init.body;
+                    if (init.mode) state.mode = String(init.mode);
+                    if (init.credentials) state.credentials = String(init.credentials);
+                    if (init.signal !== undefined) state.signal = init.signal;
+                    requestSlots.set(this, state);
                 };
+                ['url', 'method', 'headers', 'body', 'mode', 'credentials', 'signal'].forEach(function (name) {
+                    Object.defineProperty(Request.prototype, name, {
+                        get: function () { var state = requestSlots.get(this); return state ? state[name] : undefined; },
+                        enumerable: true,
+                        configurable: true
+                    });
+                });
+                Object.defineProperty(Request.prototype, Symbol.toStringTag, { value: 'Request', configurable: true });
+                var NativeRequest = Request;
 
                 // Bytes of a body given as ArrayBuffer / typed array / DataView, else null.
                 function bodyBytes(body) {
@@ -16472,13 +16486,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 // A network error rejects with a TypeError, as the spec requires.
                 globalThis.fetch = function (input, init) {
                     init = init || {};
-                    var request = input instanceof Request ? new Request(input, init) : new Request(input, init);
-                    var headers = new Headers(request.headers);
-                    var body = serializeBody(request.body, headers);
+                    var request = new NativeRequest(input, init);
+                    var state = requestSlots.get(request);
+                    var headers = new Headers(state.headers);
+                    var body = serializeBody(state.body, headers);
                     if (body.contentType && !headers.has('content-type')) {
                         headers.set('content-type', body.contentType);
                     }
-                    var signal = init.signal || (input instanceof Request ? input.signal : null);
+                    var signal = state.signal;
                     return new Promise(function (resolve, reject) {
                         if (signal && signal.aborted) {
                             reject(signal.reason || new DOMException('The operation was aborted.', 'AbortError'));

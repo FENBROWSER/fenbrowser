@@ -11,12 +11,85 @@ using Xunit;
 namespace FenBrowser.Tests.Scripting;
 
 /// <summary>
-/// Fetch §4.2 scheme fetch "data": fetch() of a data: URL answers 200 with the
-/// data: URL processor's body and MIME type, and a URL the processor rejects is a
-/// network error. YouTube's fetch-tampering probe reads its own JSON back this way.
+/// Fetch §5.4 Request class and §4.2 scheme fetch "data". A Request's state is its
+/// internal [[request]]: fetch() sends what the Request was constructed with, not
+/// what its JS-visible properties say. YouTube's fetch-tampering probe builds a
+/// data: Request and shadows url/method/body with getters naming its player API;
+/// a browser fetches the data: URL and the probe reads its own JSON back.
 /// </summary>
 public sealed class FenJsFetchRequestTests
 {
+    [Fact]
+    public async Task Fetch_SendsTheRequestsInternalState_NotPropertiesAPageDefinedOverIt()
+    {
+        var sent = new List<string>();
+        var engine = await StartAsync(
+            """
+            var json = JSON.stringify({ ok: true, n: 7 });
+            var request = new Request('data:application/json;base64,' + btoa(json));
+            Object.defineProperty(request, 'url', { get: function () { return 'https://fixture.test/api/player'; } });
+            Object.defineProperty(request, 'method', { get: function () { return 'POST'; } });
+            Object.defineProperty(request, 'body', { get: function () { return new ReadableStream(); } });
+            fetch(request).then(function (response) {
+                globalThis.__status = response.status;
+                globalThis.__type = response.headers.get('content-type');
+                return response.json();
+            }).then(function (value) {
+                globalThis.__probe = JSON.stringify(value) === json;
+            }, function (error) {
+                globalThis.__probe = 'rejected: ' + error;
+            });
+            """,
+            sent);
+
+        try
+        {
+            await WaitForGlobalAsync(engine, "globalThis.__probe !== undefined");
+
+            Assert.Equal("true", engine.Evaluate("String(globalThis.__probe)")?.ToString());
+            Assert.Equal("200", engine.Evaluate("String(globalThis.__status)")?.ToString());
+            Assert.Equal("application/json", engine.Evaluate("String(globalThis.__type)")?.ToString());
+            Assert.Empty(sent);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task Fetch_OfAConstructedRequest_SendsItsMethodHeadersAndBody()
+    {
+        var sent = new List<string>();
+        var engine = await StartAsync(
+            """
+            var request = new Request('/api/echo', {
+                method: 'post',
+                headers: { 'Content-Type': 'application/json', 'X-Client': 'fen' },
+                body: '{"q":1}'
+            });
+            globalThis.__tag = Object.prototype.toString.call(request);
+            globalThis.__method = request.method;
+            globalThis.__mode = request.mode;
+            fetch(new Request(request)).then(function (response) { globalThis.__done = response.status; });
+            """,
+            sent);
+
+        try
+        {
+            await WaitForGlobalAsync(engine, "globalThis.__done !== undefined");
+
+            Assert.Equal("[object Request]", engine.Evaluate("String(globalThis.__tag)")?.ToString());
+            Assert.Equal("POST", engine.Evaluate("String(globalThis.__method)")?.ToString());
+            Assert.Equal("cors", engine.Evaluate("String(globalThis.__mode)")?.ToString());
+            Assert.Equal(new[] { "POST /api/echo application/json fen {\"q\":1}" }, sent);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     [Fact]
     public async Task Fetch_OfADataUrl_ReturnsItsBodyAndType_AndAMalformedOneRejects()
     {
