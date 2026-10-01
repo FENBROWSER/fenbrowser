@@ -78,6 +78,17 @@ public sealed class RegexProgram
     public string[]? NamedBackReferenceNames { get; }
     public RegexFlags Flags { get; }
 
+    /// <summary>
+    /// True when some instruction can read the text a captured group matched
+    /// (ECMA-262 22.2.2.8 backreferences, forward or reverse, numbered or
+    /// named). Such a program's future depends on its capture slots, so the VM
+    /// may not treat two thread states that share a program counter and an input
+    /// position as interchangeable. Without one, capture slots are only
+    /// recorded, never read, and (pc, position) alone identifies the rest of
+    /// the search.
+    /// </summary>
+    public bool HasBackReference { get; }
+
     // Unicode property table: maps property indices to lookup data.
     // Stored as (propertyName, valueOrNull, negated) tuples for fast access.
     public (string Property, string? Value, bool Negated)[]? UnicodeProperties { get; init; }
@@ -115,5 +126,18 @@ public sealed class RegexProgram
         NamedGroupMap = namedGroupMap;
         Flags = flags;
         NamedBackReferenceNames = namedBackReferenceNames;
+
+        var hasBackReference = false;
+        foreach (var instruction in instructions)
+        {
+            if (instruction.OpCode is RegexOpCode.BackRef or RegexOpCode.NamedBackRef
+                or RegexOpCode.ReverseBackRef or RegexOpCode.ReverseNamedBackRef)
+            {
+                hasBackReference = true;
+                break;
+            }
+        }
+
+        HasBackReference = hasBackReference;
     }
 }

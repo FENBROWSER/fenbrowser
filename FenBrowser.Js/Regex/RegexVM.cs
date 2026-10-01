@@ -84,11 +84,45 @@ public sealed class RegexVM
         // not match spent most of its time allocating. Clearing them where
         // they were allocated keeps the scoping identical.
         var stack = new Stack<ThreadState>(64);
-        var visitedInlineStates = new HashSet<(int PC, int CP, int CapturesHash)>();
+
+        // Thread-state memoization. The visited set used to be cleared every
+        // time a state was popped off the backtrack stack, so it only ever
+        // covered one straight-line run of instructions. Any pattern that
+        // re-enters an already-explored (pc, position) through a different path
+        // re-does that work, and a nested quantifier over an alternation -
+        // ([A-Za-z0-9-]{1,63}\.)*(corp\.google\.com|...|youtube\.com|...) -
+        // does exactly that once the subject fails to end in a member of the
+        // list. Google's host allow-list regex in the YouTube player has that
+        // shape, and against a 30-character URL it exhausted the backtracking
+        // budget and aborted the page boot. Holding the set for a whole start
+        // position, rather than for one popped state, turns that exponential
+        // back into a linear scan.
+        //
+        // Two things keep it from costing the searches that never needed it. It
+        // switches on only once a start position has spent MemoAfterBacktracks
+        // pops, so a pattern that matches - or misses - on a straight line
+        // behaves exactly as before and allocates no memo at all. And it is
+        // dropped again once it exceeds MaxMemoizedThreadStates entries, because
+        // a match that needs that many distinct states is the runaway the
+        // backtrack budget already knows how to stop and must not be allowed to
+        // spend unbounded memory first.
+        //
+        // What a state may be keyed on is whatever the rest of the search can
+        // read. Only a backreference reads a capture slot, so a program without
+        // one records (pc, position) alone; a program with backreferences has
+        // capture-dependent control flow, cannot share states cheaply, and keeps
+        // only the old per-run set keyed on every capture.
+        var canMemoizeThreadStates = !_program.HasBackReference;
+        HashSet<(int PC, int CP)>? visitedStates = null;
+        var visitedInlineStates = new HashSet<(int PC, int CP, int CaptureHash)>();
+        var startPops = 0;
+        var memoActive = false;
         for (int tryCp = startCp; tryCp <= _cpLen; tryCp++)
         {
             stack.Clear();
             _stack = stack;
+            startPops = 0;
+            memoActive = false;
 
             var initialState = new ThreadState
             {
@@ -111,6 +145,7 @@ public sealed class RegexVM
                         : "Regular expression backtracking budget exceeded") +
                     $" (pattern /{_program.Source ?? "?"}/ against {_cpLen} code points).");
             }
+            startPops++;
             var state = stack.Pop();
             var pc = state.PC;
             var cp = state.CP;
@@ -123,7 +158,22 @@ public sealed class RegexVM
                 if (pc >= _program.Instructions.Length)
                     break; // reached end → no accept → backtrack
 
-                if (!visitedInlineStates.Add((pc, cp, CaptureStateHash(captures))))
+                if (!memoActive && canMemoizeThreadStates && startPops > MemoAfterBacktracks)
+                {
+                    // This start position has become expensive; from here on,
+                    // keep the states for the rest of it.
+                    memoActive = true;
+                    visitedStates ??= new HashSet<(int PC, int CP)>();
+                    visitedStates.Clear();
+                }
+
+                var alreadySeen = memoActive
+                    ? visitedStates!.Count >= MaxMemoizedThreadStates
+                        ? DropMemo(ref visitedStates, ref memoActive)
+                        : !visitedStates.Add((pc, cp))
+                    : !visitedInlineStates.Add((pc, cp, CaptureStateHash(captures)));
+
+                if (alreadySeen)
                 {
                     pc = -1;
                     break;
@@ -307,6 +357,33 @@ public sealed class RegexVM
     }
 
     // ─── Backtracking helpers ─────────────────────────────
+
+    // A start position that has popped this many states is no longer the
+    // straight-line case, and is where re-entering an already-explored state
+    // starts to dominate. Below it the per-run visited set is enough and the
+    // memo is never allocated, so the searches that always match - or always
+    // fail on the first character - cost exactly what they did before.
+    private const int MemoAfterBacktracks = 512;
+
+    // Ceiling on the number of thread states memoized for one start position.
+    // The true bound is (instruction count) x (input length), which is unbounded
+    // for a large subject; past this the memo is dropped rather than allowed to
+    // grow, because a match that needs this many distinct states is the runaway
+    // the backtrack budget above already knows how to stop.
+    private const int MaxMemoizedThreadStates = 1 << 18;
+
+    /// <summary>
+    /// Give up the memo: release the table and report that the state just
+    /// examined has not been recorded, so the caller falls back to the per-run
+    /// visited set for the rest of this start position.
+    /// </summary>
+    private static bool DropMemo(ref HashSet<(int PC, int CP)>? visitedStates, ref bool memoActive)
+    {
+        visitedStates!.Clear();
+        visitedStates = null;
+        memoActive = false;
+        return false;
+    }
 
     private static int[] AllocateCaptures(int slots)
     {
