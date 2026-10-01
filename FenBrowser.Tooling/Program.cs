@@ -770,6 +770,7 @@ namespace FenBrowser.Tooling
                 StyleLayout = styleLayout,
                 MissingApis = missingApis,
                 StyleDump = BuildStyleDump(root, styles),
+                DomDump = BuildDomDump(root, styles, screenshot.RenderContext),
                 LayoutDump = BuildLayoutDump(root, screenshot.RenderContext),
                 PaintDump = BuildPaintDump(screenshot.RenderContext),
                 DisplayListDump = BuildDisplayListDump(screenshot.RenderContext),
@@ -1050,6 +1051,7 @@ namespace FenBrowser.Tooling
                     report.StyleLayout ?? new DebugSiteStyleLayoutSummary(),
                     jsonOptions));
             WriteText("style_dump.txt", () => report.StyleDump ?? string.Empty);
+            WriteText("dom_dump.txt", () => report.DomDump ?? string.Empty);
             WriteText("layout_dump.txt", () => report.LayoutDump ?? string.Empty);
             WriteText("paint_dump.txt", () => report.PaintDump ?? string.Empty);
             WriteText("display_list.txt", () => report.DisplayListDump ?? string.Empty);
@@ -1066,7 +1068,6 @@ namespace FenBrowser.Tooling
                     TryCopyLogArtifact("debug_site_screenshot.png", Path.Combine(bundleDir, "interaction_after.png"));
                 }
             }
-            TryCopyLogArtifact("dom_dump.txt", Path.Combine(bundleDir, "dom_dump.txt"));
             TryCopyLatestLogArtifact("raw_source_*.html", Path.Combine(bundleDir, "raw_source.html"));
             TryCopyLatestLogArtifact("rendered_text_*.txt", Path.Combine(bundleDir, "rendered_text_artifact.txt"));
             TryCopyLatestLogArtifact("fenbrowser_trace_*.jsonl", Path.Combine(bundleDir, "trace.jsonl"));
@@ -1214,10 +1215,10 @@ namespace FenBrowser.Tooling
             sb.AppendLine("- `performance.json`: single diagnostic sample from already-captured navigation and render-stage telemetry; not a benchmark.");
             sb.AppendLine("- `style_layout.json`: style/layout/paint counters, timing, status, and first blocker classification.");
             sb.AppendLine("- `style_dump.txt`: DOM preorder computed-style snapshot.");
+            sb.AppendLine("- `dom_dump.txt`: DOM preorder including open shadow roots, with display and border-box per node.");
             sb.AppendLine("- `layout_dump.txt`: layout Box tree snapshot with geometry.");
             sb.AppendLine("- `paint_dump.txt`: Paint Tree snapshot with node bounds and paint-specific fields.");
             sb.AppendLine("- `display_list.txt`: flattened Paint Tree order used as the current display-list proxy.");
-            sb.AppendLine("- `dom_dump.txt`: copied from `logs/dom_dump.txt` when present.");
             sb.AppendLine("- `artifact_manifest.json`: present/missing artifact status.");
             return sb.ToString();
         }
@@ -1414,6 +1415,97 @@ namespace FenBrowser.Tooling
             }
 
             return sb.ToString();
+        }
+
+        private static string BuildDomDump(Node root, IReadOnlyDictionary<Node, CssComputed> styles, RenderContext renderContext)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("# FenBrowser DOM Dump");
+            sb.AppendLine();
+            sb.AppendLine("# path | node | display | box");
+            sb.AppendLine();
+
+            if (root == null)
+            {
+                sb.AppendLine("DOM root: unavailable");
+                return sb.ToString();
+            }
+
+            var nodes = 0;
+            foreach (var item in CollectDomTraversalIncludingShadowRoots(root))
+            {
+                nodes++;
+                sb.Append(item.Path);
+                sb.Append(" | ");
+                sb.Append(FormatNodeLabel(item.Node));
+                sb.Append(" | ");
+                sb.Append(styles != null && styles.TryGetValue(item.Node, out var style) && style != null
+                    ? (string.IsNullOrEmpty(style.Display) ? "(null)" : style.Display)
+                    : "(no-style)");
+                sb.Append(" | ");
+                if (renderContext?.Boxes != null && renderContext.Boxes.TryGetValue(item.Node, out var box) && box != null)
+                {
+                    sb.Append(FormatRect(box.BorderBox));
+                }
+                else
+                {
+                    sb.Append("(no-box)");
+                }
+
+                sb.AppendLine();
+            }
+
+            sb.AppendLine();
+            sb.AppendLine($"nodes: {nodes}");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Preorder DOM traversal that also descends into open shadow roots, the way
+        /// layout does. A web-components page builds most of its content there -
+        /// YouTube's watch page is almost entirely shadow - so a light-DOM-only walk
+        /// reports a page as far emptier than it is.
+        /// </summary>
+        private static List<(Node Node, int Depth, string Path)> CollectDomTraversalIncludingShadowRoots(Node root)
+        {
+            var result = new List<(Node Node, int Depth, string Path)>();
+            if (root == null)
+            {
+                return result;
+            }
+
+            var stack = new Stack<(Node Node, int Depth, string Path)>();
+            stack.Push((root, 0, "/" + FormatNodePathSegment(root, 1)));
+            while (stack.Count > 0)
+            {
+                var item = stack.Pop();
+                result.Add(item);
+
+                var children = new List<Node>();
+                for (var child = item.Node.FirstChild; child != null; child = child.NextSibling)
+                {
+                    children.Add(child);
+                }
+
+                for (var i = children.Count - 1; i >= 0; i--)
+                {
+                    var child = children[i];
+                    stack.Push((child, item.Depth + 1, item.Path + "/" + FormatNodePathSegment(child, i + 1)));
+                }
+
+                if (item.Node is Element host && host.ShadowRoot != null)
+                {
+                    // Shadow children keep the host's depth so the printed tree reads
+                    // as the flat box tree the renderer builds, with the host named as
+                    // the boundary instead of inventing a nesting level.
+                    for (var child = host.ShadowRoot.FirstChild; child != null; child = child.NextSibling)
+                    {
+                        stack.Push((child, item.Depth, item.Path + "/shadow::" + FormatNodePathSegment(child, 1)));
+                    }
+                }
+            }
+
+            return result;
         }
 
         private static string BuildLayoutDump(Node root, RenderContext renderContext)
@@ -2583,6 +2675,8 @@ namespace FenBrowser.Tooling
             public string RenderedTextSample { get; init; }
             [JsonIgnore]
             public string StyleDump { get; init; }
+            [JsonIgnore]
+            public string DomDump { get; init; }
             [JsonIgnore]
             public string LayoutDump { get; init; }
             [JsonIgnore]

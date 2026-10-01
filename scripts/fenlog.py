@@ -628,8 +628,9 @@ def cmd_bundle(args):
         missing = [m.get("name") for m in manifest if isinstance(m, dict) and not m.get("exists")]
         if missing:
             out(clip("missing artifacts: " + ", ".join(missing), args.width))
-    dumps = [f for f in ("trace.jsonl", "layout_dump.txt", "style_dump.txt", "paint_dump.txt", "display_list.txt",
-                         "raw_source.html", "rendered_text.txt", "network.json", "script_loading.json")
+    dumps = [f for f in ("trace.jsonl", "dom_dump.txt", "layout_dump.txt", "style_dump.txt", "paint_dump.txt",
+                         "display_list.txt", "raw_source.html", "rendered_text.txt", "network.json",
+                         "script_loading.json")
              if os.path.isfile(os.path.join(path, f))]
     out(clip("drill: fenlog.py summary|errors " + path + "  |  Grep (narrow pattern, head_limit) in: "
              + ", ".join(f"{f} {human_size(os.path.getsize(os.path.join(path, f)))}" for f in dumps), args.width * 2))
