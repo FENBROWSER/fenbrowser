@@ -683,6 +683,24 @@ public sealed class MediaPlayer : IMediaResource
                     AcceptVideo(frame);
                 }
             }
+
+            // A held picture drains only as the clock moves, and with an audio track the
+            // clock is the audio. A source whose tracks are separate buffers (a MediaSource)
+            // keeps the audio coming past it; YouTube appends video ahead of its audio, and
+            // reading in decode order filled the queue with pictures before any audio was
+            // read, so the clock never left 0.
+            while (!_endOfStream && _heldVideo is not null && output is not null && source.CanReadAudioAlone &&
+                   _renderer!.QueuedDuration < _services.DecodeAhead)
+            {
+                LogFill("read audio");
+                var item = await source.ReadAudioAsync(cancellation).ConfigureAwait(false);
+                if (item is not { } decoded)
+                    break; // no audio buffered yet, or its key has not arrived
+                if (decoded.Audio is { } block)
+                    output.Emit(block);
+                else
+                    decoded.Dispose();
+            }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {

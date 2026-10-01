@@ -346,6 +346,54 @@ public class MsePlayerTests
     /// video buffer on one MediaSource, with no MediaKeys set at all. The element has to
     /// hear waitingforkey - that event is what makes the page create a session.
     /// </summary>
+    /// <summary>
+    /// YouTube's SABR player appends video ahead of audio. The pictures fill the video
+    /// queue before any audio is decoded, and with an audio track the clock is the audio:
+    /// the pipeline has to keep reading past the held pictures for the audio that arrives
+    /// next, or the clock never leaves 0 and the queue never drains.
+    /// </summary>
+    [Fact]
+    public async Task VideoAppendedAheadOfItsAudio_StillPlays()
+    {
+        var client = new RecordingClient();
+        var (player, model) = Create(client);
+        player.Start();
+        try
+        {
+            var audio = model.AddSourceBuffer("audio/webm; codecs=\"opus\"", generateTimestamps: false);
+            var video = model.AddSourceBuffer("video/webm; codecs=\"vp9\"", generateTimestamps: false);
+            var audioBytes = MediaFixtures.Read("sine_opus.webm");
+            int firstCluster = audioBytes.AsSpan().IndexOf(new byte[] { 0x1F, 0x43, 0xB6, 0x75 });
+            Assert.True(firstCluster > 0);
+
+            // The audio initialization segment, then three seconds of pictures: more than
+            // the queue holds, whatever a hardware decoder keeps in flight.
+            Assert.Equal(AppendOutcome.Ok, audio.Append(audioBytes[..firstCluster]));
+            var videoBytes = MediaFixtures.Read("pattern_vp9.webm");
+            for (int second = 0; second < 3; second++)
+            {
+                video.SetTimestampOffset(MediaTime.FromSeconds(second));
+                Assert.Equal(AppendOutcome.Ok, video.Append(videoBytes));
+            }
+
+            model.NotifyChanged();
+            await client.WaitForAsync(() => client.Metadata is not null);
+            player.UpdatePlayback(potentiallyPlaying: true, playbackRate: 1.0, preservesPitch: true, effectiveVolume: 1.0);
+            await Task.Delay(500);
+
+            // The audio's media segments arrive after the pictures have been decoded.
+            Assert.Equal(AppendOutcome.Ok, audio.Append(audioBytes[firstCluster..]));
+            model.NotifyChanged();
+
+            await client.WaitForAsync(() => client.Position >= MediaTime.FromSeconds(0.5), timeoutMs: 4000);
+            Assert.Null(client.Failure);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
     [Fact]
     public async Task AnEncryptedVideoTrackBesideAClearAudioTrackWaitsForAKey()
     {

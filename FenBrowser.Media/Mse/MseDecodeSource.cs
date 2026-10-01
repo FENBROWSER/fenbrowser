@@ -135,13 +135,65 @@ public sealed class MseDecodeSource : IMediaDecodeSource
         return new MediaSourceInfo(tracks, audio, video, duration, IsSeekable: true);
     }
 
+    public bool CanReadAudioAlone => _audio is not null;
+
+    /// <summary>
+    /// The next decoded audio from the audio track alone. Each track is its own buffer, so
+    /// the audio can be read past video the player has no room for; reading in decode order
+    /// across both tracks stalled a MediaSource whose video was appended ahead of its audio.
+    /// </summary>
+    public async ValueTask<DecodedMedia?> ReadAudioAsync(CancellationToken cancellationToken)
+    {
+        _audioOnly = true;
+        try
+        {
+            return await ReadAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _audioOnly = false;
+        }
+    }
+
+    private bool _audioOnly;
+
+    private bool HasDecodedItem()
+    {
+        if (!_audioOnly)
+            return _decoded.Count > 0;
+        foreach (var item in _decoded)
+        {
+            if (item.Audio is not null)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>The first decoded audio, leaving any pictures queued ahead of it in order.</summary>
+    private DecodedMedia TakeFirstAudio()
+    {
+        int count = _decoded.Count;
+        DecodedMedia? audio = null;
+        for (int i = 0; i < count; i++)
+        {
+            var item = _decoded.Dequeue();
+            if (audio is null && item.Audio is not null)
+                audio = item;
+            else
+                _decoded.Enqueue(item);
+        }
+
+        return audio!.Value;
+    }
+
     public async ValueTask<DecodedMedia?> ReadAsync(CancellationToken cancellationToken)
     {
         if (!_open)
             throw new InvalidOperationException("The source is not open.");
         WaitingForData = false;
         WaitingForKey = false;
-        while (_decoded.Count == 0)
+        while (!HasDecodedItem())
         {
             TrackCursor? cursor;
             CodedFrame? frame;
@@ -190,6 +242,14 @@ public sealed class MseDecodeSource : IMediaDecodeSource
 
             if (cursor is null || frame is null || packet is null)
             {
+                // Reading audio alone, no audio buffered is a stall whatever the source's
+                // state: the video track still has frames, so it is never the end.
+                if (_audioOnly)
+                {
+                    WaitingForData = true;
+                    return null;
+                }
+
                 // Nothing to read from any track. Ended: drain the decoders and finish.
                 // Otherwise the data has not been appended yet.
                 if (!ended && AnyTrackStarved())
@@ -297,7 +357,7 @@ public sealed class MseDecodeSource : IMediaDecodeSource
             }
         }
 
-        return _decoded.Dequeue();
+        return _audioOnly ? TakeFirstAudio() : _decoded.Dequeue();
     }
 
     public async ValueTask SeekAsync(MediaTime target, CancellationToken cancellationToken)
@@ -337,7 +397,7 @@ public sealed class MseDecodeSource : IMediaDecodeSource
     {
         frame = null;
         TrackCursor? best = null;
-        foreach (var cursor in new[] { _audio, _video })
+        foreach (var cursor in _audioOnly ? new[] { _audio } : new[] { _audio, _video })
         {
             if (cursor is null)
                 continue;

@@ -72,6 +72,21 @@ public interface IMediaDecodeSource : IAsyncDisposable
     ValueTask<DecodedMedia?> ReadAsync(CancellationToken cancellationToken);
 
     /// <summary>
+    /// Whether <see cref="ReadAudioAsync"/> can read the audio track on its own. A
+    /// MediaSource can - each track is its own buffer; a muxed file reads in its order.
+    /// </summary>
+    bool CanReadAudioAlone => false;
+
+    /// <summary>
+    /// The next decoded audio, reading only the audio track, or null with
+    /// <see cref="WaitingForData"/> set when none is buffered. The player asks for this
+    /// while it holds a picture it has no room for: with an audio track the clock is the
+    /// audio, so the pictures drain only once audio flows.
+    /// </summary>
+    ValueTask<DecodedMedia?> ReadAudioAsync(CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This source cannot read its audio track on its own.");
+
+    /// <summary>
     /// True after a null read that meant "not buffered yet" rather than the end: a
     /// MediaSource whose script has not appended this far. The player stalls until the
     /// source wakes it instead of ending playback.
