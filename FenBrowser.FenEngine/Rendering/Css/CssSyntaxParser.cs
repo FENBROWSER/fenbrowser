@@ -320,6 +320,19 @@ namespace FenBrowser.FenEngine.Rendering.Css
             int selLoop = 0;
             while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.EOF)
             {
+                // CSS Syntax 3 "consume a qualified rule": nested inside a declaration
+                // block, a <semicolon-token> (the stop token) or the block's closing
+                // <}-token> makes this a parse error and returns nothing, leaving the
+                // token for the block to consume. Without it a declaration that is not
+                // one - IE's "*overflow:visible" star hack - read on past its block as
+                // a selector and swallowed the next rule; YouTube's player CSS lost
+                // three quarters of its rules to one.
+                if (parentSelector != null &&
+                    (_currentToken.Type == CssTokenType.Semicolon || _currentToken.Type == CssTokenType.RightBrace))
+                {
+                    return null;
+                }
+
                 if (selLoop++ > 100000) break;
                 selectorTokens.Add(_currentToken);
                 ConsumeToken();
