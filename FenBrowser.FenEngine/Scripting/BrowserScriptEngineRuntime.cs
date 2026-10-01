@@ -17306,6 +17306,21 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             }, "fetch completion failed");
         }
 
+        if (TryResolveUri(urlText, _currentBaseUri, out var dataUri) &&
+            TrySchemeFetchData(dataUri, out var dataResponse, out var dataBytes, out var dataText))
+        {
+            if (dataResponse == null)
+            {
+                Deliver(0, "Network Error", string.Empty, urlText, null, null, null);
+            }
+            else
+            {
+                Deliver(200, "OK", dataText, dataUri.OriginalString, dataResponse, dataBytes, null);
+            }
+
+            return JsValue.Undefined;
+        }
+
         if (FetchHandler == null || !TryResolveUri(urlText, _currentBaseUri, out var requestUri))
         {
             Deliver(0, "Network Error", string.Empty, urlText ?? string.Empty, null, null, null);
@@ -17392,6 +17407,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var urlText = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
         var bodyValue = args.Count > 2 ? args[2] : JsValue.FromString(string.Empty);
         var isBinaryBody = args.Count > 4 && args[4].Tag == JsValueTag.Boolean && args[4].AsBoolean();
+
+        if (TryResolveUri(urlText, _currentBaseUri, out var dataUri) &&
+            TrySchemeFetchData(dataUri, out var dataResponse, out var dataBytes, out var dataText))
+        {
+            using (dataResponse)
+            {
+                return dataResponse == null
+                    ? CreateFetchResult(0, "Network Error", string.Empty, urlText, null)
+                    : CreateFetchResult(200, "OK", dataText, dataUri.OriginalString, dataResponse, dataBytes);
+            }
+        }
 
         if (FetchHandler == null || !TryResolveUri(urlText, _currentBaseUri, out var requestUri))
         {
@@ -17494,6 +17520,36 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
     }
 
+    /// <summary>
+    /// Fetch §4.2 scheme fetch, "data": the data: URL processor's body and MIME type
+    /// become a 200 "OK" response carrying that Content-Type, whatever the method.
+    /// Returns false when <paramref name="uri"/> is not a data: URL; a data: URL the
+    /// processor rejects returns true with a null response (a network error). Decoded
+    /// bytes never outnumber the URL's characters, so its length bounds them. The text
+    /// is decoded here: reading the typed ContentType back off the response would make
+    /// .NET re-serialise the raw header the page sees.
+    /// </summary>
+    private static bool TrySchemeFetchData(Uri uri, out HttpResponseMessage response, out byte[] bytes, out string text)
+    {
+        response = null;
+        bytes = null;
+        text = null;
+        if (uri == null || !string.Equals(uri.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (FenBrowser.Core.Network.DataUrlParser.TryParse(uri, Math.Max(1, uri.OriginalString.Length), out var dataUrl, out _))
+        {
+            bytes = dataUrl.Bytes;
+            text = dataUrl.DecodeText();
+            response = new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) };
+            response.Content.Headers.TryAddWithoutValidation("Content-Type", dataUrl.ContentType);
+        }
+
+        return true;
+    }
+
     private static bool TryResolveUri(string urlText, Uri baseUri, out Uri requestUri)
     {
         requestUri = null;
@@ -17584,17 +17640,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private JsValue CreateFetchResult(int status, string statusText, string responseText, string url, HttpResponseMessage response, byte[] responseBytes = null)
     {
+        // Fetch §2.2 headers are the byte sequences received; the NonValidated view
+        // hands them over as sent instead of re-serialised by .NET's header parsers
+        // (which turn a data: URL's "text/plain;charset=utf-8" into "...; charset=...").
         var headers = new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
         if (response != null)
         {
-            foreach (var header in response.Headers)
+            foreach (var header in response.Headers.NonValidated)
             {
                 headers[header.Key.ToLowerInvariant()] = JsValue.FromString(string.Join(", ", header.Value));
             }
 
             if (response.Content != null)
             {
-                foreach (var header in response.Content.Headers)
+                foreach (var header in response.Content.Headers.NonValidated)
                 {
                     headers[header.Key.ToLowerInvariant()] = JsValue.FromString(string.Join(", ", header.Value));
                 }

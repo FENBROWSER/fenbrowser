@@ -9,9 +9,9 @@ namespace FenBrowser.Core.Network;
 /// Byte-oriented parser for data: URLs. Parsing and percent/base64 decoding are
 /// centralized here so text and binary resource paths observe identical bytes.
 /// </summary>
-internal static class DataUrlParser
+public static class DataUrlParser
 {
-    internal sealed class Result
+    public sealed class Result
     {
         public required byte[] Bytes { get; init; }
         public required string ContentType { get; init; }
