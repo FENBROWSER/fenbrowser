@@ -765,6 +765,36 @@ public sealed partial class BytecodeInterpreter
         return true;
     }
 
+    // Host embedder seam: give a plain object the embedder built (one whose prototype is
+    // still %Object.prototype%) the prototype of a global interface, as a platform object
+    // of that interface has (WebIDL 3.7.1). An object script or the embedder already
+    // branded keeps its prototype. False when the constructor is missing.
+    public bool TryBrandPlainObjectWithGlobalInterface(JsValue target, string constructorName)
+    {
+        if (target.Tag != JsValueTag.Object ||
+            string.IsNullOrWhiteSpace(constructorName) ||
+            !TryReadGlobalValue(constructorName, out var constructor) ||
+            constructor.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var obj = _heap.GetObject(target.AsObjectHandle());
+        if (obj is ProxyObject || obj.PrototypeHandle is not { } current || !current.Equals(EnsureObjectPrototype()))
+        {
+            return false;
+        }
+
+        var constructorObject = _heap.GetObject(constructor.AsObjectHandle());
+        if (!TryGetPropertyValue(constructorObject, constructor, "prototype", out var prototype) ||
+            prototype.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        return OrdinarySetPrototypeOf(target.AsObjectHandle(), prototype);
+    }
+
     // Host embedder seam: allocate a callable native function on the current
     // heap so hosted browser surfaces can expose DOM/Web API methods directly
     // without reaching into interpreter internals.

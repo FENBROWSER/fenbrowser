@@ -25006,6 +25006,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             (_, _) => _interpreter.AllocateArray(BuildComposedPathValues(element)),
             length: 0));
         _interpreter.SetObjectProperty(eventValue, "cancelBubble", JsValue.FromBoolean(false));
+        BrandDispatchedEvent(eventValue, type ?? string.Empty);
 
         dispatchState = state;
         return eventValue;
@@ -25077,6 +25078,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private bool TryInvokeFenJsEventCallback(JsValue callback, JsValue thisValue, JsValue eventValue, string eventType)
     {
+        BrandDispatchedEvent(eventValue, eventType);
         var invokedCallback = callback;
         try
         {
@@ -25137,6 +25139,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private void InvokeFenJsInlineWithEvent(string script, JsValue eventValue)
     {
+        BrandDispatchedEvent(eventValue, null);
         RunFenJsWithLargeStack<object>(() =>
         {
             using (ScriptEngineLockProbe.Hold(_fenJsLock))
