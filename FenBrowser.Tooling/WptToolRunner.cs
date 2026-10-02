@@ -193,6 +193,15 @@ namespace FenBrowser.Tooling
                 machLogPath
             });
 
+            // wptrunner restarts the browser after every unexpected result, and with no
+            // expectation metadata every FAIL is unexpected: css/css-flexbox restarted the
+            // browser and its WebDriver 628 times in 835 tests, and 71% of each worker's
+            // time went to restarts. A crash or timeout still restarts it.
+            if (!options.RestartOnUnexpected)
+            {
+                arguments.Add("--no-restart-on-unexpected");
+            }
+
             if (options.TestTypes.Count > 0)
             {
                 var binaryIndex = arguments.FindIndex(arg => string.Equals(arg, "--binary", StringComparison.Ordinal));
@@ -1188,6 +1197,12 @@ namespace FenBrowser.Tooling
                     continue;
                 }
 
+                if (string.Equals(arg, "--restart-on-unexpected", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.RestartOnUnexpected = true;
+                    continue;
+                }
+
                 if (TryReadOption(arg, "--max-restarts", args, ref i, out var maxRestartsText) &&
                     int.TryParse(maxRestartsText, out var maxRestarts) &&
                     maxRestarts >= 0)
@@ -1339,6 +1354,7 @@ namespace FenBrowser.Tooling
             public string ExcludeFile { get; set; }
             public int Processes { get; set; }
             public int MaxRestarts { get; set; }
+            public bool RestartOnUnexpected { get; set; }
             public int TimeoutSeconds { get; set; }
             public int StallTimeoutSeconds { get; set; }
             public int TotalChunks { get; set; }
