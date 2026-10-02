@@ -6755,17 +6755,16 @@ pre {{
 
         public Task<object> GetElementPropertyAsync(string elementId, string name)
         {
-            // In-memory fast path: when the element is registered in our map and the
-            // property maps directly to a DOM attribute we can resolve it synchronously
-            // without booting the script engine or running the stale-element check.
-            if (!string.IsNullOrEmpty(elementId) && !string.IsNullOrEmpty(name) &&
-                _elementMap.TryGetValue(elementId, out var registered))
+            // WebDriver "Get Element Property" (§12.4.3) reads the IDL property, not the
+            // content attribute. A value-mode control's value is internal state (HTML
+            // 4.10.5.4 dirty value), so it is answered here without booting script;
+            // every other property goes through the element's real getter.
+            if (!string.IsNullOrEmpty(elementId) &&
+                string.Equals(name, "value", StringComparison.Ordinal) &&
+                _elementMap.TryGetValue(elementId, out var registered) &&
+                FormControlValue.UsesDirtyValueState(registered))
             {
-                if (registered.HasAttribute(name))
-                {
-                    return Task.FromResult<object>(registered.GetAttribute(name));
-                }
-                return Task.FromResult<object>(null);
+                return Task.FromResult<object>(FormControlValue.Read(registered));
             }
 
             _ = ResolveElementInActiveContextOrThrow(elementId);
@@ -11789,6 +11788,14 @@ pre {{
             }
         }
 
+        /// <summary>
+        /// The text an edited control holds: its value as HTML defines it (the dirty value
+        /// once the user or a script changed it, else the default value). Typing used to
+        /// write the value content attribute while script assignments set the dirty value,
+        /// so after a page set input.value once, what the user typed never reached
+        /// input.value - accounts.google.com read back an empty or stale email on Next -
+        /// and a value set by script was never painted.
+        /// </summary>
         private static string GetTextEntryValue(Element element)
         {
             if (element == null)
@@ -11796,19 +11803,7 @@ pre {{
                 return string.Empty;
             }
 
-            var tag = element.NodeName?.ToLowerInvariant();
-            if (tag == "textarea")
-            {
-                var currentValue = element.GetAttribute("value");
-                if (currentValue != null)
-                {
-                    return currentValue;
-                }
-
-                return element.TextContent ?? string.Empty;
-            }
-
-            return element.GetAttribute("value") ?? string.Empty;
+            return FormControlValue.Read(element);
         }
 
         private static void SetTextEntryValue(Element element, string value)
@@ -11819,12 +11814,16 @@ pre {{
             }
 
             var normalized = value ?? string.Empty;
-            element.SetAttribute("value", normalized);
-
-            if (string.Equals(element.NodeName, "TEXTAREA", StringComparison.OrdinalIgnoreCase))
+            if (FormControlValue.UsesDirtyValueState(element))
             {
-                element.TextContent = normalized;
+                // A user edit raises the dirty value flag (HTML 4.10.5.4); the editor keeps
+                // its own caret, so this does not collapse the selection as a script
+                // assignment does.
+                ElementStateManager.Instance.SetValue(element, normalized);
+                return;
             }
+
+            element.SetAttribute("value", normalized);
         }
 
         internal static List<KeyValuePair<string, string>> CollectFormSubmissionEntries(Element form, Element submitter)

@@ -4949,11 +4949,14 @@ namespace FenBrowser.FenEngine.Rendering
              string[] validTypes = { "text", "search", "password", "email", "url", "tel", "submit", "button", "reset" };
              if (!validTypes.Contains(type)) return null;
 
-             string value = elem.GetAttribute("value");
+             // The control's value (HTML's dirty value when a script or the user set it),
+             // not the content attribute, which only holds the initial value.
+             bool usesDirtyValue = FormControlValue.UsesDirtyValueState(elem);
+             string value = usesDirtyValue ? FormControlValue.Read(elem) : elem.GetAttribute("value");
              string placeholder = elem.GetAttribute("placeholder");
              
              // Textarea text extraction (from children)
-             if (type == "text" && elem.TagName?.ToUpperInvariant() == "TEXTAREA" && string.IsNullOrEmpty(value))
+             if (type == "text" && elem.TagName?.ToUpperInvariant() == "TEXTAREA" && string.IsNullOrEmpty(value) && !usesDirtyValue)
              {
                  if (elem.Children != null)
                  {
