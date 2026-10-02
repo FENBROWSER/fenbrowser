@@ -43,6 +43,29 @@ public sealed class IncrementalLayoutCacheTests
     }
 
     [Fact]
+    public void ComputeLayout_ReusesCachedResult_WithAHiddenIframe()
+    {
+        // A display:none iframe never gets a box. Taking its missing rect for a frame
+        // not laid out yet threw the cached result away on every request (YouTube keeps
+        // one on every page), so each geometry read cost a full layout.
+        var root = new Element("div");
+        var frame = new Element("iframe");
+        root.AppendChild(frame);
+        var styles = new Dictionary<Node, CssComputed>
+        {
+            [root] = new CssComputed { Display = "block", Width = 100, Height = 50 },
+            [frame] = new CssComputed { Display = "none" }
+        };
+
+        var engine = new LayoutEngine(styles, 800, 600);
+        var first = engine.ComputeLayout(root, 0, 0, 800);
+        var second = engine.ComputeLayout(root, 0, 0, 800);
+
+        Assert.NotNull(first);
+        Assert.Same(first, second);
+    }
+
+    [Fact]
     public void ComputeLayout_InvalidatesCache_WhenViewportChanges()
     {
         var root = new Element("div");

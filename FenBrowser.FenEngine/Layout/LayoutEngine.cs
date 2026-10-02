@@ -109,7 +109,7 @@ namespace FenBrowser.FenEngine.Layout
                                    Math.Abs(availableHeight - _cachedViewportHeight) > 0.5f;
 
             bool hasUnmaterializedNestedBrowsingContext =
-                HasUnmaterializedNestedBrowsingContext(layoutRoot, _cachedResult);
+                HasUnmaterializedNestedBrowsingContext(layoutRoot, _cachedResult, _context.Styles);
 
             if (!viewportChanged &&
                 ReferenceEquals(layoutRoot, _cachedLayoutRoot) &&
@@ -362,7 +362,8 @@ namespace FenBrowser.FenEngine.Layout
 
         private static bool HasUnmaterializedNestedBrowsingContext(
             Node layoutRoot,
-            LayoutResult cachedResult)
+            LayoutResult cachedResult,
+            IReadOnlyDictionary<Node, CssComputed> styles)
         {
             if (layoutRoot == null || cachedResult == null)
             {
@@ -371,6 +372,15 @@ namespace FenBrowser.FenEngine.Layout
 
             foreach (var frameElement in EnumerateFrameElements(layoutRoot))
             {
+                // A frame that is not rendered never gets a box, so a missing rect says
+                // nothing about the cached result. YouTube keeps a display:none
+                // about:blank iframe on every page; counting it as unmaterialized made
+                // every layout request a full pass, the cached result never reused.
+                if (IsInDisplayNoneSubtree(frameElement, styles))
+                {
+                    continue;
+                }
+
                 // A frame may be inserted between style/layout snapshots before its
                 // child Document is attached. Do not reuse a result that predates the
                 // atomic iframe host box: paint and input both need that geometry.
@@ -382,6 +392,30 @@ namespace FenBrowser.FenEngine.Layout
                 var frameDocument = frameElement.ChildNodes?.OfType<Document>().FirstOrDefault();
                 var frameRoot = frameDocument?.DocumentElement;
                 if (frameRoot != null && !cachedResult.TryGetElementRect(frameRoot, out _))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// True when the element or an ancestor (across shadow boundaries) computes to
+        /// display:none, so it generates no box (CSS Display 3, 2.5).
+        /// </summary>
+        private static bool IsInDisplayNoneSubtree(Element element, IReadOnlyDictionary<Node, CssComputed> styles)
+        {
+            if (styles == null)
+            {
+                return false;
+            }
+
+            for (Node node = element; node != null; node = node is ShadowRoot shadow ? shadow.Host : node.ParentNode)
+            {
+                if (node is Element current &&
+                    styles.TryGetValue(current, out var style) &&
+                    string.Equals(style?.Display, "none", StringComparison.OrdinalIgnoreCase))
                 {
                     return true;
                 }
