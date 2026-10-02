@@ -280,8 +280,23 @@ namespace FenBrowser.Host
 
                 var token = Environment.GetEnvironmentVariable("FEN_REMOTE_DEBUG_TOKEN");
                 _remoteDebugServer = new RemoteDebugServer(_devToolsServer, port, bindAddress, token);
-                _remoteDebugServer.Start();
-                EngineLogBridge.Warn($"[ChromeManager] RemoteDebug ENABLED on {bindAddress}:{port}.", LogCategory.General);
+                try
+                {
+                    _remoteDebugServer.Start();
+                    EngineLogBridge.Warn($"[ChromeManager] RemoteDebug ENABLED on {bindAddress}:{port}.", LogCategory.General);
+                }
+                catch (System.Net.Sockets.SocketException ex)
+                {
+                    // Remote debugging is an opt-in diagnostic; a port another program
+                    // holds (a Chromium browser started with --remote-debugging-port=9222
+                    // is common) must not take the browser down with it. Run without it.
+                    try { _remoteDebugServer.Dispose(); } catch (Exception disposeError) { EngineLogBridge.Debug($"[ChromeManager] RemoteDebug dispose after failed start: {disposeError.Message}", LogCategory.General); }
+                    _remoteDebugServer = null;
+                    EngineLogBridge.Warn(
+                        $"[ChromeManager] RemoteDebug could not listen on {bindAddress}:{port} ({ex.SocketErrorCode}); " +
+                        "continuing without it. Set FEN_REMOTE_DEBUG_PORT to a free port.",
+                        LogCategory.General);
+                }
             }
             else
             {
