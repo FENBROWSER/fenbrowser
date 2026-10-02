@@ -5,6 +5,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>annotations</Nullable>
+    <!--
+      The same collector as FenBrowser.Host. debug-site and the other commands run the
+      browser engine in this process, and under the default workstation collector a
+      YouTube load spent most of its script-thread samples waiting for collections the
+      Host never sees, so timings taken here did not describe the browser.
+    -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
