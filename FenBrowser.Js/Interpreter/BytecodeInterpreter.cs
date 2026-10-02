@@ -18888,9 +18888,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get buffer", (thisValue, _2) =>
             {
                 var dv = RequireDataView(thisValue);
-                if (dv.Buffer.OwnerHandle is not { } bufferHandle)
-                    bufferHandle = _heap.AllocateObject(dv.Buffer, AllocationSite.Current());
-                return JsValue.FromObject(bufferHandle);
+                return JsValue.FromObject(EnsureViewedBufferHandle(dv));
             }, length: 0), AllocationSite.Current())), JsValue.Undefined, Enumerable: false, Configurable: true));
 
         prototype.DefineOwnProperty("byteLength", JsPropertyDescriptor.Accessor(
@@ -19565,6 +19563,34 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         };
     }
 
+    // A view made from a length owns a backing buffer that gets its heap cell only
+    // when script first sees it (the buffer getter, or subarray sharing it). It has no
+    // prototype yet either; it gets %ArrayBuffer.prototype% then, so byteLength, slice
+    // and transfer work whichever path exposed it first. The view traces the new cell
+    // from then on, so the edge needs the write barrier like any other store: an old
+    // view is not rescanned by a minor collection, and the buffer would be swept while
+    // the view still names it.
+    private ObjectHandle EnsureViewedBufferHandle(TypedArrayView view)
+    {
+        if (view.Buffer.OwnerHandle is { } existing)
+        {
+            return existing;
+        }
+
+        if (view.Buffer.PrototypeHandle is null)
+        {
+            view.Buffer.SetPrototype(EnsureArrayBufferPrototype());
+        }
+
+        var bufferHandle = _heap.AllocateObject(view.Buffer, AllocationSite.Current());
+        if (view.OwnerHandle is { } viewHandle)
+        {
+            _heap.WriteBarrier(viewHandle, bufferHandle);
+        }
+
+        return bufferHandle;
+    }
+
     private void InstallTypedArrayPrototypeMethods(ObjectHandle protoHandle, JsObject proto, string name, TypedArrayElementType elementType, int elementSize)
     {
         _ = name;
@@ -19577,16 +19603,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 (thisValue, _2) =>
                 {
                     var typed = RequireTypedArray(thisValue);
-                    if (typed.Buffer.OwnerHandle is not { } bufferHandle)
-                    {
-                        // The backing buffer created during typed-array construction
-                        // has no prototype yet; give it %ArrayBuffer.prototype% the
-                        // first time it is exposed so byteLength/slice/transfer work.
-                        if (typed.Buffer.PrototypeHandle is null)
-                            typed.Buffer.SetPrototype(EnsureArrayBufferPrototype());
-                        bufferHandle = _heap.AllocateObject(typed.Buffer, AllocationSite.Current());
-                    }
-                    return JsValue.FromObject(bufferHandle);
+                    return JsValue.FromObject(EnsureViewedBufferHandle(typed));
                 },
                 length: 0), AllocationSite.Current())),
             JsValue.Undefined, Enumerable: false, Configurable: true));
@@ -20052,9 +20069,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var byteOffset = self.ByteOffset + begin * self.ElementSize;
             // 23.2.3.30 step 13: the subarray shares the source's buffer and is
             // allocated through TypedArraySpeciesCreate(O, « buffer, byteOffset, newLen »).
-            var bufferValue = self.Buffer.OwnerHandle is { } bufHandle
-                ? JsValue.FromObject(bufHandle)
-                : JsValue.FromObject(_heap.AllocateObject(self.Buffer, AllocationSite.Current()));
+            var bufferValue = JsValue.FromObject(EnsureViewedBufferHandle(self));
             return TypedArraySpeciesCreate(
                 thisValue, self, elementSize, protoHandle,
                 new[] { bufferValue, JsValue.FromNumber(byteOffset), JsValue.FromNumber(newLen) }, out _);
