@@ -263,6 +263,17 @@ namespace FenBrowser.FenEngine.Rendering
                 el?.MarkDirty(InvalidationKind.Style);
             }
 
+            // Sibling combinators reach past the element whose state changed: Material text
+            // fields float their label with `input:focus ~ .label`, and accounts.google.com's
+            // label stayed over the typed email because nothing after the input was restyled.
+            foreach (var el in toUpdate)
+            {
+                for (var sibling = el?.NextElementSibling; sibling != null; sibling = sibling.NextElementSibling)
+                {
+                    sibling.MarkDirty(InvalidationKind.Style);
+                }
+            }
+
             if (toUpdate.Count > 0)
                 OnStateChanged?.Invoke(element);
         }
