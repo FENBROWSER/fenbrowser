@@ -17457,7 +17457,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         void Deliver(int status, string statusText, string text, string url, HttpResponseMessage response, byte[] bytes, HttpRequestMessage request)
         {
-            QueueOnDeliveryTail(() =>
+            QueueNetworkingTask(() =>
             {
                 try
                 {
@@ -22819,6 +22819,40 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     /// pointer events) in the realm. This mirrors the QueueMessagePort
     /// delivery pattern.
     /// </summary>
+    /// <summary>
+    /// Queues a task on the networking task source. HTML 8.1.7.3 lets the event loop
+    /// choose which task queue to service next; a response that has arrived is taken
+    /// ahead of a backlog of timer and observer callbacks, as browsers do, so a
+    /// page that keeps the script thread busy does not leave fetch() unresolved until
+    /// its own request timeout aborts it.
+    /// </summary>
+    private void QueueNetworkingTask(Action body, string failureLogPrefix)
+    {
+        var sessionGeneration = _fenJsSessionGeneration;
+        _ = Task.Run(() =>
+        {
+            if (sessionGeneration != _fenJsSessionGeneration)
+            {
+                return;
+            }
+
+            try
+            {
+                RunFenJsWithLargeStack<object>(() =>
+                {
+                    body();
+                    return null;
+                }, waitForWorkerMs: -1, instructionBudget: ResolveFenJsTaskInstructionBudget(), prioritize: true);
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] {failureLogPrefix}: {ex.Message}",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+            }
+        });
+    }
+
     private void QueueOnDeliveryTail(Action body, string failureLogPrefix)
     {
         var sessionGeneration = _fenJsSessionGeneration;
