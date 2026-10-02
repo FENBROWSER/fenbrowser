@@ -15538,6 +15538,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 globalThis.CustomElementRegistry = function CustomElementRegistry() {
                     this._registry = Object.create(null);
                     this._whenDefined = Object.create(null);
+                    this._customizedBuiltIns = 0;
                 };
                 function normalizeCustomElementName(name) {
                     return String(name || '').toLowerCase();
@@ -16001,14 +16002,44 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 };
                 function upgradeCustomElementTree(root, registry, filterName) {
                     if (!root || !registry) return;
-                    var names = filterName ? [filterName] : Object.keys(registry._registry);
-                    for (var i = 0; i < names.length; i++) {
-                        var name = names[i];
-                        var entry = registry._registry[name];
-                        if (!entry) continue;
-                        var matches = findCustomElementMatches(root, name, entry.options);
+                    if (filterName) {
+                        var definedEntry = registry._registry[filterName];
+                        if (!definedEntry) return;
+                        var matches = findCustomElementMatches(root, filterName, definedEntry.options);
                         for (var j = 0; j < matches.length; j++) {
-                            upgradeCustomElement(matches[j], name, entry);
+                            upgradeCustomElement(matches[j], filterName, definedEntry);
+                        }
+                        return;
+                    }
+                    // HTML 4.13.5 "try to upgrade an element", for each inclusive descendant
+                    // in tree order: one walk, and a definition lookup by the element's own
+                    // local name (or is value, for a customized built-in). Searching the
+                    // subtree once per defined name made every insertion cost
+                    // definitions x subtree - YouTube defines hundreds of elements and
+                    // Polymer inserts constantly, so single script tasks ran for a minute.
+                    var definitions = registry._registry;
+                    var checkIs = registry._customizedBuiltIns > 0;
+                    var candidates = root.nodeType === Node.ELEMENT_NODE ? [root] : [];
+                    var descendants = typeof root.querySelectorAll === 'function' ? root.querySelectorAll('*') : null;
+                    for (var d = 0; descendants && d < descendants.length; d++) candidates.push(descendants[d]);
+                    for (var c = 0; c < candidates.length; c++) {
+                        var element = candidates[c];
+                        if (typeof element.tagName !== 'string') continue;
+                        var localName = element.tagName.toLowerCase();
+                        if (localName.indexOf('-') > 0) {
+                            var autonomous = definitions[localName];
+                            if (autonomous && !(autonomous.options && autonomous.options.extends)) {
+                                upgradeCustomElement(element, localName, autonomous);
+                            }
+                            continue;
+                        }
+                        if (!checkIs) continue;
+                        var isValue = element.getAttribute('is');
+                        if (!isValue) continue;
+                        var customized = definitions[isValue];
+                        if (customized && customized.options && customized.options.extends &&
+                            String(customized.options.extends).toLowerCase() === localName) {
+                            upgradeCustomElement(element, isValue, customized);
                         }
                     }
                 }
@@ -16031,6 +16062,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         });
                     } catch (_constructorMarkerError) {}
                     this._registry[name] = { constructor: constructor, options: options };
+                    if (options && options.extends) this._customizedBuiltIns++;
                     if (typeof globalThis.__fenCustomElementDefined === 'function') globalThis.__fenCustomElementDefined(name);
                     if (typeof document !== 'undefined') {
                         upgradeCustomElementTree(document, this, name);
