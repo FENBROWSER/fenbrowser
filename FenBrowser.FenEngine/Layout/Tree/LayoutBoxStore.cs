@@ -36,6 +36,25 @@ namespace FenBrowser.FenEngine.Layout.Tree
         private List<SubtreeLayoutSnapshot>[] _layoutSnapshots;
         private const int MaxSnapshotsPerBox = 4;
 
+        [ThreadStatic] private static long _snapshotsTaken;
+        [ThreadStatic] private static long _snapshotBoxesCloned;
+        [ThreadStatic] private static long _snapshotRestores;
+
+        /// <summary>
+        /// Subtree snapshots taken, boxes cloned into them and snapshots restored since
+        /// <see cref="ResetSnapshotCounters"/>. Cloning is the price of memoizing more
+        /// than one constraint state per box; restores are what it buys.
+        /// </summary>
+        internal static (long Taken, long BoxesCloned, long Restores) SnapshotCounters =>
+            (_snapshotsTaken, _snapshotBoxesCloned, _snapshotRestores);
+
+        internal static void ResetSnapshotCounters()
+        {
+            _snapshotsTaken = 0;
+            _snapshotBoxesCloned = 0;
+            _snapshotRestores = 0;
+        }
+
         /// <summary>
         /// The geometry a subtree had after being laid out under one constraint set.
         /// Nested flex/inline-block measure passes lay the same subtree out under a
@@ -51,7 +70,18 @@ namespace FenBrowser.FenEngine.Layout.Tree
             public BoxModel[] Geometries;
             public LayoutState[] CachedStates;
             public bool[] HasCached;
+            public bool[] HasGeometry;
         }
+
+        // Snapshots are recycled rather than reallocated. A pass takes thousands of them
+        // and each clones a whole subtree's geometry; allocating those clones afresh was
+        // most of the pass's garbage. An evicted snapshot, and every snapshot left when
+        // the store is reset for the next pass, goes back to a pool keyed by subtree size,
+        // which the same boxes ask for again. The pool keeps a bounded number of boxes.
+        private const int MaxPooledSnapshotBoxes = 131072;
+        private readonly Dictionary<int, Stack<SubtreeLayoutSnapshot>> _snapshotPool = new();
+        private int _pooledSnapshotBoxes;
+        private readonly List<int> _scratchSubtreeIds = new();
 
         private int _count;
         private int _generation = 1;
@@ -127,6 +157,19 @@ namespace FenBrowser.FenEngine.Layout.Tree
             Array.Clear(_styles, 0, _count);
             Array.Clear(_cachedLayoutStates, 0, _count);
             Array.Clear(_hasCachedLayout, 0, _count);
+            for (int i = 0; i < _count; i++)
+            {
+                var snapshots = _layoutSnapshots[i];
+                if (snapshots == null)
+                {
+                    continue;
+                }
+
+                for (int k = 0; k < snapshots.Count; k++)
+                {
+                    ReturnSnapshot(snapshots[k]);
+                }
+            }
             Array.Clear(_layoutSnapshots, 0, _count);
             Array.Clear(_wrappers, 0, _count);
 
@@ -365,29 +408,77 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 list = _layoutSnapshots[id] = new List<SubtreeLayoutSnapshot>(MaxSnapshotsPerBox);
             }
 
-            var ids = new List<int>();
-            CollectSubtreeIds(id, ids);
-            var snapshot = new SubtreeLayoutSnapshot
+            if (list.Count >= MaxSnapshotsPerBox)
             {
-                State = state,
-                Ids = ids.ToArray(),
-                Geometries = new BoxModel[ids.Count],
-                CachedStates = new LayoutState[ids.Count],
-                HasCached = new bool[ids.Count]
-            };
+                // Evict first, so the slot it frees can be the one reused below.
+                var evicted = list[0];
+                list.RemoveAt(0);
+                ReturnSnapshot(evicted);
+            }
+
+            var ids = _scratchSubtreeIds;
+            ids.Clear();
+            CollectSubtreeIds(id, ids);
+            _snapshotsTaken++;
+            _snapshotBoxesCloned += ids.Count;
+            var snapshot = RentSnapshot(ids.Count);
+            snapshot.State = state;
             for (int i = 0; i < ids.Count; i++)
             {
                 int d = ids[i];
-                snapshot.Geometries[i] = _geometries[d]?.ShallowClone();
+                snapshot.Ids[i] = d;
+                if (_geometries[d] is { } geometry)
+                {
+                    (snapshot.Geometries[i] ??= new BoxModel()).CopyFrom(geometry);
+                    snapshot.HasGeometry[i] = true;
+                }
+                else
+                {
+                    snapshot.HasGeometry[i] = false;
+                }
                 snapshot.CachedStates[i] = _cachedLayoutStates[d];
                 snapshot.HasCached[i] = _hasCachedLayout[d];
             }
 
-            if (list.Count >= MaxSnapshotsPerBox)
-            {
-                list.RemoveAt(0);
-            }
             list.Add(snapshot);
+        }
+
+        private SubtreeLayoutSnapshot RentSnapshot(int size)
+        {
+            if (_snapshotPool.TryGetValue(size, out var pooled) && pooled.Count > 0)
+            {
+                _pooledSnapshotBoxes -= size;
+                return pooled.Pop();
+            }
+
+            return new SubtreeLayoutSnapshot
+            {
+                Ids = new int[size],
+                Geometries = new BoxModel[size],
+                CachedStates = new LayoutState[size],
+                HasCached = new bool[size],
+                HasGeometry = new bool[size]
+            };
+        }
+
+        private void ReturnSnapshot(SubtreeLayoutSnapshot snapshot)
+        {
+            int size = snapshot.Ids.Length;
+            if (_pooledSnapshotBoxes + size > MaxPooledSnapshotBoxes)
+            {
+                return;
+            }
+
+            // Drop what the states reference (the pass's deadline) while it waits.
+            snapshot.State = default;
+            Array.Clear(snapshot.CachedStates, 0, size);
+            if (!_snapshotPool.TryGetValue(size, out var pooled))
+            {
+                _snapshotPool[size] = pooled = new Stack<SubtreeLayoutSnapshot>();
+            }
+
+            pooled.Push(snapshot);
+            _pooledSnapshotBoxes += size;
         }
 
         /// <summary>
@@ -410,6 +501,12 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     continue;
                 }
 
+                // Take it out before making room for the geometry being replaced:
+                // keeping that one may evict the oldest snapshot, which was this one
+                // whenever it sat first in a full list (and the removal by index below
+                // then dropped a different snapshot).
+                list.RemoveAt(i);
+
                 // Keep the geometry being replaced so the alternation stays cheap.
                 SnapshotCurrentLayout(id);
 
@@ -422,21 +519,27 @@ namespace FenBrowser.FenEngine.Layout.Tree
                         continue;
                     }
 
-                    var saved = snapshot.Geometries[k];
-                    if (saved != null)
+                    if (snapshot.HasGeometry[k])
                     {
                         if (_geometries[d] == null)
                         {
                             _geometries[d] = new BoxModel();
                         }
-                        _geometries[d].CopyFrom(saved);
+                        _geometries[d].CopyFrom(snapshot.Geometries[k]);
                     }
                     _cachedLayoutStates[d] = snapshot.CachedStates[k];
                     _hasCachedLayout[d] = snapshot.HasCached[k];
                 }
 
+                _snapshotRestores++;
                 // Most recently used goes last.
-                list.RemoveAt(i);
+                list = _layoutSnapshots[id];
+                if (list.Count >= MaxSnapshotsPerBox)
+                {
+                    var evicted = list[0];
+                    list.RemoveAt(0);
+                    ReturnSnapshot(evicted);
+                }
                 list.Add(snapshot);
                 return true;
             }

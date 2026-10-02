@@ -165,6 +165,7 @@ namespace FenBrowser.FenEngine.Layout
                 FenBrowser.FenEngine.Layout.Contexts.FormattingContext.ResetPassCounters();
                 TextLayoutComputer.ResetCacheCounters();
                 FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ResetShiftCounters();
+                FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore.ResetSnapshotCounters();
                 try
                 {
                     context.Layout(rootBox, initialState);
@@ -179,10 +180,12 @@ namespace FenBrowser.FenEngine.Layout
                         TextLayoutComputer.CacheCounters;
                     var (shiftRoots, shiftNodes) =
                         FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ShiftCounters;
+                    var (snapshots, snapshotBoxes, restores) =
+                        FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore.SnapshotCounters;
                     FenBrowser.Core.EngineLogCompat.Debug(
                         $"[PERF-LAYOUT] Formatting-context pass: calls={layoutCalls} cacheHits={layoutCacheHits} " +
                         $"textHits={textHits} textMisses={textMisses} textEvictions={textEvictions} textEntries={textEntries} " +
-                        $"shiftRoots={shiftRoots} shiftNodes={shiftNodes}",
+                        $"shiftRoots={shiftRoots} shiftNodes={shiftNodes} snapshots={snapshots} snapshotBoxes={snapshotBoxes} restores={restores}",
                         FenBrowser.Core.Logging.LogCategory.Layout);
                 }
                 if (LayoutDebugLogEnabled)
