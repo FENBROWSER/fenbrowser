@@ -84,8 +84,11 @@ public sealed class IncrementalLayoutCacheTests
     }
 
     [Fact]
-    public void ComputeLayout_InvalidatesCache_WhenStyleIsDirty()
+    public void ComputeLayout_KeepsCache_UntilARestyleMarksLayout()
     {
+        // A style mark alone says a restyle is pending, not that geometry changed: the
+        // restyle marks layout when it changes something boxes depend on. Laying out
+        // again before it runs would only reuse the same, stale styles.
         var root = new Element("div");
         root.AppendChild(new Text("hello"));
         var styles = new Dictionary<Node, CssComputed>
@@ -97,11 +100,13 @@ public sealed class IncrementalLayoutCacheTests
 
         var first = engine.ComputeLayout(root, 0, 0, 800);
 
-        // Mark style dirty → bypasses cache
         root.MarkDirty(FenBrowser.Core.Dom.V2.InvalidationKind.Style);
-        var second = engine.ComputeLayout(root, 0, 0, 800);
-        Assert.NotNull(second);
-        Assert.NotSame(first, second);
+        Assert.Same(first, engine.ComputeLayout(root, 0, 0, 800));
+
+        root.MarkDirty(FenBrowser.Core.Dom.V2.InvalidationKind.Layout);
+        var relaid = engine.ComputeLayout(root, 0, 0, 800);
+        Assert.NotNull(relaid);
+        Assert.NotSame(first, relaid);
     }
 
     [Fact]

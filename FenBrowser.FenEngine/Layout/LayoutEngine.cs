@@ -100,6 +100,11 @@ namespace FenBrowser.FenEngine.Layout
             // context layout pass when the DOM root and viewport are unchanged.
             // After a full layout pass ClearSubtreeDirtyFlags clears dirty flags,
             // so paint-only frames return the cached result.
+            // The cache is keyed on the size asked for: the pass below clamps it (a 0
+            // height becomes 1 for a subtree layout), and comparing the next request with
+            // the clamped value made an identical request look like a viewport change.
+            float requestedWidth = availableWidth;
+            float requestedHeight = availableHeight;
             bool viewportChanged = Math.Abs(availableWidth - _cachedViewportWidth) > 0.5f ||
                                    Math.Abs(availableHeight - _cachedViewportHeight) > 0.5f;
 
@@ -270,8 +275,8 @@ namespace FenBrowser.FenEngine.Layout
             // Must populate the cache BEFORE clearing dirty flags so a
             // throw in ClearSubtreeDirtyFlags does not leave the cache empty.
             _cachedLayoutRoot = layoutRoot;
-            _cachedViewportWidth = availableWidth;
-            _cachedViewportHeight = availableHeight;
+            _cachedViewportWidth = requestedWidth;
+            _cachedViewportHeight = requestedHeight;
             _cachedResult = result;
 
             // Layout owns layout invalidation. Style invalidation is consumed only
