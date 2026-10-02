@@ -1463,8 +1463,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     public double MicrotaskMilliseconds =>
         _microtaskTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
+    // HTML 8.1.7.3 "perform a microtask checkpoint" step 1: a checkpoint that starts while
+    // one is already running returns at once.
+    private bool _performingMicrotaskCheckpoint;
+
+    // HTML 8.1.4.4 "clean up after running script": the microtask checkpoint runs only once
+    // the JavaScript execution context stack is empty. An evaluation the engine nests inside
+    // running script - a host getter compiling a prototype helper the first time a page
+    // reads el.classList - used to drain the page's whole queue in the middle of that
+    // script, running promise reactions and observer callbacks re-entrantly; on YouTube the
+    // nesting compounded until the heap reached 6 GB.
+    private bool IsScriptOnStack => (_interp2?.Depth ?? 0) > 0 || _callDepth > 0;
+
     private void DrainPendingMicrotasks(Action<JsValue, Exception>? onQueueMicrotaskFailure = null)
     {
+        if (_performingMicrotaskCheckpoint || IsScriptOnStack)
+        {
+            return;
+        }
+
+        _performingMicrotaskCheckpoint = true;
         var drainStart = System.Diagnostics.Stopwatch.GetTimestamp();
         var traceContext = BeginMicrotaskTraceCheckpoint();
         Exception? traceFailure = null;
@@ -1479,6 +1497,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         finally
         {
+            _performingMicrotaskCheckpoint = false;
             EndMicrotaskTraceCheckpoint(traceContext, traceFailure);
             _microtaskTicks += System.Diagnostics.Stopwatch.GetTimestamp() - drainStart;
         }
