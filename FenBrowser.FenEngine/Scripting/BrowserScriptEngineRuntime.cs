@@ -15758,8 +15758,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                     return parts.join(': ');
                 }
+                // HTML "invoke custom element reactions": an exception a reaction throws
+                // is caught and reported (§8.1.4.6) - an ErrorEvent at the window, then the
+                // console - so onerror and error listeners hear about it. A console line
+                // alone hid YouTube's ytd-app failing to stamp its template.
                 function reportCustomElementReactionError(name, phase, error) {
                     try {
+                        if (typeof globalThis.__fenReportException === 'function') {
+                            globalThis.__fenReportException(error);
+                            return;
+                        }
                         if (globalThis.console && typeof globalThis.console.error === 'function') {
                             var message = describeCustomElementThrownValue(error, 0);
                             globalThis.console.error("Custom element '" + name + "' " + phase + " failed: " + message);
