@@ -720,14 +720,24 @@ namespace FenBrowser.Tooling
                     .ToArray();
             }
 
+            // A probe waits for the page's script thread, which a busy page can hold for
+            // minutes; bound each one so the report is always written.
+            var probeTimeout = TimeSpan.FromMilliseconds(
+                int.TryParse(Environment.GetEnvironmentVariable("FEN_DEBUG_SITE_PROBE_TIMEOUT_MS"), out var probeTimeoutMs) && probeTimeoutMs > 0
+                    ? probeTimeoutMs
+                    : 30000);
             var probeResults = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var probe in probes)
             {
                 string value;
                 try
                 {
-                    var result = await host.ExecuteScriptAsync(probe).ConfigureAwait(false);
+                    var result = await host.ExecuteScriptAsync(probe).WaitAsync(probeTimeout).ConfigureAwait(false);
                     value = result?.ToString() ?? "null";
+                }
+                catch (TimeoutException)
+                {
+                    value = $"<timeout after {probeTimeout.TotalMilliseconds:0}ms: script thread busy>";
                 }
                 catch (Exception ex)
                 {
