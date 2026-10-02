@@ -186,7 +186,9 @@ public sealed class BrowserFormInteractionAcceptanceTests : IDisposable
             var rect = await browser.GetElementRectAsync(queryId);
 
             Assert.True(rect.Width > 0 && rect.Height > 0);
-            Assert.InRange(rect.X, 314, 316);
+            // The form's 296px margin plus .leading, which `flex: 0 0 50px` freezes at its
+            // 50px basis (CSS Flexbox 1 §9.7) rather than the width of its "+".
+            Assert.InRange(rect.X, 345, 347);
             await browser.ClickElementAsync(queryId);
             Assert.Equal(queryId, await browser.GetActiveElementAsync());
         }

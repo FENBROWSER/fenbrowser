@@ -357,6 +357,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float totalWeightedShrink = 0;
             var flexContentBases = new Dictionary<LayoutBox, float>();
             var rowFlexShrinkFloors = new Dictionary<LayoutBox, float>();
+            var definiteBasisItems = new HashSet<LayoutBox>();
+            var flexedItems = new HashSet<LayoutBox>();
 
             foreach (var item in items)
             {
@@ -379,6 +381,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (rawBasis.HasValue && !double.IsNaN(rawBasis.Value) && rawBasis.Value >= 0)
                 {
                     contentBasis = (float)rawBasis.Value;
+                    definiteBasisItems.Add(item);
                     // flex-basis sizes the box box-sizing names, like width does.
                     if (string.Equals(itemStyle?.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
                     {
@@ -501,6 +504,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     if (LayoutValidator.IsSafeDivision(totalWeightedShrink) && weight > 0)
                     {
+                        flexedItems.Add(item);
                         float ratio = LayoutValidator.SafeDivide(weight, totalWeightedShrink, 0f, "FlexShrink ratio");
                         float shrinkAmount = overflow * ratio;
 
@@ -543,6 +547,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     float grow = (float)(ResolveFlexGrow(item.ComputedStyle) ?? 0);
                     if (grow > 0)
                     {
+                        flexedItems.Add(item);
                         float share = remainingSpace * LayoutValidator.SafeDivide(grow, totalFlexGrow, 0f, "FlexGrow ratio");
                         float contentBasis = flexContentBases.TryGetValue(item, out var cb) ? cb : 0f;
 
@@ -574,6 +579,26 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 totalMainSize = containerMainSize;
             }
             
+            // CSS Flexbox 1 §9.7 steps 1-4: an item that takes no share of the free space is
+            // frozen at its hypothetical main size - its flex base size clamped by its min
+            // and max main size - not at the content size it was probed at. Only growing or
+            // shrinking items were re-laid out above, so an item with flex-grow:0 and a
+            // definite basis kept its content width: YouTube's masthead #center
+            // (flex: 0 1 732px) took its search box's content width and pushed the sign-in
+            // button out of the window.
+            if (!resolvedPerLine)
+            {
+                foreach (var item in items)
+                {
+                    if (flexedItems.Contains(item) || !definiteBasisItems.Contains(item))
+                    {
+                        continue;
+                    }
+
+                    FreezeAtHypotheticalMainSize(item, flexContentBases[item], isRow, containerMainSize, rowFlexShrinkFloors, state);
+                }
+            }
+
             // Guard: flex-grow items should not collapse to 0 on the main axis.
             if (isRow && containerMainSize > 0)
             {
@@ -2305,6 +2330,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// flex basis. An explicit min-width replaces it. Returned as a content-box width.
         /// </summary>
         private static float ResolveAutomaticMinimumContentWidth(LayoutBox item, float basis, float viewportWidth)
+            => ResolveMinimumMainWidth(item, viewportWidth, basis);
+
+        /// <summary>
+        /// The used min-width of a row item as a content-box width: an explicit min-width, or
+        /// for min-width:auto the content-based minimum size of CSS Flexbox §4.5 - the
+        /// min-content width, capped by the specified size suggestion (a definite width) and,
+        /// when <paramref name="cap"/> is given, by that too.
+        /// </summary>
+        private static float ResolveMinimumMainWidth(LayoutBox item, float viewportWidth, float cap = float.PositiveInfinity)
         {
             var style = item?.ComputedStyle;
             if (style == null)
@@ -2347,7 +2381,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 contentMin += ResolveColumnGap(style) * Math.Max(0, CountInFlow(item) - 1);
             }
 
-            return Math.Min(contentMin, basis);
+            if (style.Width is double specifiedWidth && specifiedWidth >= 0 && !style.WidthPercent.HasValue)
+            {
+                contentMin = Math.Min(contentMin, ContentSizeFromSpecified(style, (float)specifiedWidth, horizontal: true));
+            }
+
+            return Math.Min(contentMin, cap);
         }
 
         private static float MeasureMinContentOuterWidth(LayoutBox box, float viewportWidth)
@@ -2728,6 +2767,126 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 ? padding.Left + padding.Right + border.Left + border.Right
                 : padding.Top + padding.Bottom + border.Top + border.Bottom;
             return contentSize + chrome;
+        }
+
+        /// <summary>
+        /// Re-lays an inflexible item out at its hypothetical main size (CSS Flexbox 1 §9.2
+        /// step 3E): the definite flex base size clamped by min/max main size. On the row
+        /// axis the minimum is the automatic minimum size (§4.5) when min-width is auto; on
+        /// the column axis min-height:auto keeps an item at least as tall as its content,
+        /// so only a basis taller than the content changes anything there.
+        /// </summary>
+        private static void FreezeAtHypotheticalMainSize(
+            LayoutBox item,
+            float basis,
+            bool isRow,
+            float containerMainSize,
+            Dictionary<LayoutBox, float> rowFloors,
+            LayoutState state)
+        {
+            var style = item.ComputedStyle;
+            if (isRow)
+            {
+                float floor = ResolveMinimumMainWidth(item, state.ViewportWidth);
+                if (rowFloors.TryGetValue(item, out float legacyFloor))
+                {
+                    floor = Math.Max(floor, legacyFloor);
+                }
+
+                float target = Math.Max(basis, floor);
+                if (TryResolveMaxMainWidth(item, containerMainSize, out float maxContentWidth))
+                {
+                    target = Math.Min(target, Math.Max(floor, maxContentWidth));
+                }
+
+                if (!float.IsFinite(target) || Math.Abs(target - item.Geometry.ContentBox.Width) <= 0.5f)
+                {
+                    return;
+                }
+
+                LayoutBoxOps.ComputeBoxModelFromContent(item, target, item.Geometry.ContentBox.Height);
+                var reState = state.Clone();
+                reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
+                reState.ContainingBlockWidth = target;
+                reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
+                LayoutWithForcedWidth(item, reState, target);
+                return;
+            }
+
+            float height = basis;
+            if (style?.MaxHeight is double maxHeight && maxHeight >= 0)
+            {
+                height = Math.Min(height, ContentSizeFromSpecified(style, (float)maxHeight, horizontal: false));
+            }
+
+            if (!float.IsFinite(height) || height <= item.Geometry.ContentBox.Height + 0.5f)
+            {
+                return;
+            }
+
+            LayoutBoxOps.ComputeBoxModelFromContent(item, item.Geometry.ContentBox.Width, height);
+            var columnState = state.Clone();
+            columnState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, height);
+            columnState.ContainingBlockWidth = item.Geometry.ContentBox.Width;
+            columnState.ContainingBlockHeight = height;
+            LayoutWithForcedHeight(item, columnState, height);
+        }
+
+        /// <summary>
+        /// The used max-width of a row item as a content-box width. A length or a percentage
+        /// of the container resolves directly; an intrinsic keyword (min-content, fit-content)
+        /// or an expression was already applied when the item was measured, so that
+        /// measurement is the bound.
+        /// </summary>
+        private static bool TryResolveMaxMainWidth(LayoutBox item, float containerMainSize, out float maxWidth)
+        {
+            maxWidth = float.PositiveInfinity;
+            var style = item.ComputedStyle;
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (style.MaxWidth is double length && length >= 0)
+            {
+                maxWidth = ContentSizeFromSpecified(style, (float)length, horizontal: true);
+                return true;
+            }
+
+            if (style.MaxWidthPercent is double percent && float.IsFinite(containerMainSize) && containerMainSize > 0)
+            {
+                maxWidth = ContentSizeFromSpecified(style, (float)(percent / 100.0 * containerMainSize), horizontal: true);
+                return true;
+            }
+
+            string specified = style.MaxWidthExpression;
+            if (string.IsNullOrWhiteSpace(specified) && style.Map != null)
+            {
+                style.Map.TryGetValue("max-width", out specified);
+            }
+
+            if (string.IsNullOrWhiteSpace(specified) ||
+                specified.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            maxWidth = item.Geometry.ContentBox.Width;
+            return float.IsFinite(maxWidth);
+        }
+
+        /// <summary>A specified width/height as a content-box size, honouring box-sizing.</summary>
+        private static float ContentSizeFromSpecified(CssComputed style, float specified, bool horizontal)
+        {
+            if (!string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                return specified;
+            }
+
+            float chrome = horizontal
+                ? (float)(style.Padding.Left + style.Padding.Right + style.BorderThickness.Left + style.BorderThickness.Right)
+                : (float)(style.Padding.Top + style.Padding.Bottom + style.BorderThickness.Top + style.BorderThickness.Bottom);
+            return Math.Max(0f, specified - chrome);
         }
 
         private static void LayoutWithForcedWidth(LayoutBox item, LayoutState state, float forcedWidth)
