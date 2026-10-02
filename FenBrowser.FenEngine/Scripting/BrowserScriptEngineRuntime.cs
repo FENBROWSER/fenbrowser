@@ -16964,8 +16964,22 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             props[name] = JsValue.FromString(inlineValue);
         }
 
-        ResolveComputedInsets(element, cs, props);
-        ResolveComputedSizes(element, props);
+        // CSSOM §6.7.2: width, height and the insets resolve to used values, which need
+        // layout. Resolving them here forced a full layout on every getComputedStyle
+        // call, whatever the page went on to read - Polymer and YouTube read direction
+        // or display that way thousands of times per load. They resolve on first read.
+        var layoutResolved = false;
+        void ResolveLayoutDependent()
+        {
+            if (layoutResolved)
+            {
+                return;
+            }
+
+            layoutResolved = true;
+            ResolveComputedInsets(element, cs, props);
+            ResolveComputedSizes(element, props);
+        }
 
         // CSSOM §6.7.3: every property is readable both as its dashed name
         // (getPropertyValue / bracket access) and as the camel-cased IDL
@@ -16989,8 +17003,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         ResolveComputedCustomProperties(props);
 
-        return CreateComputedStyleObject(props);
+        return CreateComputedStyleObject(props, ResolveLayoutDependent);
     }
+
+    /// <summary>The getComputedStyle properties whose resolved value is a used value.</summary>
+    private static readonly string[] LayoutDependentComputedProperties =
+        { "width", "height", "top", "right", "bottom", "left" };
 
     // CSS Variables 1 §3: a custom property's computed value is its specified
     // value with every var() substituted. The cascade keeps custom properties as
@@ -17258,10 +17276,29 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return pixels.ToString("0.###", CultureInfo.InvariantCulture) + "px";
     }
 
-    private JsValue CreateComputedStyleObject(Dictionary<string, JsValue> props)
+    private JsValue CreateComputedStyleObject(Dictionary<string, JsValue> props, Action resolveLayoutDependent = null)
     {
         props ??= new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
         var styleObject = _interpreter.AllocateObject(props);
+        if (resolveLayoutDependent != null)
+        {
+            foreach (var name in LayoutDependentComputedProperties)
+            {
+                var key = name;
+                _interpreter.DefineObjectAccessor(
+                    styleObject,
+                    key,
+                    _interpreter.AllocateNativeFunction(
+                        "get " + key,
+                        (_, _) =>
+                        {
+                            resolveLayoutDependent();
+                            return props.TryGetValue(key, out var resolved) ? resolved : JsValue.FromString(string.Empty);
+                        }),
+                    JsValue.Undefined);
+            }
+        }
+
         _interpreter.SetObjectProperty(
             styleObject,
             "getPropertyValue",
@@ -17273,6 +17310,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     if (string.IsNullOrWhiteSpace(propertyName))
                     {
                         return JsValue.FromString(string.Empty);
+                    }
+
+                    if (resolveLayoutDependent != null &&
+                        Array.IndexOf(LayoutDependentComputedProperties, propertyName.Trim().ToLowerInvariant()) >= 0)
+                    {
+                        resolveLayoutDependent();
                     }
 
                     if (props.TryGetValue(propertyName, out var directValue))
