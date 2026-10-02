@@ -11211,7 +11211,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                 RequireHostObject(args[0], "check host object own property");
                 return JsValue.FromBoolean(
-                    HasHostObjectDefinedOrEmbedderProperty(args[0].AsHostObjectHandle(), ToPropertyKey(keyArg)));
+                    HasHostObjectOwnProperty(args[0].AsHostObjectHandle(), ToPropertyKey(keyArg)));
             }
 
             if (args[0].Tag != JsValueTag.Object)
@@ -13380,7 +13380,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             _ = RequireHostObject(thisValue, "check host object own property");
             return JsValue.FromBoolean(
-                HasHostObjectDefinedOrEmbedderProperty(thisValue.AsHostObjectHandle(), ToPropertyKey(keyArg)));
+                HasHostObjectOwnProperty(thisValue.AsHostObjectHandle(), ToPropertyKey(keyArg)));
         }
 
         var objectValue = thisValue.Tag == JsValueTag.Object

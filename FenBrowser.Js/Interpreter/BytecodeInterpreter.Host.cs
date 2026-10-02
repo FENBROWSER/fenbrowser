@@ -628,9 +628,22 @@ public sealed partial class BytecodeInterpreter
                TryGetPropertyValue(_heap.GetObject(EnsureObjectPrototype()), receiver, key, out _);
     }
 
-    private bool HasHostObjectDefinedOrEmbedderProperty(HostObjectHandle handle, string key)
-        => TryGetHostObjectDefinedProperty(handle, key, out _) ||
-           _hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.DescriptorOperation, out _);
+    // ECMA-262 7.3.12 HasOwnProperty is [[GetOwnProperty]] != undefined. For a platform
+    // object that is what script defined on it plus whatever the embedder holds as own
+    // (expandos, [LegacyUnforgeable] members); interface attributes such as `hidden` live
+    // on the prototype (WebIDL 3.7.6). Polymer reads hasOwnProperty as "set before
+    // upgrade" and re-applies those values over its own, so an attribute reported as own
+    // erased a value the page had already set.
+    private bool HasHostObjectOwnProperty(HostObjectHandle handle, string key)
+    {
+        if (TryGetHostObjectDefinedProperty(handle, key, out _))
+        {
+            return true;
+        }
+
+        return _hostHooks.HasHostOwnProperty(handle, key) ??
+               _hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.DescriptorOperation, out _);
+    }
 
     private void ApplyDefaultHostObjectPrototypeIfUnset(JsValue constructed, JsValue newTarget)
     {

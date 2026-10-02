@@ -674,6 +674,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private readonly List<BrowserEventListener> _embeddedParentWindowListeners = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostCallableCache = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostPropertyStore = new();
+    // Names script assigned on a platform object that it does not implement (expandos):
+    // the only stored host properties that are the object's own (WebIDL 3.9).
+    private ConditionalWeakTable<object, HashSet<string>> _scriptExpandoNames = new();
     private ConditionalWeakTable<object, HashSet<string>> _missingHostPropertyReads = new();
     private ConditionalWeakTable<object, List<BrowserEventListener>> _elementEventListeners = new();
     private int _suppressMissingHostAssignmentTracking;
@@ -6322,6 +6325,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _fenJsPinScopes.Clear();
             _hostCallableCache = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
+            _scriptExpandoNames = new ConditionalWeakTable<object, HashSet<string>>();
             // Media bindings hold promise and error objects from the old heap.
             _mediaElements.Clear();
             System.Threading.Volatile.Write(ref _mediaElementCount, 0);
@@ -19986,6 +19990,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         store[property] = value;
     }
 
+    /// <summary>Stores a script expando: a property the platform object does not implement.</summary>
+    private void SetScriptExpando(object receiver, string property, JsValue value)
+    {
+        SetStoredHostProperty(receiver, property, value);
+        _scriptExpandoNames.GetOrCreateValue(receiver).Add(property);
+    }
+
+    private bool IsScriptExpando(object receiver, string property)
+        => _scriptExpandoNames.TryGetValue(receiver, out var names) && names.Contains(property);
+
     private JsValue CreateResolvedPromise(JsValue resolution)
     {
         var (promise, resolve, _) = ((IBuiltinContext)_interpreter).CreatePromiseCapability();
@@ -20667,7 +20681,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 element.TextContent = CoerceToHostString(value);
                 break;
             default:
-                SetStoredHostProperty(element, property, value);
+                SetScriptExpando(element, property, value);
                 break;
         }
     }
@@ -28181,6 +28195,41 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             => TryGetHostProperty(handle, property, HostPropertyAccessKind.Read, out value);
 
         /// <summary>
+        /// WebIDL 3.9 own properties of a DOM node: the expandos script stored on it, and
+        /// Document's [LegacyUnforgeable] location. Everything else the node answers is an
+        /// interface member and lives on the prototype, so `el.hasOwnProperty('hidden')` is
+        /// false as in every browser. Other host objects keep the presence answer.
+        /// </summary>
+        public bool? HasHostOwnProperty(HostObjectHandle handle, string property)
+        {
+            if (_owner == null || _owner._interpreter == null)
+            {
+                return null;
+            }
+
+            var resolution = _owner._interpreter.HostObjectTable.Resolve(handle, _owner._interpreter.HostResolveContext);
+            if (!resolution.IsOk)
+            {
+                return null;
+            }
+
+            switch (resolution.HostObject)
+            {
+                case Document when string.Equals(property, "location", StringComparison.Ordinal):
+                    return true;
+                case Node node when _owner.IsScriptExpando(node, property):
+                    return true;
+                case Node:
+                    // Still ask the node, as a descriptor operation, so a name it does not
+                    // implement reaches the missing-API tracker as it did before.
+                    _ = TryGetHostProperty(handle, property, HostPropertyAccessKind.DescriptorOperation, out _);
+                    return false;
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>
         /// WebIDL 3.9 [[OwnPropertyKeys]] for the collection-shaped host objects:
         /// the indices, then the supported property names (an element's id and
         /// name, each once, in tree order - DOM 4.2.10.2), so Object.keys and
@@ -28613,7 +28662,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     // Catch-all for arbitrary document properties (e.g. Google
                     // sets __gwbp, __jsl, and other internal bookkeeping).
                     RecordAssignedHostApi(document, "Document", property);
-                    _owner.SetStoredHostProperty(document, property, value);
+                    _owner.SetScriptExpando(document, property, value);
                     return true;
                 case Element element when IsMediaElement(element) && _owner.TrySetMediaElementProperty(element, property, value):
                     return true;
@@ -28931,7 +28980,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     // __gwbp, __jsl, and other internal bookkeeping properties on
                     // DOM elements). Store for later retrieval via TryGetElementProperty.
                     RecordAssignedHostApi(element, GetHostApiOwnerName(element), property);
-                    _owner.SetStoredHostProperty(element, property, value);
+                    _owner.SetScriptExpando(element, property, value);
                     return true;
                 case Attr attr when string.Equals(property, "value", StringComparison.Ordinal):
                     attr.Value = CoerceToHostString(value);

@@ -73,6 +73,21 @@ public interface IHostHooks
         return false;
     }
 
+    /// <summary>
+    /// WebIDL 3.9 [[GetOwnProperty]] for a platform object, as presence: true when
+    /// <paramref name="property"/> is an own property the embedder holds - an expando
+    /// script stored on the object, or a [LegacyUnforgeable] member - and false when the
+    /// host merely implements it as an interface attribute or operation, which WebIDL
+    /// places on the interface prototype object. Null when the host does not say, and
+    /// FenJS then treats any property the host answers as own.
+    /// </summary>
+    bool? HasHostOwnProperty(HostObjectHandle handle, string property)
+    {
+        _ = handle;
+        _ = property;
+        return null;
+    }
+
     bool TryConvertHostObjectToPrimitive(
         HostObjectHandle handle,
         string hint,
