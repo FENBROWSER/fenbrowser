@@ -162,6 +162,11 @@ public sealed class JsHeap
     // Which root slot the collector is walking, for the stale-handle message.
     private string _rootTraceContext = string.Empty;
 
+    // The Old cell whose payload a dirty-card scan is tracing, or -1. A stale
+    // handle met there names the owner that stored a Young reference without a
+    // write barrier, which is the cell to look at, not the card.
+    private int _cardScanOwnerIndex = -1;
+
     // Which root source marked how many young cells in the last minor
     // collection. A nursery that survives says nothing on its own; the caller
     // needs to know what was holding it, and that is only knowable here, while
@@ -722,7 +727,7 @@ public sealed class JsHeap
                 : _sweepLog.TryGetValue(index, out var info) ? info.Describe() : "no-sweep-record";
             var allocSite = GetAllocationSiteForDiagnostics(index);
             throw new JsEngineFatalException(
-                $"Stale heap handle. heap#{HeapId} idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] allocSite={allocSite} rootCtx={(_rootTraceContext.Length == 0 ? "<not-a-root-walk>" : _rootTraceContext)} {DescribeHandleOwner(index, generation)} rememberedEnvs={_rememberedEnvironments.Count} envRegs={_rememberedEnvironmentRegistrations} envScanMarks={_rememberedEnvironmentScanMarks} minor#{_minorGcCount} major#{_gcCollectionCount}");
+                $"Stale heap handle. heap#{HeapId} idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] allocSite={allocSite} rootCtx={(_rootTraceContext.Length == 0 ? "<not-a-root-walk>" : _rootTraceContext)}{DescribeCardScanOwner()} {DescribeHandleOwner(index, generation)} rememberedEnvs={_rememberedEnvironments.Count} envRegs={_rememberedEnvironmentRegistrations} envScanMarks={_rememberedEnvironmentScanMarks} minor#{_minorGcCount} major#{_gcCollectionCount}");
         }
 
         throw new JsEngineFatalException($"Heap handle kind mismatch. Expected {expectedKind}, actual {cell.Kind}.");
@@ -1106,8 +1111,11 @@ public sealed class JsHeap
             {
                 if (_cells[i] is not { Tier: GenerationTier.Old } cell) continue;
                 _lastMinorScannedOldCells++;
+                _cardScanOwnerIndex = i;
                 cell.Payload.Trace(cardTracer);
             }
+
+            _cardScanOwnerIndex = -1;
 
             // A card stays remembered only while an Old cell inside it still
             // references a Young cell; otherwise it self-clears.
@@ -1118,6 +1126,16 @@ public sealed class JsHeap
 
         _dirtyCards.Clear();
         _dirtyCards.AddRange(retained);
+    }
+
+    private string DescribeCardScanOwner()
+    {
+        if (_cardScanOwnerIndex < 0 || _cardScanOwnerIndex >= _cells.Count || _cells[_cardScanOwnerIndex] is not { } owner)
+        {
+            return string.Empty;
+        }
+
+        return $" cardOwner={_cardScanOwnerIndex}/{owner.Payload.GetType().Name} ownerAllocSite={GetAllocationSiteForDiagnostics(_cardScanOwnerIndex)}";
     }
 
     private void AuditRememberedSet()
