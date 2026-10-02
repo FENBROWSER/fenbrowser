@@ -19168,23 +19168,40 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         _selectionFocusOffset = 0;
     }
 
+    /// <summary>
+    /// HTML "focusing steps" for element.focus(): the previously focused element is blurred
+    /// (blur, then focusout), the element becomes the document's focused area - the one
+    /// :focus matches - and receives focus then focusin. The events are trusted and go
+    /// through capture and, for focusin/focusout, bubbling: event-delegation frameworks
+    /// such as Google's jsaction listen for them on an ancestor, and the element used to
+    /// be marked :active instead of :focus with only its own listeners told.
+    /// </summary>
     internal void FocusElement(Element element)
     {
         if (element == null) return;
 
         var document = element.OwnerDocument;
-        var alreadyFocused = document != null && ReferenceEquals(document.ActiveElement, element);
+        var previous = document?.ActiveElement;
+        if (ReferenceEquals(previous, element))
+        {
+            return;
+        }
+
+        if (previous != null && !ReferenceEquals(previous, document?.DocumentElement) &&
+            !string.Equals(previous.TagName, "BODY", StringComparison.OrdinalIgnoreCase))
+        {
+            FireFocusEvent(previous, "blur", bubbles: false);
+            FireFocusEvent(previous, "focusout", bubbles: true);
+        }
+
         if (document != null)
         {
             document.ActiveElement = element;
         }
 
-        FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.SetActiveElement(element);
-
-        if (!alreadyFocused)
-        {
-            DispatchElementEvent(element, "focus");
-        }
+        FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.SetFocusedElement(element);
+        FireFocusEvent(element, "focus", bubbles: false);
+        FireFocusEvent(element, "focusin", bubbles: true);
 
         if (IsContentEditableElement(element))
         {
@@ -19198,17 +19215,34 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         var document = element.OwnerDocument;
         var wasFocused = document != null && ReferenceEquals(document.ActiveElement, element);
-        if (wasFocused)
+        if (!wasFocused)
         {
-            document.ActiveElement = null;
+            return;
         }
 
-        FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.SetActiveElement(null);
-
-        if (wasFocused)
+        document.ActiveElement = null;
+        if (ReferenceEquals(FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.FocusedElement, element))
         {
-            DispatchElementEvent(element, "blur");
+            FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.SetFocusedElement(null);
         }
+
+        FireFocusEvent(element, "blur", bubbles: false);
+        FireFocusEvent(element, "focusout", bubbles: true);
+    }
+
+    private void FireFocusEvent(Element element, string type, bool bubbles)
+    {
+        if (_realmAbandoned || _interpreter is null)
+        {
+            return;
+        }
+
+        var eventValue = CreateBrowserDomEventValue(
+            element,
+            type,
+            new BrowserDomEventInit { Bubbles = bubbles, Cancelable = false, Composed = true, IsTrusted = true },
+            out var dispatchState);
+        _ = DispatchEventFull(element, type, eventValue, dispatchState);
     }
 
     private static bool IsContentEditableElement(Element element)
