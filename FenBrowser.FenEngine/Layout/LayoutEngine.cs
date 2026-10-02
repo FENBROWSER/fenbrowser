@@ -52,6 +52,16 @@ namespace FenBrowser.FenEngine.Layout
         /// The layout context containing computed boxes and state.
         /// </summary>
         public LayoutContext Context => _context;
+
+        /// <summary>
+        /// Points the next pass at a newer style snapshot of the same document. The last
+        /// result is kept: whatever invalidated geometry marked the tree dirty, and a clean
+        /// tree reuses it instead of a full pass.
+        /// </summary>
+        internal void UseStyles(IReadOnlyDictionary<Node, CssComputed> styles)
+        {
+            _context.Styles = styles ?? throw new ArgumentNullException(nameof(styles));
+        }
         
 
         

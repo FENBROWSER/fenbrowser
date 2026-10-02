@@ -23,7 +23,7 @@ namespace FenBrowser.FenEngine.Layout
         /// <summary>
         /// Computed styles for all elements.
         /// </summary>
-        public IReadOnlyDictionary<Node, CssComputed> Styles { get; init; }
+        public IReadOnlyDictionary<Node, CssComputed> Styles { get; internal set; }
         
         public FrameDeadline Deadline { get; set; }
 

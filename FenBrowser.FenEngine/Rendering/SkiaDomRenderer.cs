@@ -266,6 +266,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _lastDomNodeCount = CountNodes(root);
             }
             var layoutEngine = GetOrCreateLayoutEngine(effectiveStyles, baseUrl);
+            var previousLayout = _lastLayout;
             _lastLayout = layoutEngine.ComputeLayout(
                 root,
                 0,
@@ -276,6 +277,17 @@ namespace FenBrowser.FenEngine.Rendering
                     "EnsureLayout",
                     _lastDomNodeCount,
                     fullDocumentLayout: true));
+            if (_lastLayout != null &&
+                ReferenceEquals(_lastLayout, previousLayout) &&
+                ReferenceEquals(root, _lastRoot) &&
+                Math.Abs(_lastViewportWidth - _viewportWidth) <= 0.01f &&
+                Math.Abs(_lastViewportHeight - _viewportHeight) <= 0.01f)
+            {
+                // The engine reused its last result: geometry, the box cache and the
+                // paint tree built from them are all still current.
+                return;
+            }
+
             _boxes.Clear();
             foreach (var box in layoutEngine.AllBoxes)
             {
@@ -2080,10 +2092,19 @@ namespace FenBrowser.FenEngine.Rendering
             var effectiveStyles = styles ?? new Dictionary<Node, CssComputed>();
             bool needsNewEngine =
                 _retainedLayoutEngine == null ||
-                !ReferenceEquals(_retainedLayoutStyles, effectiveStyles) ||
                 Math.Abs(_retainedLayoutViewportWidth - _viewportWidth) > 0.01f ||
                 Math.Abs(_retainedLayoutViewportHeight - _viewportHeight) > 0.01f ||
                 !string.Equals(_retainedLayoutBaseUrl, baseUrl, StringComparison.Ordinal);
+
+            if (!needsNewEngine && !ReferenceEquals(_retainedLayoutStyles, effectiveStyles))
+            {
+                // Every restyle publishes a new snapshot. A new engine per snapshot threw
+                // away the last result, so each one cost a full layout even when the
+                // restyle had changed nothing a box depends on; the restyle marks the
+                // tree dirty when it did.
+                _retainedLayoutEngine.UseStyles(effectiveStyles);
+                _retainedLayoutStyles = effectiveStyles;
+            }
 
             if (needsNewEngine)
             {

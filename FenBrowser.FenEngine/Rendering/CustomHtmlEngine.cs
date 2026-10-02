@@ -368,6 +368,13 @@ namespace FenBrowser.FenEngine.Rendering
                 LastComputedStyles = styles;
                 _hasStableStyles = styles != null;
                 _renderSnapshotVersion++;
+
+                // A whole-document snapshot (a new stylesheet, a media change, the first
+                // cascade) can move any box. The layout engine keeps its last result
+                // across style snapshots and relies on dirty flags, so say so here; an
+                // incremental restyle marks only what it changed.
+                var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
+                root?.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                 return true;
             }
         }
@@ -2409,11 +2416,27 @@ private void FlushPendingLayoutForScript(Element element)
                     
                     if (subtreeStyles != null)
                     {
+                        var change = StyleChange.None;
                         lock (_renderStateLock)
                         {
                             if (_renderGeneration != renderGeneration)
                             {
                                 return;
+                            }
+
+                            foreach (var kvp in subtreeStyles)
+                            {
+                                CssComputed previous = null;
+                                if (LastComputedStyles == null || !LastComputedStyles.TryGetValue(kvp.Key, out previous))
+                                {
+                                    previous = kvp.Key.GetComputedStyle();
+                                }
+
+                                change = StyleChangeClassifier.Max(change, StyleChangeClassifier.Classify(previous, kvp.Value));
+                                if (change == StyleChange.Layout)
+                                {
+                                    break;
+                                }
                             }
 
                             // Merge into a copy and publish it. The renderer takes this
@@ -2433,11 +2456,19 @@ private void FlushPendingLayoutForScript(Element element)
                             LastComputedStyles = merged;
                         }
 
-                        // The cascade has replaced style objects for this subtree.
-                        // Preserve a layout/paint invalidation after clearing the style
-                        // flags below so the renderer cannot reuse geometry produced
-                        // from the previous computed styles (notably resized iframes).
-                        root.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+                        // The cascade has replaced style objects for this subtree. Geometry
+                        // produced from the previous styles is stale only when a property
+                        // that boxes depend on changed (notably resized iframes); a restyle
+                        // that changed nothing, or only what paint reads, keeps the layout,
+                        // which is a full document pass at the next geometry read.
+                        if (change == StyleChange.Layout)
+                        {
+                            root.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+                        }
+                        else if (change == StyleChange.Paint)
+                        {
+                            root.MarkDirty(InvalidationKind.Paint);
+                        }
                     }
                 }
                 catch (Exception ex)
