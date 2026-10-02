@@ -15587,6 +15587,23 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         }
                     }
                 }
+                // HTML "upgrade an element": the HTMLElement constructor gives the element
+                // the definition's prototype, so its methods and accessors are inherited.
+                // Copying them onto the element as own properties froze each prototype's
+                // members at upgrade time and let a base class's plain field shadow a
+                // subclass accessor: Polymer's _template (undefined on the base, a getter
+                // on the element class) became an own undefined on YouTube's ytd-app,
+                // which then never stamped its template. Copy only if the element's
+                // prototype cannot be changed.
+                function adoptCustomElementPrototype(element, prototype, includeAccessors) {
+                    try {
+                        if (Object.getPrototypeOf(element) !== prototype) {
+                            Object.setPrototypeOf(element, prototype);
+                        }
+                        if (Object.getPrototypeOf(element) === prototype) return;
+                    } catch (_setPrototypeError) {}
+                    copyCustomElementPrototype(element, prototype, includeAccessors);
+                }
                 function copyCustomElementInstanceState(target, source) {
                     if (!source) return;
                     var names = Object.getOwnPropertyNames(source);
@@ -15650,30 +15667,33 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         message.indexOf('Illegal constructor') >= 0 ||
                         message.indexOf('Illegal invocation') >= 0;
                 }
+                // HTML "upgrade an element": while the definition's constructor runs, the
+                // HTMLElement constructor returns the element being upgraded (the top of the
+                // construction stack), whichever way the constructor reaches it - an ES5
+                // HTMLElement.call(this) as well as a class's super().
                 function constructCustomElement(element, entry) {
+                    var previousConstructionElement = globalThis.__fenCustomElementConstructionElement;
+                    globalThis.__fenCustomElementConstructionElement = element;
                     try {
-                        var returned = entry.constructor.call(element);
-                        applyConstructedCustomElementInstance(element, returned);
-                        return true;
-                    } catch (_callError) {
-                        if (!isRecoverableCustomElementCallError(_callError)) {
-                            throw _callError;
-                        }
-
-                        var previousConstructionElement = globalThis.__fenCustomElementConstructionElement;
-                        globalThis.__fenCustomElementConstructionElement = element;
-                        var instance;
                         try {
-                            instance = new entry.constructor();
-                        } finally {
-                            if (previousConstructionElement) {
-                                globalThis.__fenCustomElementConstructionElement = previousConstructionElement;
-                            } else {
-                                delete globalThis.__fenCustomElementConstructionElement;
+                            var returned = entry.constructor.call(element);
+                            applyConstructedCustomElementInstance(element, returned);
+                            return true;
+                        } catch (_callError) {
+                            if (!isRecoverableCustomElementCallError(_callError)) {
+                                throw _callError;
                             }
                         }
+
+                        var instance = new entry.constructor();
                         applyConstructedCustomElementInstance(element, instance);
                         return true;
+                    } finally {
+                        if (previousConstructionElement) {
+                            globalThis.__fenCustomElementConstructionElement = previousConstructionElement;
+                        } else {
+                            delete globalThis.__fenCustomElementConstructionElement;
+                        }
                     }
                 }
                 function describeCustomElementThrownValue(error, depth) {
@@ -15891,17 +15911,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             configurable: true
                         });
                         if (entry.constructor && entry.constructor.prototype) {
-                            copyCustomElementPrototype(element, entry.constructor.prototype, false);
+                            adoptCustomElementPrototype(element, entry.constructor.prototype, false);
                         }
                         if (!element.__fenCustomElementConstructed && typeof entry.constructor === 'function') {
                             try {
                                 constructCustomElement(element, entry);
                                 if (entry.constructor && entry.constructor.prototype) {
                                     var effectivePrototype = selectConstructedCustomElementPrototype(element, entry.constructor.prototype);
-                                    if (effectivePrototype === entry.constructor.prototype) {
-                                        try { Object.setPrototypeOf(element, entry.constructor.prototype); } catch (_setPrototypeError) {}
-                                    }
-                                    copyCustomElementPrototype(element, effectivePrototype, true);
+                                    adoptCustomElementPrototype(element, effectivePrototype, true);
                                 }
                                 Object.defineProperty(element, '__fenCustomElementConstructed', {
                                     value: true,
