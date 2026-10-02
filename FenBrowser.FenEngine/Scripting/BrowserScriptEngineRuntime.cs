@@ -38,6 +38,7 @@ using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Storage;
 using FenBrowser.FenEngine.Svg;
 using DomRange = FenBrowser.Core.Dom.V2.Range;
+using FenBrowser.Core.Network;
 
 namespace FenBrowser.FenEngine.Scripting;
 
@@ -17729,12 +17730,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return false;
         }
 
-        if (Uri.TryCreate(urlText, UriKind.Absolute, out requestUri))
+        if (UrlResolution.TryParseAbsolute(urlText, out requestUri))
         {
             return true;
         }
 
-        return baseUri != null && Uri.TryCreate(baseUri, urlText, out requestUri);
+        return baseUri != null && UrlResolution.TryResolve(urlText, baseUri, out requestUri);
     }
 
     private static string ResolveElementUrlProperty(Element element, string attributeName)
@@ -17745,7 +17746,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return string.Empty;
         }
 
-        if (Uri.TryCreate(raw, UriKind.Absolute, out var absolute))
+        if (UrlResolution.TryParseAbsolute(raw, out var absolute))
         {
             return absolute.AbsoluteUri;
         }
@@ -17757,7 +17758,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             ownerDocument?.URL;
 
         if (Uri.TryCreate(baseRaw, UriKind.Absolute, out var baseUri) &&
-            Uri.TryCreate(baseUri, raw, out var resolved))
+            UrlResolution.TryResolve(raw, baseUri, out var resolved))
         {
             return resolved.AbsoluteUri;
         }
@@ -23951,13 +23952,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return;
         }
 
-        if (Uri.TryCreate(url, UriKind.Absolute, out var absolute))
+        if (UrlResolution.TryParseAbsolute(url, out var absolute))
         {
             UpdateFenJsLocation(location, absolute);
             return;
         }
 
-        if (location.Uri != null && Uri.TryCreate(location.Uri, url, out var resolved))
+        if (location.Uri != null && UrlResolution.TryResolve(url, location.Uri, out var resolved))
         {
             UpdateFenJsLocation(location, resolved);
         }
@@ -24940,8 +24941,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return true;
         }
 
-        if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri) &&
-            (_currentBaseUri == null || !Uri.TryCreate(_currentBaseUri, rawUrl, out uri)))
+        if (!UrlResolution.TryParseAbsolute(rawUrl, out var uri) &&
+            (_currentBaseUri == null || !UrlResolution.TryResolve(rawUrl, _currentBaseUri, out uri)))
         {
             normalizedUrl = null;
             return false;
@@ -34851,7 +34852,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 return string.Empty;
             }
 
-            if (Uri.TryCreate(raw, UriKind.Absolute, out var absolute))
+            if (UrlResolution.TryParseAbsolute(raw, out var absolute))
             {
                 return absolute.AbsoluteUri;
             }
@@ -34863,7 +34864,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 ownerDocument?.URL;
 
             if (Uri.TryCreate(baseRaw, UriKind.Absolute, out var baseUri) &&
-                Uri.TryCreate(baseUri, raw, out var resolved))
+                UrlResolution.TryResolve(raw, baseUri, out var resolved))
             {
                 return resolved.AbsoluteUri;
             }

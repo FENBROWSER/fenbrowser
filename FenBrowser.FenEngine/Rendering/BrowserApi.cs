@@ -5811,11 +5811,11 @@ pre {{
                     !src.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase) &&
                     !src.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (Uri.TryCreate(src, UriKind.Absolute, out var absoluteSrc))
+                    if (UrlResolution.TryParseAbsolute(src, out var absoluteSrc))
                     {
                         frameUri = absoluteSrc;
                     }
-                    else if (_current != null && Uri.TryCreate(_current, src, out var relativeSrc))
+                    else if (_current != null && UrlResolution.TryResolve(src, _current, out var relativeSrc))
                     {
                         frameUri = relativeSrc;
                     }
@@ -5907,12 +5907,12 @@ pre {{
                 return _current;
             }
 
-            if (Uri.TryCreate(src, UriKind.Absolute, out var absoluteSrc))
+            if (UrlResolution.TryParseAbsolute(src, out var absoluteSrc))
             {
                 return absoluteSrc;
             }
 
-            if (_current != null && Uri.TryCreate(_current, src, out var relativeSrc))
+            if (_current != null && UrlResolution.TryResolve(src, _current, out var relativeSrc))
             {
                 return relativeSrc;
             }
@@ -11717,12 +11717,12 @@ pre {{
             if (string.IsNullOrWhiteSpace(rawUrl)) return _current;
             var candidate = rawUrl.Trim();
 
-            if (Uri.TryCreate(candidate, UriKind.Absolute, out var absoluteUri))
+            if (UrlResolution.TryParseAbsolute(candidate, out var absoluteUri))
             {
                 return absoluteUri;
             }
 
-            if (_current != null && Uri.TryCreate(_current, candidate, out var resolved))
+            if (_current != null && UrlResolution.TryResolve(candidate, _current, out var resolved))
             {
                 return resolved;
             }

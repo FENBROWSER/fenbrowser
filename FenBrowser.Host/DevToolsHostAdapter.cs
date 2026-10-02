@@ -10,6 +10,7 @@ using FenBrowser.FenEngine.Rendering.Core;
 using SkiaSharp;
 using System.Security.Cryptography;
 using System.Text;
+using FenBrowser.Core.Network;
 
 namespace FenBrowser.Host;
 
@@ -714,14 +715,14 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
             return string.Empty;
         }
 
-        if (Uri.TryCreate(scriptUrl, UriKind.Absolute, out var absolute))
+        if (UrlResolution.TryParseAbsolute(scriptUrl, out var absolute))
         {
             return absolute.AbsoluteUri;
         }
 
         if (!string.IsNullOrWhiteSpace(currentUrl) &&
             Uri.TryCreate(currentUrl, UriKind.Absolute, out var currentUri) &&
-            Uri.TryCreate(currentUri, scriptUrl, out var resolved))
+            UrlResolution.TryResolve(scriptUrl, currentUri, out var resolved))
         {
             return resolved.AbsoluteUri;
         }

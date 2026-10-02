@@ -22,6 +22,7 @@ using FenBrowser.FenEngine.Compatibility;
 using FenBrowser.FenEngine.Rendering.Css; // Direct using, will resolve ambiguity manually or by deleting inner classes
 using FenBrowser.Core.Parsing;
 using NewCss = FenBrowser.FenEngine.Rendering.Css;
+using FenBrowser.Core.Network;
 // using FenBrowser.Core.Math; // Namespace moved to Core
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -8072,8 +8073,8 @@ private static double? ExtractPx(string text, string prop)
             }
 
             Uri abs;
-            if (Uri.TryCreate(href, UriKind.Absolute, out abs)) return abs;
-            if (baseUri != null && Uri.TryCreate(baseUri, href, out abs)) return abs;
+            if (UrlResolution.TryParseAbsolute(href, out abs)) return abs;
+            if (baseUri != null && UrlResolution.TryResolve(href, baseUri, out abs)) return abs;
             return null;
         }
 

@@ -27,6 +27,7 @@ using FenBrowser.FenEngine.Core.EventLoop; // Added for EventLoopCoordinator
 using FenBrowser.FenEngine.Rendering.Performance;
 using FenBrowser.Core.Engine; // Added for EnginePhase
 using SkiaSharp;
+using FenBrowser.Core.Network;
 
 
 namespace FenBrowser.FenEngine.Rendering
@@ -768,8 +769,8 @@ public void Dispose()
                     return new Uri(scheme + ":" + href);
                 }
                 Uri abs;
-                if (Uri.TryCreate(href, UriKind.Absolute, out abs)) return abs;
-                if (baseUri != null && Uri.TryCreate(baseUri, href, out abs)) return abs;
+                if (UrlResolution.TryParseAbsolute(href, out abs)) return abs;
+                if (baseUri != null && UrlResolution.TryResolve(href, baseUri, out abs)) return abs;
             }
             catch (Exception ex)
             {

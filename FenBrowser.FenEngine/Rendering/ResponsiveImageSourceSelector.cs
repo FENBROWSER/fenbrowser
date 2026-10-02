@@ -202,7 +202,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return candidate;
 
             var trimmed = candidate.Trim();
-            if (Uri.TryCreate(trimmed, UriKind.Absolute, out _))
+            if (UrlResolution.TryParseAbsolute(trimmed, out _))
                 return trimmed;
 
             var document = image?.OwnerDocument;
@@ -212,7 +212,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (string.IsNullOrWhiteSpace(baseText) ||
                 !Uri.TryCreate(baseText, UriKind.Absolute, out var baseUri) ||
-                !Uri.TryCreate(baseUri, trimmed, out var resolved))
+                !UrlResolution.TryResolve(trimmed, baseUri, out var resolved))
             {
                 return trimmed;
             }

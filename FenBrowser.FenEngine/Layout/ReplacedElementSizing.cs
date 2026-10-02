@@ -5,6 +5,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
+using FenBrowser.Core.Network;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -468,12 +469,12 @@ namespace FenBrowser.FenEngine.Layout
                     : resourceUrl;
             }
 
-            if (Uri.TryCreate(resourceUrl, UriKind.Absolute, out var absolute))
+            if (UrlResolution.TryParseAbsolute(resourceUrl, out var absolute))
             {
                 return absolute.ToString();
             }
 
-            if (baseUri != null && Uri.TryCreate(baseUri, resourceUrl, out var resolved))
+            if (baseUri != null && UrlResolution.TryResolve(resourceUrl, baseUri, out var resolved))
             {
                 return resolved.ToString();
             }

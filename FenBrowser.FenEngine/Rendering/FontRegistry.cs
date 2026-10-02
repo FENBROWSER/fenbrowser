@@ -429,11 +429,11 @@ namespace FenBrowser.FenEngine.Rendering
                         // Handle protocol-relative URLs manually to prevent Windows interpreting them as UNC file paths
                         if (sourceUrl.StartsWith("//") && descriptor.BaseUri != null)
                         {
-                            Uri.TryCreate(descriptor.BaseUri, sourceUrl, out uri);
+                            UrlResolution.TryResolve(sourceUrl, descriptor.BaseUri, out uri);
                         }
-                        else if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out uri) && descriptor.BaseUri != null)
+                        else if (!UrlResolution.TryParseAbsolute(sourceUrl, out uri) && descriptor.BaseUri != null)
                         {
-                            Uri.TryCreate(descriptor.BaseUri, sourceUrl, out uri);
+                            UrlResolution.TryResolve(sourceUrl, descriptor.BaseUri, out uri);
                         }
 
                         if (uri == null)
