@@ -115,16 +115,29 @@ namespace FenBrowser.FenEngine.Layout
             float maxWidth = Math.Max(viewportWidth * 10, 50000f);
             float maxHeight = Math.Max(viewportHeight * 10, 50000f);
 
+            var geometry = box.Geometry;
+            if (IsFinite(geometry.ContentBox) && IsFinite(geometry.PaddingBox) &&
+                IsFinite(geometry.BorderBox) && IsFinite(geometry.MarginBox))
+            {
+                // The common case, on every flex pass for every box: nothing to fix and
+                // nothing to log, so no description is built.
+                return;
+            }
+
             // Name the box in the log. "ContentBox: Width=Infinity" repeated a few
             // hundred times says a probe leaked, but not which subtree leaked it,
             // and that is the only thing the message is read for.
             string who = DescribeBox(box);
 
-            box.Geometry.ContentBox = SanitizeBounds(box.Geometry.ContentBox, maxWidth, maxHeight, who + " ContentBox");
-            box.Geometry.PaddingBox = SanitizeBounds(box.Geometry.PaddingBox, maxWidth, maxHeight, who + " PaddingBox");
-            box.Geometry.BorderBox = SanitizeBounds(box.Geometry.BorderBox, maxWidth, maxHeight, who + " BorderBox");
-            box.Geometry.MarginBox = SanitizeBounds(box.Geometry.MarginBox, maxWidth, maxHeight, who + " MarginBox");
+            geometry.ContentBox = SanitizeBounds(geometry.ContentBox, maxWidth, maxHeight, who + " ContentBox");
+            geometry.PaddingBox = SanitizeBounds(geometry.PaddingBox, maxWidth, maxHeight, who + " PaddingBox");
+            geometry.BorderBox = SanitizeBounds(geometry.BorderBox, maxWidth, maxHeight, who + " BorderBox");
+            geometry.MarginBox = SanitizeBounds(geometry.MarginBox, maxWidth, maxHeight, who + " MarginBox");
         }
+
+        private static bool IsFinite(SKRect rect) =>
+            float.IsFinite(rect.Left) && float.IsFinite(rect.Top) &&
+            float.IsFinite(rect.Right) && float.IsFinite(rect.Bottom);
 
         /// <summary>
         /// A short tag#id.class identity for a layout box, for diagnostics only.
