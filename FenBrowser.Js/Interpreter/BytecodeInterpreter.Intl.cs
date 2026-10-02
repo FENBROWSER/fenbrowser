@@ -21,8 +21,11 @@ public sealed partial class BytecodeInterpreter
         var implHandle = _heap.AllocateObject(impl, AllocationSite.Current());
         _heap.WriteBarrier(implHandle, EnsureFunctionPrototype());
         var capturedImpl = implHandle;
+        // The closure is opaque to the collector: declare the implementation as a
+        // captured root, or it is swept while the getter still returns it.
         var getter = new NativeFunctionObject("get " + name, (_, _2) =>
-            JsValue.FromObject(capturedImpl), length: 0);
+            JsValue.FromObject(capturedImpl), length: 0,
+            capturedRoots: new[] { JsValue.FromObject(implHandle) });
         getter.SetPrototype(EnsureFunctionPrototype());
         var getterHandle = _heap.AllocateObject(getter, AllocationSite.Current());
         _heap.WriteBarrier(getterHandle, EnsureFunctionPrototype());
