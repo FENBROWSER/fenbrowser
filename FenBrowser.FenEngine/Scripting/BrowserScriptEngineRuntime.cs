@@ -18125,6 +18125,39 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     /// Must run under the interpreter lock â€” the caller (OnMutations on the mutation
     /// callback thread) delegates here via RunFenJsWithLargeStack.
     /// </summary>
+    /// <summary>
+    /// DOM 4.3.2 "queue a mutation observer microtask": delivery runs as a microtask in
+    /// this realm's queue, ordered with promise reactions. It used to go to the event
+    /// loop coordinator of whichever thread constructed the observer, which the page's
+    /// script thread never pumps in the Host, so no observer callback ever ran there -
+    /// Polymer's microTask (a characterData observer on a text node) stalled with it,
+    /// and with it every debounced dom-if render, such as YouTube's guide sidebar.
+    /// A mutation made off the script thread cannot allocate into the heap and keeps
+    /// the coordinator path.
+    /// </summary>
+    internal void QueueMutationObserverMicrotask(Action deliver, FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator fallback)
+    {
+        if (deliver == null)
+        {
+            return;
+        }
+
+        if (Monitor.IsEntered(_fenJsLock) && _interpreter != null && !_realmAbandoned)
+        {
+            var callback = _interpreter.AllocateNativeFunction(
+                "notifyMutationObservers",
+                (_, _) =>
+                {
+                    deliver();
+                    return JsValue.Undefined;
+                });
+            ((IBuiltinContext)_interpreter).EnqueueMicrotask(callback);
+            return;
+        }
+
+        fallback?.QueueMutationObserverMicrotask(deliver);
+    }
+
     internal void InvokeMutationObserverCallback(FenJsMutationObserverHost host, IReadOnlyList<MutationRecord> records)
     {
         if (records == null || records.Count == 0)

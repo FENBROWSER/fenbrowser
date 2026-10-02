@@ -34,14 +34,14 @@ internal sealed class FenJsMutationObserverHost
         Callback = callback;
         _owner = owner ?? throw new ArgumentNullException(nameof(owner));
 
-        // Capture the coordinator bound to this script engine at construction time.
-        // DOM mutations then enqueue observer delivery into that page/event-loop
-        // checkpoint instead of invoking JS synchronously inside AppendChild,
-        // SetAttribute, CharacterData.ReplaceData, etc.
-        var eventLoop = EventLoopCoordinator.Instance;
+        // DOM mutations hand delivery to the owning realm, which queues it as a
+        // microtask (DOM 4.3.2 "queue a mutation observer microtask") instead of
+        // invoking JS synchronously inside AppendChild, SetAttribute,
+        // CharacterData.ReplaceData, etc.
+        var fallbackEventLoop = EventLoopCoordinator.Instance;
         _observer = new MutationObserver(
             OnMutations,
-            eventLoop.QueueMutationObserverMicrotask);
+            deliver => _owner.QueueMutationObserverMicrotask(deliver, fallbackEventLoop));
     }
 
     private void OnMutations(IReadOnlyList<MutationRecord> records, MutationObserver observer)
