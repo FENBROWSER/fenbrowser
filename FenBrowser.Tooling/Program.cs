@@ -670,6 +670,18 @@ namespace FenBrowser.Tooling
                     Console.WriteLine($"[debug-site] frame bench threw: {ex.GetType().Name}: {ex.Message}");
                 }
             }
+            if (int.TryParse(Environment.GetEnvironmentVariable("FEN_DEBUG_SITE_LAYOUT_BENCH"), out var layoutBenchPasses) &&
+                layoutBenchPasses > 0 && root != null)
+            {
+                try
+                {
+                    Console.WriteLine(await FrameCostBench.RunLayoutAsync(root, host.FlushPendingLayoutAsync, layoutBenchPasses).ConfigureAwait(false));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[debug-site] layout bench threw: {ex}");
+                }
+            }
             if (interaction != null)
             {
                 interaction = interaction with

@@ -72,6 +72,43 @@ internal static class FrameCostBench
         return report.ToString();
     }
 
+    /// <summary>
+    /// Times full document layouts of the live page through its own renderer, the cost
+    /// a script pays for each forced layout (getBoundingClientRect, getComputedStyle
+    /// width). Going through the page's renderer serializes with the page's own layouts:
+    /// a second renderer laid out the same style objects concurrently. Enabled from
+    /// debug-site with FEN_DEBUG_SITE_LAYOUT_BENCH=&lt;passes&gt;; prints one line before
+    /// the passes start, so a profiler can be attached for exactly that window.
+    /// </summary>
+    public static async Task<string> RunLayoutAsync(Node root, Func<Task> flushLayout, int passes)
+    {
+        var milliseconds = new List<double>(passes);
+        long calls = 0;
+        long cacheHits = 0;
+        long snapshots = 0, snapshotBoxes = 0, restores = 0;
+        Console.WriteLine($"[layout-bench] start passes={passes}");
+        for (int i = 0; i < passes; i++)
+        {
+            root.MarkDirty(InvalidationKind.Layout);
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            await flushLayout().ConfigureAwait(false);
+            milliseconds.Add(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            var counters = FenBrowser.FenEngine.Layout.Contexts.FormattingContext.PassCounters;
+            calls += counters.Calls;
+            cacheHits += counters.CacheHits;
+            var snapshotCounters = FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore.SnapshotCounters;
+            snapshots += snapshotCounters.Taken;
+            snapshotBoxes += snapshotCounters.BoxesCloned;
+            restores += snapshotCounters.Restores;
+        }
+
+        milliseconds.Sort();
+        return string.Create(CultureInfo.InvariantCulture,
+            $"layout-bench passes={passes} median={milliseconds[passes / 2]:F1}ms min={milliseconds[0]:F1}ms max={milliseconds[^1]:F1}ms " +
+            $"fcCalls/pass={calls / Math.Max(1, passes)} cacheHits/pass={cacheHits / Math.Max(1, passes)} " +
+            $"snapshots/pass={snapshots / Math.Max(1, passes)} clonedBoxes/pass={snapshotBoxes / Math.Max(1, passes)} restores/pass={restores / Math.Max(1, passes)}");
+    }
+
     private static RenderFrameTelemetry Frame(
         SkiaDomRenderer renderer,
         SKCanvas canvas,
