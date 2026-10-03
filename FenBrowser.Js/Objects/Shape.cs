@@ -19,7 +19,7 @@ namespace FenBrowser.Js.Objects;
 // process-lifetime roots even after all of the corresponding shapes died.
 public class Shape
 {
-    private const int TransitionPruneInterval = 64;
+    private const int MinTransitionPruneSize = 64;
 
     private static readonly Shape _root = new();
     public static Shape Root => _root;
@@ -32,16 +32,30 @@ public class Shape
     public string AddedProperty => _addedProperty!;
     public int AddedSlot => _addedSlot;
 
+    // Writes to both maps are already serialized (ExtensionGate, the transition
+    // lock), so one internal lock is enough. The default concurrency level is one
+    // lock object per CPU, and every shape paid for that table whether or not it
+    // ever gained a child.
     private sealed class ChainMap
     {
-        public readonly ConcurrentDictionary<string, int> Map = new(StringComparer.Ordinal);
+        public readonly ConcurrentDictionary<string, int> Map;
         public readonly object ExtensionGate = new();
         public int Tail;
+
+        public ChainMap(int capacity) =>
+            Map = new ConcurrentDictionary<string, int>(concurrencyLevel: 1, capacity, StringComparer.Ordinal);
     }
 
     private readonly ChainMap _chain;
-    private readonly ConcurrentDictionary<string, WeakReference<Shape>> _transitions = new(StringComparer.Ordinal);
-    private int _transitionOperations;
+
+    // Created on the first transition that is not the hot one; most shapes are leaves.
+    private ConcurrentDictionary<string, WeakReference<Shape>>? _transitions;
+    private readonly object _transitionGate = new();
+    // Dead entries are swept when the table reaches this size, which then moves
+    // to twice what survived. Sweeping every 64 insertions walked the whole table
+    // each time - quadratic on the root shape, which gains a transition per
+    // distinct first property name a page ever uses.
+    private int _transitionPruneSize = MinTransitionPruneSize;
 
     // The transition this shape was asked for last. An object literal, a
     // constructor and a class body all add the same properties in the same
@@ -63,7 +77,7 @@ public class Shape
     {
         PropertyCount = 0;
         _addedSlot = -1;
-        _chain = new ChainMap();
+        _chain = new ChainMap(capacity: 4);
     }
 
     private Shape(Shape parent, string property)
@@ -99,7 +113,7 @@ public class Shape
         // dead sibling chain: build a private map for this new live chain by
         // walking the lineage once. Once the chain's shapes die, this map and all
         // of its page-controlled strings can die with them.
-        var chain = new ChainMap { Tail = PropertyCount };
+        var chain = new ChainMap(capacity: PropertyCount + 4) { Tail = PropertyCount };
         chain.Map[property] = _addedSlot;
         for (Shape? s = parent; s != null && s != _root; s = s._parent)
         {
@@ -122,7 +136,8 @@ public class Shape
             return hot.Target;
         }
 
-        if (_transitions.TryGetValue(property, out var weak))
+        var transitions = Volatile.Read(ref _transitions);
+        if (transitions != null && transitions.TryGetValue(property, out var weak))
         {
             if (weak.TryGetTarget(out var existing))
             {
@@ -131,12 +146,18 @@ public class Shape
             }
 
             // Weak value is dead; remove the corresponding strong key immediately.
-            _transitions.TryRemove(property, out _);
+            transitions.TryRemove(property, out _);
         }
 
-        lock (_transitions)
+        lock (_transitionGate)
         {
-            if (_transitions.TryGetValue(property, out weak))
+            transitions = _transitions;
+            if (transitions == null)
+            {
+                transitions = new ConcurrentDictionary<string, WeakReference<Shape>>(concurrencyLevel: 1, capacity: 2, StringComparer.Ordinal);
+                Volatile.Write(ref _transitions, transitions);
+            }
+            else if (transitions.TryGetValue(property, out weak))
             {
                 if (weak.TryGetTarget(out var existing))
                 {
@@ -144,16 +165,17 @@ public class Shape
                     return existing;
                 }
 
-                _transitions.TryRemove(property, out _);
+                transitions.TryRemove(property, out _);
             }
 
             var next = new Shape(this, property);
-            _transitions[property] = new WeakReference<Shape>(next);
+            transitions[property] = new WeakReference<Shape>(next);
             _hotTransition = new HotTransition(property, next);
 
-            if (Interlocked.Increment(ref _transitionOperations) % TransitionPruneInterval == 0)
+            if (transitions.Count >= _transitionPruneSize)
             {
                 PruneDeadTransitions();
+                _transitionPruneSize = Math.Max(MinTransitionPruneSize, transitions.Count * 2);
             }
 
             return next;
@@ -173,11 +195,17 @@ public class Shape
 
     private void PruneDeadTransitions()
     {
-        foreach (var pair in _transitions)
+        var transitions = _transitions;
+        if (transitions == null)
+        {
+            return;
+        }
+
+        foreach (var pair in transitions)
         {
             if (!pair.Value.TryGetTarget(out _))
             {
-                _transitions.TryRemove(pair.Key, out _);
+                transitions.TryRemove(pair.Key, out _);
             }
         }
     }
