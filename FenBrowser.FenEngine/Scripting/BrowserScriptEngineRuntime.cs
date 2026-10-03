@@ -4206,6 +4206,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     scriptFailedFields["origin"] = origin;
                     scriptFailedFields["errorType"] = ex.GetType().Name;
                     scriptFailedFields["error"] = ex.Message;
+                    ReportFenJsException(ex);
                     // A JsEngineFatalException is an engine defect, not a page
                     // error, and its message names the broken cell but never the
                     // code that touched it. The managed stack is the only record
@@ -25786,6 +25787,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         catch (Exception ex)
         {
             TraceDynamicScriptExecutionFailure(scriptRecord, batchLabel, ex.GetType().Name, ex.Message);
+            ReportFenJsException(ex);
             return false;
         }
         finally

@@ -2,6 +2,7 @@ using System;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.FenEngine.Scripting;
@@ -33,7 +34,9 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
             }
 
-            function report(error) {
+            // filename/lineno/colno are known for an error the host found itself
+            // (a script that did not parse); otherwise they are left at their defaults.
+            function report(error, filename, lineno, colno) {
                 var message = 'Uncaught ' + describe(error);
                 var handled = false;
                 // An error handler that throws is not reported again: the second
@@ -41,7 +44,14 @@ public sealed partial class FenJsBrowserScriptEngine
                 if (!reporting && typeof g.ErrorEvent === 'function' && typeof g.dispatchEvent === 'function') {
                     reporting = true;
                     try {
-                        var event = new g.ErrorEvent('error', { message: message, error: error, cancelable: true });
+                        var event = new g.ErrorEvent('error', {
+                            message: message,
+                            error: error,
+                            filename: filename !== undefined ? filename : '',
+                            lineno: lineno || 0,
+                            colno: colno || 0,
+                            cancelable: true
+                        });
                         handled = g.dispatchEvent(event) === false;
                     } catch (_dispatchFailure) {
                     } finally {
@@ -99,10 +109,45 @@ public sealed partial class FenJsBrowserScriptEngine
     /// </summary>
     private void ReportFenJsException(Exception exception)
     {
+        // HTML 8.1.4.2 "create a classic script": a script that does not parse gets
+        // a SyntaxError, created in its realm, as its error to rethrow, and running
+        // it reports that error like any other uncaught exception.
+        if (exception is JsParserException parseError)
+        {
+            // The position is the script's own; an inline script starts on its
+            // element's line in the document, and its URL is the document's.
+            var record = GetCurrentScriptRecord();
+            var external = !string.IsNullOrEmpty(record?.ResolvedUrl) || !string.IsNullOrEmpty(record?.Src);
+            var line = parseError.Line;
+            if (!external && line > 0 && record?.SourceLine > 0)
+            {
+                line += record.SourceLine - 1;
+            }
+
+            var filename = external
+                ? (string.IsNullOrEmpty(record.ResolvedUrl) ? record.Src : record.ResolvedUrl)
+                : _currentBaseUri?.AbsoluteUri;
+            ReportFenJsValue(
+                () => _interpreter.InvokeFunction(
+                    ReadGlobalValueOrUndefined("SyntaxError"),
+                    new[] { JsValue.FromString(parseError.Message) },
+                    JsValue.Undefined),
+                filename == null ? JsValue.Undefined : JsValue.FromString(filename),
+                line,
+                parseError.Column);
+            return;
+        }
+
         if (exception is not JsThrownException thrown || IsFenJsInputEventTimeout(thrown))
         {
             return;
         }
+
+        ReportFenJsValue(() => thrown.Value, JsValue.Undefined, 0, 0);
+    }
+
+    private void ReportFenJsValue(Func<JsValue> errorValue, JsValue filename, int line, int column)
+    {
 
         if (_reportingFenJsException || _interpreter == null || _realmAbandoned)
         {
@@ -119,8 +164,13 @@ public sealed partial class FenJsBrowserScriptEngine
                     var report = ReadGlobalValueOrUndefined("__fenReportException");
                     if (_interpreter.CanCallValue(report))
                     {
-                        using var pins = PinFenJsValues(report, thrown.Value);
-                        _ = _interpreter.InvokeFunction(report, new[] { thrown.Value }, JsValue.Undefined);
+                        using var reportPin = PinFenJsValues(report);
+                        var error = errorValue();
+                        using var errorPin = PinFenJsValues(error);
+                        _ = _interpreter.InvokeFunction(
+                            report,
+                            new[] { error, filename, JsValue.FromNumber(line), JsValue.FromNumber(column) },
+                            JsValue.Undefined);
                     }
                 }
 

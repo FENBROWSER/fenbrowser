@@ -12,7 +12,7 @@ namespace FenBrowser.Tests.Scripting
     /// <summary>
     /// Classic scripts of 64K characters or more are compiled on a thread of their
     /// own before the script thread runs them. These pin that the page cannot tell:
-    /// order, currentScript, source text, and a broken script failing alone stay as they were.
+    /// order, currentScript, source text, and how a broken script fails stay as they were.
     /// </summary>
     public sealed class OffThreadScriptCompileTests
     {
@@ -53,23 +53,30 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("17", engine.Evaluate("String(globalThis.__fillerValue)")?.ToString());
         }
 
-        [Fact]
-        public async Task LargeScriptWithSyntaxError_DoesNotRunAndTheNextScriptStillRuns()
+        // HTML 8.1.4.2: a script that does not parse reports a SyntaxError to the
+        // window when it would have run; the scripts after it still run.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ScriptWithSyntaxError_IsReportedAndTheNextScriptStillRuns(bool large)
         {
             var baseUri = new Uri("https://example.com/index.html");
             var document = new HtmlParser(
-                "<html><body><script src=\"/broken.js\"></script>" +
+                "<html><body><script>globalThis.__errors = []; window.onerror = function (message, source, line, column, error) { globalThis.__errors.push(error instanceof SyntaxError); };</script>" +
+                "<script src=\"/broken.js\"></script>" +
                 "<script>globalThis.__after = true;</script></body></html>",
                 baseUri).Parse();
             var engine = new FenJsBrowserScriptEngine(CreateHost()) { Sandbox = SandboxPolicy.AllowAll };
             engine.AllowExternalScripts = true;
-            var broken = LargeScript("globalThis.__brokenRan = true; var = ;");
+            var tail = "globalThis.__brokenRan = true; var = ;";
+            var broken = large ? LargeScript(tail) : tail;
             engine.ExternalScriptFetcher = (_, _) => Task.FromResult(broken);
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
             Assert.Equal(true, engine.Evaluate("globalThis.__after === true"));
             Assert.Equal(true, engine.Evaluate("globalThis.__brokenRan === undefined"));
+            Assert.Equal("true", engine.Evaluate("globalThis.__errors.join(',')")?.ToString());
         }
 
         [Fact]
