@@ -787,20 +787,25 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             bool widthUnconstrained = widthResolution.IsUnconstrained;
             float available = widthResolution.ResolvedAvailable;
 
-            box.Geometry.Padding = style.Padding;
+            // CSS 2.1 §8.3/§8.4: percentage margins and padding refer to the containing
+            // block's width; an unconstrained (intrinsic) pass resolves them to zero.
+            float percentBasis = widthUnconstrained ? 0f : available;
+            var padding = LayoutBoxOps.ResolvePadding(style, percentBasis);
+            var margin = LayoutBoxOps.ResolveMargin(style, percentBasis);
+            box.Geometry.Padding = padding;
             box.Geometry.Border = style.BorderThickness;
-            box.Geometry.Margin = style.Margin;
+            box.Geometry.Margin = margin;
 
             float horizontalChrome = (float)(
-                style.Padding.Left + style.Padding.Right +
+                padding.Left + padding.Right +
                 style.BorderThickness.Left + style.BorderThickness.Right +
-                style.Margin.Left + style.Margin.Right);
+                margin.Left + margin.Right);
 
             // CSS Box Sizing 3 §3: with box-sizing:border-box the specified width
             // covers padding and border, so the content box is that much narrower.
             bool isBorderBox = string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
             float paddingAndBorder = (float)(
-                style.Padding.Left + style.Padding.Right +
+                padding.Left + padding.Right +
                 style.BorderThickness.Left + style.BorderThickness.Right);
 
             float width;

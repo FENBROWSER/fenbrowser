@@ -5321,6 +5321,9 @@ private static double? ExtractPx(string text, string prop)
             ApplyMarginSide(marginInlineStartIsRight ? "left" : "right", marginInlineEndRaw);
             
             css.Margin = new Thickness(mLeft, mTop, mRight, mBottom);
+            var resolvedMargin = css.Margin;
+            css.MarginPercent = ResolveBoxSidePercents(css.Map, MarginSideKeys, marginInlineStartIsRight, allowNegative: true, ref resolvedMargin);
+            css.Margin = resolvedMargin;
             
             // DEBUG: Log H2 margin to trace 2400px margin-top bug (DISABLED - causes performance issues)
             // if (tag == "H2")
@@ -5362,6 +5365,9 @@ private static double? ExtractPx(string text, string prop)
                 System.Math.Max(0, pRight), 
                 System.Math.Max(0, pBottom)
             );
+            var resolvedPadding = css.Padding;
+            css.PaddingPercent = ResolveBoxSidePercents(css.Map, PaddingSideKeys, inlineStartIsRight: false, allowNegative: false, ref resolvedPadding);
+            css.Padding = resolvedPadding;
             
             var borderColor = TryColor(ExtractBorderColor(css.Map));
             if (borderColor.HasValue) css.BorderBrushColor = CssParser.ResolveCurrentColor(borderColor.Value, css.ForegroundColor);
@@ -10083,6 +10089,123 @@ private static double? ExtractPx(string text, string prop)
 
         normalized = raw.Trim().ToLowerInvariant();
         return normalized.Length > 0;
+    }
+
+    private static readonly string[] MarginSideKeys =
+    {
+        "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+        "margin-block", "margin-block-start", "margin-block-end",
+        "margin-inline", "margin-inline-start", "margin-inline-end",
+    };
+
+    private static readonly string[] PaddingSideKeys =
+    {
+        "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+        "padding-block", "padding-block-start", "padding-block-end",
+        "padding-inline", "padding-inline-start", "padding-inline-end",
+    };
+
+    /// <summary>
+    /// CSS 2.1 §8.3 / §8.4: percentage margins and padding refer to the width of the
+    /// containing block, so they cannot become pixels here. Replays the cascade order
+    /// the length pass uses (shorthand, longhands, block pair and sides, inline pair
+    /// and sides) to find each side's winning token; a percentage winner is recorded
+    /// for layout to resolve and its length side zeroed. Returns empty, at the cost
+    /// of a few lookups, when no side mentions a percentage.
+    /// </summary>
+    private static CssSidePercents ResolveBoxSidePercents(
+        Dictionary<string, string> map,
+        string[] keys,
+        bool inlineStartIsRight,
+        bool allowNegative,
+        ref Thickness lengths)
+    {
+        bool anyPercent = false;
+        foreach (var key in keys)
+        {
+            var raw = DictGet(map, key);
+            if (raw != null && raw.Contains('%'))
+            {
+                anyPercent = true;
+                break;
+            }
+        }
+
+        if (!anyPercent)
+        {
+            return default;
+        }
+
+        string top = null, right = null, bottom = null, left = null;
+
+        bool Valid(string token) =>
+            !string.IsNullOrWhiteSpace(token) &&
+            (IsCssAuto(token) || TryPx(token, out _) ||
+             (TryPercent(token, out var percent) && (allowNegative || percent >= 0)));
+
+        void Apply(ref string side, string token)
+        {
+            if (Valid(token))
+            {
+                side = token.Trim();
+            }
+        }
+
+        if (TryExpandPhysicalBoxShorthand(DictGet(map, keys[0]), out var shorthandTop, out var shorthandRight, out var shorthandBottom, out var shorthandLeft))
+        {
+            Apply(ref top, shorthandTop);
+            Apply(ref right, shorthandRight);
+            Apply(ref bottom, shorthandBottom);
+            Apply(ref left, shorthandLeft);
+        }
+
+        Apply(ref top, DictGet(map, keys[1]));
+        Apply(ref right, DictGet(map, keys[2]));
+        Apply(ref bottom, DictGet(map, keys[3]));
+        Apply(ref left, DictGet(map, keys[4]));
+
+        if (TryParseLogicalAxisPair(DictGet(map, keys[5]), out var blockStart, out var blockEnd))
+        {
+            Apply(ref top, blockStart);
+            Apply(ref bottom, blockEnd);
+        }
+        Apply(ref top, DictGet(map, keys[6]));
+        Apply(ref bottom, DictGet(map, keys[7]));
+
+        if (TryParseLogicalAxisPair(DictGet(map, keys[8]), out var inlineStart, out var inlineEnd))
+        {
+            if (inlineStartIsRight)
+            {
+                Apply(ref right, inlineStart);
+                Apply(ref left, inlineEnd);
+            }
+            else
+            {
+                Apply(ref left, inlineStart);
+                Apply(ref right, inlineEnd);
+            }
+        }
+        if (inlineStartIsRight)
+        {
+            Apply(ref right, DictGet(map, keys[9]));
+            Apply(ref left, DictGet(map, keys[10]));
+        }
+        else
+        {
+            Apply(ref left, DictGet(map, keys[9]));
+            Apply(ref right, DictGet(map, keys[10]));
+        }
+
+        double? Percent(string token) =>
+            token != null && !TryPx(token, out _) && TryPercent(token, out var value) ? value : null;
+
+        var percents = new CssSidePercents(Percent(left), Percent(top), Percent(right), Percent(bottom));
+        lengths = new Thickness(
+            percents.Left.HasValue ? 0 : lengths.Left,
+            percents.Top.HasValue ? 0 : lengths.Top,
+            percents.Right.HasValue ? 0 : lengths.Right,
+            percents.Bottom.HasValue ? 0 : lengths.Bottom);
+        return percents;
     }
 
     private static bool TryParseLogicalAxisPair(string raw, out string start, out string end)

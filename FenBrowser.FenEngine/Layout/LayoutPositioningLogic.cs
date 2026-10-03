@@ -103,7 +103,7 @@ namespace FenBrowser.FenEngine.Layout
             float previousContentTop = box.Geometry.ContentBox.Top;
 
             box.Geometry.ContentBox = new SKRect(left, top, left + width, top + height);
-            box.Geometry.Padding = style.Padding;
+            box.Geometry.Padding = LayoutBoxOps.ResolvePadding(style, cbRect.Width);
             box.Geometry.Border = style.BorderThickness;
             if (collapsePositioningMarginsInFinalGeometry &&
                 (string.Equals(effectivePosition, "absolute", StringComparison.OrdinalIgnoreCase) ||

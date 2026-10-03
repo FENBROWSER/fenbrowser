@@ -48,7 +48,9 @@ public sealed class CssStyleResolutionAllocationTests
         Assert.Equal(8, resolved.Margin.Top);
         Assert.Equal(12, resolved.Margin.Right);
         Assert.Null(resolved.Transform);
-        Assert.InRange(allocated, 1, 6_320_000);
+        // 8 bytes per style above the previous budget: the reference CssComputed keeps
+        // for percentage margins/padding (null for ordinary styles like this one).
+        Assert.InRange(allocated, 1, 6_328_000);
     }
 
     [Fact]

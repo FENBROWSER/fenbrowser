@@ -23,6 +23,7 @@ using System.Collections.Generic;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Layout.Contexts;
 using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 
@@ -155,6 +156,7 @@ namespace FenBrowser.FenEngine.Layout
             bool preserveIntrinsicAutoSize = false)
         {
             var result = new AbsoluteLayoutResult();
+            style = WithResolvedBoxPercents(style, containingBlock.Width);
 
             // Solve horizontal axis
             SolveHorizontal(style, containingBlock.Width, intrinsicWidth, preserveIntrinsicAutoSize, ref result);
@@ -213,6 +215,27 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// CSS 2.1 §8.3/§8.4: percentage margins and padding of a positioned box refer
+        /// to the width of its containing block (the padding box of the positioned
+        /// ancestor), for the vertical sides too. The solver works in lengths, so it
+        /// gets a copy with those percentages already resolved.
+        /// </summary>
+        private static CssComputed WithResolvedBoxPercents(CssComputed style, float cbWidth)
+        {
+            if (style == null || (style.PaddingPercent.IsEmpty && style.MarginPercent.IsEmpty))
+            {
+                return style;
+            }
+
+            var resolved = style.Clone();
+            resolved.Padding = LayoutBoxOps.ResolvePadding(style, cbWidth);
+            resolved.Margin = LayoutBoxOps.ResolveMargin(style, cbWidth);
+            resolved.PaddingPercent = default;
+            resolved.MarginPercent = default;
+            return resolved;
         }
 
         private static CssComputed WithWidth(CssComputed style, float width)

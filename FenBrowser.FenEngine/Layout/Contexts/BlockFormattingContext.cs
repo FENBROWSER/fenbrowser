@@ -134,7 +134,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 bool childIsFloat = floatStyle == "left" || floatStyle == "right";
                 if (clearStyle != "none" && !childIsFloat)
                 {
-                    float childMarginTopForClear = ResolveUsedTopMargin(child);
+                    float childMarginTopForClear = ResolveUsedTopMargin(child, childFlowWidth);
                     float collapsedMarginForClear;
                     if (isFirstChild)
                     {
@@ -280,8 +280,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     // Normal Flow Block
                     // Compute margin before layout so FloatOriginY is available for
                     // child IFCs that need to query float intrusions per line.
-                    float childMarginTop = ResolveUsedTopMargin(child);
-                    float childMarginBottom = (float)(child.ComputedStyle?.Margin.Bottom ?? 0.0);
+                    float childMarginTop = ResolveUsedTopMargin(child, childFlowWidth);
+                    float childMarginBottom = (float)LayoutBoxOps.ResolveMargin(child.ComputedStyle, childFlowWidth).Bottom;
 
                     // MARGIN COLLAPSING
                     float collapsedMargin;
@@ -336,7 +336,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
                     else
                     {
-                        childMarginBottom = ResolveUsedBottomMargin(child);
+                        childMarginBottom = ResolveUsedBottomMargin(child, childFlowWidth);
                     }
 
                     // Advance cursor by the collapsed margin. A collapsed-through block
@@ -943,9 +943,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// chain of first in-flow children, because each of them collapses into its
         /// own parent in turn.
         /// </remarks>
-        private static float ResolveUsedTopMargin(LayoutBox box)
+        private static float ResolveUsedTopMargin(LayoutBox box, float containingBlockWidth)
         {
-            float own = (float)(box?.ComputedStyle?.Margin.Top ?? 0.0);
+            // Percentages refer to the containing block's width (CSS 2.1 §8.3).
+            float own = (float)LayoutBoxOps.ResolveMargin(box?.ComputedStyle, containingBlockWidth).Top;
             if (box == null || PreventsChildTopMarginCollapseForUsedMargin(box))
             {
                 return own;
@@ -959,7 +960,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return own;
             }
 
-            return MarginCollapseComputer.Collapse(own, ResolveUsedTopMargin(firstInFlow));
+            // The child's own width is not resolved yet; its containing block is
+            // approximated by this box's.
+            return MarginCollapseComputer.Collapse(own, ResolveUsedTopMargin(firstInFlow, containingBlockWidth));
         }
 
         /// <summary>
@@ -968,9 +971,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// the next sibling collapses against is the collapse of that chain (Acid2:
         /// `.parser`'s 1em bottom margin reaches the `ul` through `.parser-container`).
         /// </summary>
-        private static float ResolveUsedBottomMargin(LayoutBox box)
+        private static float ResolveUsedBottomMargin(LayoutBox box, float containingBlockWidth)
         {
-            float own = (float)(box?.ComputedStyle?.Margin.Bottom ?? 0.0);
+            float own = (float)LayoutBoxOps.ResolveMargin(box?.ComputedStyle, containingBlockWidth).Bottom;
             if (box == null || PreventsChildBottomMarginCollapse(box))
             {
                 return own;
@@ -999,7 +1002,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return own;
             }
 
-            return MarginCollapseComputer.Collapse(own, ResolveUsedBottomMargin(lastInFlow));
+            // Laid out by now: the last child's containing block is this box's content box.
+            return MarginCollapseComputer.Collapse(own, ResolveUsedBottomMargin(lastInFlow, box.Geometry?.ContentBox.Width ?? 0f));
         }
 
         private static bool PreventsChildBottomMarginCollapse(LayoutBox box)
@@ -1010,7 +1014,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return true;
             }
 
-            if (style.Padding.Bottom > 0 || style.BorderThickness.Bottom > 0)
+            if (LayoutBoxOps.HasPaddingBottom(style) || style.BorderThickness.Bottom > 0)
             {
                 return true;
             }
@@ -1040,7 +1044,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         private static bool PreventsChildTopMarginCollapseForUsedMargin(LayoutBox box)
         {
             var style = box.ComputedStyle;
-            if (style != null && (style.Padding.Top > 0 || style.BorderThickness.Top > 0))
+            if (style != null && (LayoutBoxOps.HasPaddingTop(style) || style.BorderThickness.Top > 0))
             {
                 return true;
             }
@@ -1943,9 +1947,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // 1. Initial values from computed style
             var style = box.ComputedStyle;
-            Thickness padding = style?.Padding ?? new Thickness();
+            // CSS 2.1 §8.3/§8.4: percentage margins and padding refer to the containing
+            // block's width; an unconstrained (intrinsic) pass resolves them to zero.
+            float percentBasis = widthUnconstrained ? 0f : available;
+            Thickness padding = LayoutBoxOps.ResolvePadding(style, percentBasis);
             Thickness border = style?.BorderThickness ?? new Thickness();
-            Thickness margin = style?.Margin ?? new Thickness();
+            Thickness margin = LayoutBoxOps.ResolveMargin(style, percentBasis);
             float horizontalExtras = (float)(padding.Left + padding.Right + border.Left + border.Right);
             bool isBorderBox = string.Equals(style?.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
 
@@ -2177,7 +2184,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
             {
-                var padding = style.Padding;
+                // ResolveWidth already resolved percentage padding into the geometry.
+                var padding = box.Geometry.Padding;
                 var border = style.BorderThickness;
                 height = Math.Max(0f, height.Value -
                     (float)(padding.Top + padding.Bottom + border.Top + border.Bottom));
@@ -2250,8 +2258,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     !string.IsNullOrWhiteSpace(style?.MinHeightExpression) ||
                     style?.AspectRatio > 0;
                 bool hasVerticalChrome =
-                    (style?.Padding.Top ?? 0) > 0 ||
-                    (style?.Padding.Bottom ?? 0) > 0 ||
+                    LayoutBoxOps.HasPaddingTop(style) ||
+                    LayoutBoxOps.HasPaddingBottom(style) ||
                     (style?.BorderThickness.Top ?? 0) > 0 ||
                     (style?.BorderThickness.Bottom ?? 0) > 0;
 

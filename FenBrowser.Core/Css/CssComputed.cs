@@ -117,7 +117,36 @@ namespace FenBrowser.Core.Css
         public bool MarginRightAuto { get; set; }  // For margin: auto centering
         public bool MarginTopAuto { get; set; }
         public bool MarginBottomAuto { get; set; }
+        /// <summary>Percentage margin sides; layout resolves them against the containing block width.</summary>
+        public CssSidePercents MarginPercent
+        {
+            get => _boxPercents?.Margin ?? default;
+            set => SetBoxPercents(value, PaddingPercent);
+        }
         public Thickness Padding { get; set; }
+        /// <summary>Percentage padding sides; layout resolves them against the containing block width.</summary>
+        public CssSidePercents PaddingPercent
+        {
+            get => _boxPercents?.Padding ?? default;
+            set => SetBoxPercents(MarginPercent, value);
+        }
+
+        // Almost no style has a percentage margin or padding, and every element carries
+        // a CssComputed: one shared-null reference instead of two inline structs.
+        private sealed class BoxPercents
+        {
+            public CssSidePercents Margin;
+            public CssSidePercents Padding;
+        }
+
+        private BoxPercents _boxPercents;
+
+        private void SetBoxPercents(CssSidePercents margin, CssSidePercents padding)
+        {
+            _boxPercents = margin.IsEmpty && padding.IsEmpty
+                ? null
+                : new BoxPercents { Margin = margin, Padding = padding };
+        }
         public Thickness BorderThickness { get; set; }
         public SKColor? BorderBrush { get; set; }
         public CssCornerRadius BorderRadius { get; set; }

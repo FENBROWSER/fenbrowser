@@ -344,9 +344,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (atomicChild.Geometry == null) atomicChild.Geometry = new BoxModel();
                 float previousContentLeft = atomicChild.Geometry.ContentBox.Left;
                 float previousContentTop = atomicChild.Geometry.ContentBox.Top;
-                var pad = atomicChild.ComputedStyle?.Padding ?? new Thickness();
+                // An atomic inline's percentage padding and margins refer to the width
+                // of the block container it sits in (CSS 2.1 §8.3/§8.4).
+                var pad = LayoutBoxOps.ResolvePadding(atomicChild.ComputedStyle, state.InlineContainingBlockWidth);
                 var brd = atomicChild.ComputedStyle?.BorderThickness ?? new Thickness();
-                var mar = atomicChild.ComputedStyle?.Margin ?? new Thickness();
+                var mar = LayoutBoxOps.ResolveMargin(atomicChild.ComputedStyle, state.InlineContainingBlockWidth);
                 float nonContentW = (float)(pad.Left + pad.Right + brd.Left + brd.Right + mar.Left + mar.Right);
                 float nonContentH = (float)(pad.Top + pad.Bottom + brd.Top + brd.Bottom + mar.Top + mar.Bottom);
                 float contentW = Math.Max(0f, childSize.Width - nonContentW);
@@ -3340,9 +3342,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // property between a HasValue check and the matching .Value read can observe
             // two different styles and throw.
             var style = isAnonymousBlock ? null : box.ComputedStyle;
-            var p = style?.Padding ?? new Thickness();
+            // CSS 2.1 §8.3/§8.4: percentage margins and padding refer to the containing
+            // block's width; an unconstrained (intrinsic) pass resolves them to zero.
+            float percentBasis = widthUnconstrained ? 0f : available;
+            var p = LayoutBoxOps.ResolvePadding(style, percentBasis);
             var b = style?.BorderThickness ?? new Thickness();
-            var m = style?.Margin ?? new Thickness();
+            var m = LayoutBoxOps.ResolveMargin(style, percentBasis);
 
             float used = (float)(p.Left + p.Right + b.Left + b.Right + m.Left + m.Right);
             finalW = widthUnconstrained ? Math.Max(0f, available - used) : Math.Max(0f, rawAvailable - used);

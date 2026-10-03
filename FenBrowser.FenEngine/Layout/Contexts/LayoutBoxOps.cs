@@ -12,6 +12,34 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
 {
     public static class LayoutBoxOps
     {
+        /// <summary>
+        /// Used padding: CSS 2.1 §8.4 resolves percentage padding (every side) against
+        /// the containing block's width. Pass a non-positive width for an indefinite
+        /// containing block (intrinsic sizing), where percentages count as zero.
+        /// </summary>
+        public static FenBrowser.Core.Thickness ResolvePadding(CssComputed style, float containingBlockWidth)
+        {
+            return style == null
+                ? new FenBrowser.Core.Thickness()
+                : style.PaddingPercent.Resolve(style.Padding, containingBlockWidth);
+        }
+
+        /// <summary>Used margin: percentages resolve against the containing block's width (CSS 2.1 §8.3).</summary>
+        public static FenBrowser.Core.Thickness ResolveMargin(CssComputed style, float containingBlockWidth)
+        {
+            return style == null
+                ? new FenBrowser.Core.Thickness()
+                : style.MarginPercent.Resolve(style.Margin, containingBlockWidth);
+        }
+
+        /// <summary>True when the computed padding-top is non-zero, as a length or a percentage.</summary>
+        public static bool HasPaddingTop(CssComputed style) =>
+            style != null && (style.Padding.Top > 0 || style.PaddingPercent.HasPositiveTop);
+
+        /// <summary>True when the computed padding-bottom is non-zero, as a length or a percentage.</summary>
+        public static bool HasPaddingBottom(CssComputed style) =>
+            style != null && (style.Padding.Bottom > 0 || style.PaddingPercent.HasPositiveBottom);
+
         public static void ComputeBoxModelFromContent(LayoutBox box, float contentW, float contentH)
         {
             float left = box.Geometry.ContentBox.Left;
