@@ -2805,6 +2805,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 {
                     Volatile.Write(ref _activeFenJsWorkItem, null);
                     Volatile.Write(ref _fenJsWorkerActive, 0);
+                    if (_intersectionObserversActive &&
+                        !string.Equals(workItem.Kind, IntersectionObservationStepKind, StringComparison.Ordinal))
+                    {
+                        ScheduleIntersectionObservationStep();
+                    }
                 }
             }
         }
@@ -7770,6 +7775,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 length: 3));
 
         InstallFenJsPerformance();
+        InstallFenJsIntersectionObserverNatives();
         InstallFenJsTimers();
         InstallCustomElementDefinitionTracker();
         InstallFenJsBrowserConstructors();
@@ -9113,6 +9119,28 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 length: 1));
     }
 
+    private void InstallFenJsIntersectionObserverNatives()
+    {
+        _interpreter.RegisterGlobalValue(
+            "__fenIntersectionGeometry",
+            _interpreter.AllocateNativeFunction(
+                "__fenIntersectionGeometry",
+                (_, args) => ReadIntersectionGeometry(
+                    args.Count > 0 ? ResolveHostObjectOrNull<Element>(args[0]) : null,
+                    args.Count > 1 ? ResolveHostObjectOrNull<Element>(args[1]) : null),
+                length: 2));
+        _interpreter.RegisterGlobalValue(
+            "__fenRequestIntersectionUpdate",
+            _interpreter.AllocateNativeFunction(
+                "__fenRequestIntersectionUpdate",
+                (_, _) =>
+                {
+                    RequestIntersectionObservationStep();
+                    return JsValue.Undefined;
+                },
+                length: 0));
+    }
+
     private void InstallFenJsPerformance()
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -9521,6 +9549,71 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         return JsValue.FromNumber(id);
+    }
+
+    // Intersection Observer §3.2.8 "run the update intersection observations steps"
+    // belongs to the rendering update. Script has no rendering-update hook of its
+    // own, so the step runs as a prioritized script-thread job at most once per
+    // frame, scheduled by observe() and after any other script job while targets
+    // remain (a job is what moves layout, scroll or style). The step itself does
+    // not reschedule, so an idle page stays idle.
+    private const string IntersectionObservationStepKind = nameof(RunIntersectionObservationStep);
+    private int _intersectionStepPending;
+    private volatile bool _intersectionObserversActive;
+    private long _lastIntersectionStepStart;
+    private Timer _intersectionTimer;
+
+    private void RequestIntersectionObservationStep()
+    {
+        _intersectionObserversActive = true;
+        ScheduleIntersectionObservationStep();
+    }
+
+    private void ScheduleIntersectionObservationStep()
+    {
+        if (!_intersectionObserversActive || _realmAbandoned ||
+            Interlocked.Exchange(ref _intersectionStepPending, 1) == 1)
+        {
+            return;
+        }
+
+        var sinceLast = _lastIntersectionStepStart == 0
+            ? AnimationFrameIntervalMs
+            : Stopwatch.GetElapsedTime(_lastIntersectionStepStart).TotalMilliseconds;
+        var delay = (int)Math.Clamp(AnimationFrameIntervalMs - sinceLast, 0, AnimationFrameIntervalMs);
+        (_intersectionTimer ??= new Timer(
+                static state => ((FenJsBrowserScriptEngine)state).RunIntersectionObservationStep(),
+                this,
+                Timeout.Infinite,
+                Timeout.Infinite))
+            .Change(delay, Timeout.Infinite);
+    }
+
+    private void RunIntersectionObservationStep()
+    {
+        Volatile.Write(ref _intersectionStepPending, 0);
+        try
+        {
+            RunFenJsWithLargeStack<object>(() =>
+            {
+                _lastIntersectionStepStart = Stopwatch.GetTimestamp();
+                var update = ReadGlobalValueOrUndefined("__fenUpdateIntersectionObservations");
+                if (_interpreter.CanCallValue(update) &&
+                    _interpreter.InvokeFunction(update, Array.Empty<JsValue>(), _fenJsGlobalThis) is { Tag: JsValueTag.Boolean } remaining &&
+                    !remaining.AsBoolean())
+                {
+                    _intersectionObserversActive = false;
+                }
+
+                return null;
+            }, waitForWorkerMs: -1, instructionBudget: FenJsBrowserInstructionBudget, prioritize: true);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] intersection observation step failed: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
     }
 
     private void RunAnimationFrameStep()
@@ -14725,50 +14818,281 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 };
 
                 // â”€â”€ IntersectionObserver â”€â”€ https://w3c.github.io/IntersectionObserver/
-                // Facebook uses this for lazy-loading images and deferred content.
-                globalThis.IntersectionObserver = function IntersectionObserver(callback, options) {
-                    this._callback = callback;
-                    this._targets = [];
-                    this.root = (options && options.root) || null;
-                    this.rootMargin = (options && options.rootMargin) || '0px';
-                    this.thresholds = (options && options.threshold) || [0];
-                    if (!Array.isArray(this.thresholds)) {
-                        this.thresholds = [this.thresholds];
+                // Facebook, YouTube and most lazy loaders depend on it. Entries are
+                // computed from layout in the rendering update (__fenUpdateIntersectionObservations,
+                // driven by the engine's intersection step) - never invented.
+                (function () {
+                    var observerSlots = new WeakMap();
+                    var entrySlots = new WeakMap();
+                    var rectSlots = new WeakMap();
+                    var activeObservers = [];
+                    var lengthPattern = /^(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(px|%)?$/i;
+
+                    function brandCheck(slots, value, name) {
+                        var slot = slots.get(value);
+                        if (!slot) throw new TypeError("Illegal invocation: receiver is not a " + name);
+                        return slot;
                     }
-                };
-                IntersectionObserver.prototype.observe = function (target) {
-                    if (this._targets.indexOf(target) < 0) {
-                        this._targets.push(target);
+
+                    // Geometry Interfaces 1 §2: DOMRectReadOnly. Only defined when the realm
+                    // has none, as the entries' rects need a real interface.
+                    if (typeof globalThis.DOMRectReadOnly !== 'function') {
+                        var DOMRectReadOnly = function DOMRectReadOnly(x, y, width, height) {
+                            if (!new.target) throw new TypeError("Failed to construct 'DOMRectReadOnly': Please use the 'new' operator.");
+                            rectSlots.set(this, { x: +x || 0, y: +y || 0, width: +width || 0, height: +height || 0 });
+                        };
+                        var rectGetter = function (read) {
+                            return { get: function () { return read(brandCheck(rectSlots, this, 'DOMRectReadOnly')); }, enumerable: true, configurable: true };
+                        };
+                        Object.defineProperties(DOMRectReadOnly.prototype, {
+                            x: rectGetter(function (r) { return r.x; }),
+                            y: rectGetter(function (r) { return r.y; }),
+                            width: rectGetter(function (r) { return r.width; }),
+                            height: rectGetter(function (r) { return r.height; }),
+                            top: rectGetter(function (r) { return Math.min(r.y, r.y + r.height); }),
+                            right: rectGetter(function (r) { return Math.max(r.x, r.x + r.width); }),
+                            bottom: rectGetter(function (r) { return Math.max(r.y, r.y + r.height); }),
+                            left: rectGetter(function (r) { return Math.min(r.x, r.x + r.width); })
+                        });
+                        DOMRectReadOnly.prototype.toJSON = function () {
+                            return { x: this.x, y: this.y, width: this.width, height: this.height, top: this.top, right: this.right, bottom: this.bottom, left: this.left };
+                        };
+                        DOMRectReadOnly.fromRect = function (other) {
+                            other = other || {};
+                            return new DOMRectReadOnly(other.x, other.y, other.width, other.height);
+                        };
+                        Object.defineProperty(DOMRectReadOnly.prototype, Symbol.toStringTag, { value: 'DOMRectReadOnly', configurable: true });
+                        Object.defineProperty(globalThis, 'DOMRectReadOnly', { value: DOMRectReadOnly, writable: true, configurable: true });
                     }
-                    // Fire initial callback with isIntersecting: true for observed elements.
-                    // reCAPTCHA and other widgets depend on this for visibility detection.
-                    var self = this;
-                    if (typeof setTimeout === 'function') {
-                        setTimeout(function () {
-                            if (self._targets.indexOf(target) < 0) return;
-                            var entry = {
-                                target: target,
-                                isIntersecting: true,
-                                intersectionRatio: 1.0,
-                                boundingClientRect: { top: 0, left: 0, bottom: 100, right: 100, width: 100, height: 100, x: 0, y: 0 },
-                                intersectionRect: { top: 0, left: 0, bottom: 100, right: 100, width: 100, height: 100, x: 0, y: 0 },
-                                rootBounds: { top: 0, left: 0, bottom: 800, right: 1200, width: 1200, height: 800, x: 0, y: 0 },
-                                time: (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
-                            };
-                            try { self._callback([entry], self); } catch (e) {}
-                        }, 0);
+
+                    function makeRect(x, y, width, height) {
+                        return new globalThis.DOMRectReadOnly(x, y, width, height);
                     }
-                };
-                IntersectionObserver.prototype.unobserve = function (target) {
-                    var idx = this._targets.indexOf(target);
-                    if (idx >= 0) { this._targets.splice(idx, 1); }
-                };
-                IntersectionObserver.prototype.disconnect = function () {
-                    this._targets.length = 0;
-                };
-                IntersectionObserver.prototype.takeRecords = function () {
-                    return [];
-                };
+
+                    // Intersection Observer §2.3: IntersectionObserverEntry. Every attribute
+                    // is a prototype accessor, which is what feature detection looks for
+                    // ('intersectionRatio' in IntersectionObserverEntry.prototype).
+                    var IntersectionObserverEntry = function IntersectionObserverEntry(init) {
+                        if (!new.target) throw new TypeError("Failed to construct 'IntersectionObserverEntry': Please use the 'new' operator.");
+                        init = init || {};
+                        var toRect = function (r) { return r ? makeRect(r.x, r.y, r.width, r.height) : null; };
+                        entrySlots.set(this, {
+                            time: +init.time || 0,
+                            rootBounds: toRect(init.rootBounds),
+                            boundingClientRect: toRect(init.boundingClientRect) || makeRect(0, 0, 0, 0),
+                            intersectionRect: toRect(init.intersectionRect) || makeRect(0, 0, 0, 0),
+                            isIntersecting: !!init.isIntersecting,
+                            isVisible: !!init.isVisible,
+                            intersectionRatio: +init.intersectionRatio || 0,
+                            target: init.target
+                        });
+                    };
+                    ['time', 'rootBounds', 'boundingClientRect', 'intersectionRect', 'isIntersecting', 'isVisible', 'intersectionRatio', 'target'].forEach(function (name) {
+                        Object.defineProperty(IntersectionObserverEntry.prototype, name, {
+                            get: function () { return brandCheck(entrySlots, this, 'IntersectionObserverEntry')[name]; },
+                            enumerable: true,
+                            configurable: true
+                        });
+                    });
+                    Object.defineProperty(IntersectionObserverEntry.prototype, Symbol.toStringTag, { value: 'IntersectionObserverEntry', configurable: true });
+
+                    // §2.2 "parse a margin": one to four lengths in px or percentages.
+                    function parseMargin(text) {
+                        var tokens = String(text).trim().split(/\s+/).filter(function (t) { return t.length > 0; });
+                        if (tokens.length === 0) tokens = ['0px'];
+                        if (tokens.length > 4) throw new DOMException("Failed to construct 'IntersectionObserver': rootMargin must be specified in pixels or percent.", 'SyntaxError');
+                        var parsed = tokens.map(function (token) {
+                            var match = lengthPattern.exec(token);
+                            if (!match || (!match[2] && parseFloat(match[1]) !== 0)) {
+                                throw new DOMException("Failed to construct 'IntersectionObserver': rootMargin must be specified in pixels or percent.", 'SyntaxError');
+                            }
+                            return { value: parseFloat(match[1]), unit: match[2] === '%' ? '%' : 'px' };
+                        });
+                        while (parsed.length < 4) {
+                            parsed.push(parsed.length === 3 ? parsed[1] : parsed.length === 2 ? parsed[0] : parsed[0]);
+                        }
+                        return parsed;
+                    }
+
+                    function parseThresholds(threshold) {
+                        var list = threshold === undefined ? [0] : (Array.isArray(threshold) ? threshold.slice() : [threshold]);
+                        if (list.length === 0) list = [0];
+                        list = list.map(function (value) {
+                            var number = Number(value);
+                            if (!isFinite(number) || number < 0 || number > 1) {
+                                throw new RangeError("Failed to construct 'IntersectionObserver': Threshold values must be numbers between 0 and 1");
+                            }
+                            return number;
+                        });
+                        list.sort(function (a, b) { return a - b; });
+                        return list;
+                    }
+
+                    var IntersectionObserver = function IntersectionObserver(callback, options) {
+                        if (!new.target) throw new TypeError("Failed to construct 'IntersectionObserver': Please use the 'new' operator.");
+                        if (typeof callback !== 'function') throw new TypeError("Failed to construct 'IntersectionObserver': parameter 1 is not of type 'Function'.");
+                        options = options || {};
+                        var root = options.root === undefined ? null : options.root;
+                        if (root !== null && !(root instanceof Element) && !(root instanceof Document)) {
+                            throw new TypeError("Failed to construct 'IntersectionObserver': Failed to read the 'root' property from 'IntersectionObserverInit': The provided value is not of type '(Document or Element)'.");
+                        }
+                        var margin = parseMargin(options.rootMargin === undefined ? '0px' : options.rootMargin);
+                        observerSlots.set(this, {
+                            callback: callback,
+                            root: root,
+                            margin: margin,
+                            marginText: margin.map(function (m) { return m.value + m.unit; }).join(' '),
+                            thresholds: Object.freeze(parseThresholds(options.threshold)),
+                            targets: [],
+                            registrations: new Map(),
+                            queue: []
+                        });
+                    };
+                    Object.defineProperties(IntersectionObserver.prototype, {
+                        root: { get: function () { return brandCheck(observerSlots, this, 'IntersectionObserver').root; }, enumerable: true, configurable: true },
+                        rootMargin: { get: function () { return brandCheck(observerSlots, this, 'IntersectionObserver').marginText; }, enumerable: true, configurable: true },
+                        scrollMargin: { get: function () { return '0px 0px 0px 0px'; }, enumerable: true, configurable: true },
+                        thresholds: { get: function () { return brandCheck(observerSlots, this, 'IntersectionObserver').thresholds; }, enumerable: true, configurable: true },
+                        delay: { get: function () { return 0; }, enumerable: true, configurable: true },
+                        trackVisibility: { get: function () { return false; }, enumerable: true, configurable: true }
+                    });
+                    IntersectionObserver.prototype.observe = function (target) {
+                        var state = brandCheck(observerSlots, this, 'IntersectionObserver');
+                        if (!(target instanceof Element)) {
+                            throw new TypeError("Failed to execute 'observe' on 'IntersectionObserver': parameter 1 is not of type 'Element'.");
+                        }
+                        if (state.registrations.has(target)) return;
+                        state.registrations.set(target, { previousThresholdIndex: -1, previousIsIntersecting: false });
+                        state.targets.push(target);
+                        if (activeObservers.indexOf(this) < 0) activeObservers.push(this);
+                        __fenRequestIntersectionUpdate();
+                    };
+                    IntersectionObserver.prototype.unobserve = function (target) {
+                        var state = brandCheck(observerSlots, this, 'IntersectionObserver');
+                        if (!state.registrations.delete(target)) return;
+                        var index = state.targets.indexOf(target);
+                        if (index >= 0) state.targets.splice(index, 1);
+                    };
+                    IntersectionObserver.prototype.disconnect = function () {
+                        var state = brandCheck(observerSlots, this, 'IntersectionObserver');
+                        state.targets.length = 0;
+                        state.registrations.clear();
+                    };
+                    IntersectionObserver.prototype.takeRecords = function () {
+                        var state = brandCheck(observerSlots, this, 'IntersectionObserver');
+                        var records = state.queue;
+                        state.queue = [];
+                        return records;
+                    };
+                    Object.defineProperty(IntersectionObserver.prototype, Symbol.toStringTag, { value: 'IntersectionObserver', configurable: true });
+
+                    function resolveMargin(margin, size) {
+                        return margin.unit === '%' ? margin.value * size / 100 : margin.value;
+                    }
+
+                    // §3.2.8 "run the update intersection observations steps" for this
+                    // document, then §3.2.5 "notify intersection observers". Returns
+                    // whether any observer still has targets.
+                    globalThis.__fenUpdateIntersectionObservations = function () {
+                        var time = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+                        var viewportWidth = (document.documentElement && document.documentElement.clientWidth) || globalThis.innerWidth || 0;
+                        var viewportHeight = (document.documentElement && document.documentElement.clientHeight) || globalThis.innerHeight || 0;
+                        var notify = [];
+                        for (var o = 0; o < activeObservers.length; o++) {
+                            var observer = activeObservers[o];
+                            var state = observerSlots.get(observer);
+                            var elementRoot = state.root instanceof Element ? state.root : null;
+                            var targets = state.targets.slice();
+                            for (var t = 0; t < targets.length; t++) {
+                                var target = targets[t];
+                                var registration = state.registrations.get(target);
+                                if (!registration) continue;
+                                var geometry = __fenIntersectionGeometry(target, elementRoot);
+                                var targetRect = geometry ? [geometry[0], geometry[1], geometry[2], geometry[3]] : [0, 0, 0, 0];
+                                var rootRect = null;
+                                if (!elementRoot) {
+                                    rootRect = [0, 0, viewportWidth, viewportHeight];
+                                } else if (geometry && geometry[9] === 1) {
+                                    rootRect = [geometry[10], geometry[11], geometry[12], geometry[13]];
+                                }
+                                if (rootRect) {
+                                    // Root margins grow (or shrink) the root intersection rectangle.
+                                    var top = rootRect[1] - resolveMargin(state.margin[0], rootRect[3]);
+                                    var right = rootRect[0] + rootRect[2] + resolveMargin(state.margin[1], rootRect[2]);
+                                    var bottom = rootRect[1] + rootRect[3] + resolveMargin(state.margin[2], rootRect[3]);
+                                    var left = rootRect[0] - resolveMargin(state.margin[3], rootRect[2]);
+                                    rootRect = [left, top, Math.max(0, right - left), Math.max(0, bottom - top)];
+                                }
+                                var intersection = null;
+                                if (geometry && rootRect && geometry[9] === 1 && geometry[4] === 0) {
+                                    // Edge-inclusive: a zero-area overlap still intersects.
+                                    var ix = Math.max(geometry[5], rootRect[0]);
+                                    var iy = Math.max(geometry[6], rootRect[1]);
+                                    var ir = Math.min(geometry[5] + geometry[7], rootRect[0] + rootRect[2]);
+                                    var ib = Math.min(geometry[6] + geometry[8], rootRect[1] + rootRect[3]);
+                                    if (ir >= ix && ib >= iy) intersection = [ix, iy, ir - ix, ib - iy];
+                                }
+                                var isIntersecting = intersection !== null;
+                                var targetArea = targetRect[2] * targetRect[3];
+                                var intersectionArea = isIntersecting ? intersection[2] * intersection[3] : 0;
+                                var ratio = targetArea > 0 ? Math.min(1, intersectionArea / targetArea) : (isIntersecting ? 1 : 0);
+                                // Fractional layout can leave a fully visible target a hair past the
+                                // root edge (two flex items at 0.88875% and 99.11125%); like Chromium's
+                                // snapped rects, a target covered to within 0.01px counts as whole.
+                                if (isIntersecting && targetArea > 0 &&
+                                    intersection[2] >= targetRect[2] - 0.01 && intersection[3] >= targetRect[3] - 0.01) {
+                                    ratio = 1;
+                                }
+                                var thresholdIndex = 0;
+                                if (isIntersecting) {
+                                    var thresholds = state.thresholds;
+                                    thresholdIndex = thresholds.length;
+                                    for (var k = 0; k < thresholds.length; k++) {
+                                        if (thresholds[k] > ratio) { thresholdIndex = k; break; }
+                                    }
+                                }
+                                if (thresholdIndex === registration.previousThresholdIndex &&
+                                    isIntersecting === registration.previousIsIntersecting) {
+                                    continue;
+                                }
+                                registration.previousThresholdIndex = thresholdIndex;
+                                registration.previousIsIntersecting = isIntersecting;
+                                var rectInit = function (r) { return { x: r[0], y: r[1], width: r[2], height: r[3] }; };
+                                state.queue.push(new IntersectionObserverEntry({
+                                    time: time,
+                                    rootBounds: rootRect ? rectInit(rootRect) : null,
+                                    boundingClientRect: rectInit(targetRect),
+                                    intersectionRect: rectInit(intersection || [0, 0, 0, 0]),
+                                    isIntersecting: isIntersecting,
+                                    intersectionRatio: ratio,
+                                    target: target
+                                }));
+                                if (notify.indexOf(observer) < 0) notify.push(observer);
+                            }
+                        }
+                        for (var n = 0; n < notify.length; n++) {
+                            var notifyState = observerSlots.get(notify[n]);
+                            var records = notifyState.queue;
+                            if (records.length === 0) continue;
+                            notifyState.queue = [];
+                            try {
+                                notifyState.callback.call(notify[n], records, notify[n]);
+                            } catch (error) {
+                                if (typeof globalThis.reportError === 'function') {
+                                    try { globalThis.reportError(error); } catch (_reportFailure) {}
+                                }
+                            }
+                        }
+                        activeObservers = activeObservers.filter(function (candidate) {
+                            var candidateState = observerSlots.get(candidate);
+                            return candidateState.targets.length > 0 || candidateState.queue.length > 0;
+                        });
+                        return activeObservers.length > 0;
+                    };
+
+                    globalThis.IntersectionObserverEntry = IntersectionObserverEntry;
+                    globalThis.IntersectionObserver = IntersectionObserver;
+                })();
 
                 // â”€â”€ ResizeObserver â”€â”€ https://drafts.csswg.org/resize-observer/
                 // Delivery is coalesced onto the timer queue so callbacks run after
@@ -26724,6 +27048,115 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var r = box.BorderBox;
         var scroll = ReadAncestorScrollOffset(element);
         return CreateDomRect(r.Left - scroll.X, r.Top - scroll.Y, r.Width, r.Height);
+    }
+
+    /// <summary>
+    /// Geometry for Intersection Observer §3.2.6 "compute the intersection": the
+    /// target's border box in client coordinates, that box clipped by every ancestor
+    /// that clips its overflow up to (not including) <paramref name="root"/>, and
+    /// the root's own rect (its padding area when it clips, else its border box).
+    /// Layout lives on this side, so one native call replaces a getComputedStyle
+    /// walk per ancestor per target per frame.
+    /// Returns null when the target has no layout box or is not connected, else
+    /// [tx, ty, tw, th, clipped(0|1), cx, cy, cw, ch, isDescendantOfRoot(0|1), rx, ry, rw, rh].
+    /// </summary>
+    private JsValue ReadIntersectionGeometry(Element target, Element root)
+    {
+        if (target == null || !target.IsConnected)
+        {
+            return JsValue.Null;
+        }
+
+        FlushPendingLayout?.Invoke(target);
+        if (LayoutBoxResolver?.Invoke(target) is not BoxModel box)
+        {
+            return JsValue.Null;
+        }
+
+        var targetRect = ToClientRect(target, box.BorderBox);
+        var clip = targetRect;
+        bool clippedAway = false;
+        bool reachedRoot = root == null;
+        for (Node current = ComposedParent(target); current != null; current = ComposedParent(current))
+        {
+            if (current is not Element ancestor)
+            {
+                continue;
+            }
+
+            if (ReferenceEquals(ancestor, root))
+            {
+                reachedRoot = true;
+                break;
+            }
+
+            if (clippedAway || !ClipsOverflow(ancestor) ||
+                LayoutBoxResolver?.Invoke(ancestor) is not BoxModel ancestorBox)
+            {
+                continue;
+            }
+
+            // Edge-inclusive: a zero-area overlap still intersects (§3.2.6 step 2).
+            var ancestorClip = ToClientRect(ancestor, ancestorBox.PaddingBox);
+            var left = Math.Max(clip.Left, ancestorClip.Left);
+            var top = Math.Max(clip.Top, ancestorClip.Top);
+            var right = Math.Min(clip.Right, ancestorClip.Right);
+            var bottom = Math.Min(clip.Bottom, ancestorClip.Bottom);
+            if (right < left || bottom < top)
+            {
+                clippedAway = true;
+                continue;
+            }
+
+            clip = new SKRect(left, top, right, bottom);
+        }
+
+        var rootRect = SKRect.Empty;
+        if (root != null && LayoutBoxResolver?.Invoke(root) is BoxModel rootBox)
+        {
+            rootRect = ToClientRect(root, ClipsOverflow(root) ? rootBox.PaddingBox : rootBox.BorderBox);
+        }
+
+        return _interpreter.AllocateArray(new[]
+        {
+            JsValue.FromNumber(targetRect.Left), JsValue.FromNumber(targetRect.Top),
+            JsValue.FromNumber(targetRect.Width), JsValue.FromNumber(targetRect.Height),
+            JsValue.FromNumber(clippedAway ? 1 : 0),
+            JsValue.FromNumber(clip.Left), JsValue.FromNumber(clip.Top),
+            JsValue.FromNumber(clip.Width), JsValue.FromNumber(clip.Height),
+            JsValue.FromNumber(reachedRoot ? 1 : 0),
+            JsValue.FromNumber(rootRect.Left), JsValue.FromNumber(rootRect.Top),
+            JsValue.FromNumber(rootRect.Width), JsValue.FromNumber(rootRect.Height),
+        });
+    }
+
+    private SKRect ToClientRect(Element element, SKRect layoutRect)
+    {
+        var scroll = ReadAncestorScrollOffset(element);
+        return new SKRect(
+            (float)(layoutRect.Left - scroll.X),
+            (float)(layoutRect.Top - scroll.Y),
+            (float)(layoutRect.Right - scroll.X),
+            (float)(layoutRect.Bottom - scroll.Y));
+    }
+
+    private static Node ComposedParent(Node node) =>
+        node is ShadowRoot shadowRoot ? shadowRoot.Host : node?.ParentNode;
+
+    // A box clips its descendants' overflow when it is a scroll container
+    // (overflow hidden/auto/scroll) or has overflow: clip.
+    private static bool ClipsOverflow(Element element)
+    {
+        if (IsScrollContainer(element))
+        {
+            return true;
+        }
+
+        var style = element.GetComputedStyle();
+        return style != null &&
+            (string.Equals(style.OverflowX, "clip", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(style.OverflowY, "clip", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(style.Overflow, "clip", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
