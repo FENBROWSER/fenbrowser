@@ -535,34 +535,45 @@ public class JsObject : ITraceable
     // yield their synthesised indexed properties.
     public virtual IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
     {
-        var chain = new List<(string key, int slot)>();
-        for (Shape? s = _shape; s != null && s != Shape.Root; s = s.Parent)
-            chain.Add((s.AddedProperty!, s.AddedSlot));
-        chain.Reverse();
-
-        List<(uint idx, string key, int slot)>? integerKeys = null;
-        List<(int seq, string key, int slot)>? stringKeys = null;
+        // The shape chain, oldest first, in one array of exactly its length. Every
+        // Object.keys, for-in, spread and assign comes through here, and building
+        // a chain list, reversing it and filling a second list of string keys on
+        // every call - including the common case that needs no reordering - was
+        // most of what enumerating a small object cost.
+        var count = _shape.PropertyCount;
+        var chain = new (string Key, int Slot)[count];
+        var hasIntegerKey = false;
         var deleteReordered = false;
+        var position = count;
+        for (Shape? s = _shape; s != null && s != Shape.Root; s = s.Parent)
+        {
+            chain[--position] = (s.AddedProperty!, s.AddedSlot);
+        }
+
+        var lastStringSeq = int.MinValue;
         foreach (var (key, slot) in chain)
         {
-            if (IsArrayIndexKey(key, out var idx))
+            if (IsArrayIndexKey(key, out _))
             {
-                (integerKeys ??= new List<(uint, string, int)>()).Add((idx, key, slot));
+                hasIntegerKey = true;
+                continue;
             }
-            else
+
+            // Chain order is shape-transition order; the slot sequence is the true
+            // creation order. They diverge only after a delete+re-add, in which
+            // case the seq for this slot won't match its chain position.
+            var seq = slot < _slots.Length ? _slots[slot].InsertionSeq : 0;
+            if (seq < lastStringSeq)
             {
-                // Chain order is shape-transition order; the slot sequence is the true
-                // creation order. They diverge only after a delete+re-add, in which
-                // case the seq for this slot won't match its chain position.
-                if (stringKeys is { Count: > 0 } && _slots[slot].InsertionSeq < stringKeys[^1].seq)
-                    deleteReordered = true;
-                (stringKeys ??= new List<(int, string, int)>()).Add((_slots[slot].InsertionSeq, key, slot));
+                deleteReordered = true;
             }
+
+            lastStringSeq = seq;
         }
 
         // Fast path: no array-index keys and no delete-induced reordering, so the
         // shape-chain order already matches the spec enumeration order.
-        if (integerKeys is null && !deleteReordered)
+        if (!hasIntegerKey && !deleteReordered)
         {
             foreach (var (key, slot) in chain)
             {
@@ -571,6 +582,20 @@ public class JsObject : ITraceable
             }
 
             yield break;
+        }
+
+        List<(uint idx, string key, int slot)>? integerKeys = null;
+        List<(int seq, string key, int slot)>? stringKeys = null;
+        foreach (var (key, slot) in chain)
+        {
+            if (IsArrayIndexKey(key, out var idx))
+            {
+                (integerKeys ??= new List<(uint, string, int)>()).Add((idx, key, slot));
+            }
+            else
+            {
+                (stringKeys ??= new List<(int, string, int)>()).Add((_slots[slot].InsertionSeq, key, slot));
+            }
         }
 
         if (integerKeys is not null)
