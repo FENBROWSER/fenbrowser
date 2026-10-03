@@ -13,8 +13,13 @@ namespace FenBrowser.Js.Bytecode;
 public static class BytecodeCache
 {
     private const int MaxEntries = 256;
-    private const int MaxSingleSourceChars = 4 * 1024 * 1024;
-    private const int MaxCachedSourceChars = 16 * 1024 * 1024;
+    // Large enough for the bundles a single-page app ships whole (YouTube's main
+    // script is 10.8M chars). A hit is an execution copy that shares the compiled
+    // arrays - 59 ms for that bundle against 2-3 s to compile it - so while a page
+    // runs the template costs little extra; after it is gone, the total bound
+    // below caps what stale templates can hold.
+    private const int MaxSingleSourceChars = 12 * 1024 * 1024;
+    private const int MaxCachedSourceChars = 24 * 1024 * 1024;
 
     private sealed class CacheEntry
     {
