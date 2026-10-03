@@ -44,7 +44,12 @@ public sealed class JsHeap
         public ObjectHandle Target;
         public Action? OnCollected;
     }
-    private const int CardShift = 6;
+    // One card per cell: the remembered set is exactly the Old cells a barrier
+    // saw store a young reference. At 64 cells a card, one such store had every
+    // Old neighbour's payload traced on each minor collection until the card
+    // cleared - two fifths of YouTube's minor GC time. The table is a byte per
+    // cell slot.
+    private const int CardShift = 0;
     private const byte DirtyCard = 1;
     private byte[] _cards = Array.Empty<byte>();
     private readonly List<int> _dirtyCards = new();
