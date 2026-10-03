@@ -466,6 +466,21 @@ public sealed class JsHeap
 
     public double MajorGcMilliseconds => _majorGcTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
     public double MinorGcMilliseconds => _minorGcTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+    // Where minor collections spend their time, cumulative: heap roots, the
+    // embedder's root sources, dirty cards, remembered environments, and the
+    // nursery sweep. A minor's fixed cost (roots, remembered sets) and its
+    // per-young-cell cost want different fixes; these say which one dominates.
+    private readonly long[] _minorPhaseTicks = new long[5];
+    private readonly Dictionary<string, long> _minorSourceTicks = new(StringComparer.Ordinal);
+
+    public string DescribeMinorPhases()
+    {
+        static double Ms(long ticks) => ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        return $"roots={Ms(_minorPhaseTicks[0]):F0} sources={Ms(_minorPhaseTicks[1]):F0} " +
+               $"cards={Ms(_minorPhaseTicks[2]):F0} envs={Ms(_minorPhaseTicks[3]):F0} sweep={Ms(_minorPhaseTicks[4]):F0} " +
+               string.Join(" ", _minorSourceTicks.Select(kv => $"{kv.Key}={Ms(kv.Value):F0}"));
+    }
     /// <summary>Slots the heap has ever grown to, live or free.</summary>
     public int CellSlotCount => _cells.Count;
 
@@ -758,6 +773,13 @@ public sealed class JsHeap
         }
     }
 
+    private long AddMinorPhase(int phase, long start)
+    {
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        _minorPhaseTicks[phase] += now - start;
+        return now;
+    }
+
     private void MinorCollectCore()
     {
         if (_verifyHeapBeforeGc) _verifier.Verify(this);
@@ -787,6 +809,7 @@ public sealed class JsHeap
         {
             _sharedMarkingTracer ??= new MarkingTracer(this, minorMode: true);
             var marker = _sharedMarkingTracer;
+            var phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
             BeginRootTrace("heap.roots");
             _roots.Trace(marker, "heap.roots");
             BeginRootTrace("heap.constructionPins");
@@ -794,18 +817,27 @@ public sealed class JsHeap
             BeginRootTrace("heap.allocationPinRing");
             TraceAllocationPinRing(marker);
 
+            phaseStart = AddMinorPhase(0, phaseStart);
+
             // Audit §1: external root sources (interpreter frame registers).
             for (var i = 0; i < _rootSources.Count; i++)
             {
-                BeginRootTrace(_rootSources[i].GetType().Name);
+                var sourceName = _rootSources[i].GetType().Name;
+                var sourceStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                BeginRootTrace(sourceName);
                 _rootSources[i].TraceRoots(marker);
+                System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrAddDefault(_minorSourceTicks, sourceName, out _) +=
+                    System.Diagnostics.Stopwatch.GetTimestamp() - sourceStart;
             }
 
+            phaseStart = AddMinorPhase(1, phaseStart);
             BeginRootTrace("heap.dirtyCards");
             ScanDirtyCards(marker);
+            phaseStart = AddMinorPhase(2, phaseStart);
             BeginRootTrace("heap.rememberedEnvs");
             ScanRememberedEnvironments(marker);
             EndRootTrace();
+            phaseStart = AddMinorPhase(3, phaseStart);
             if (_auditRememberedSet)
             {
                 AuditRememberedSet();
@@ -870,6 +902,7 @@ public sealed class JsHeap
 
             _nursery.Clear();
             _nursery.AddRange(survivors);
+            AddMinorPhase(4, phaseStart);
         }
         finally
         {

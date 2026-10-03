@@ -2389,6 +2389,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             FenBrowser.Core.EngineLogCompat.Info(
                 $"[FenJsGc] major={heap.GcCollectionCount} ({heap.MajorGcMilliseconds:F0}ms) " +
                 $"minor={heap.MinorCollectionCount} ({heap.MinorGcMilliseconds:F0}ms) " +
+                $"minorPhases=[{heap.DescribeMinorPhases()}] " +
                 $"allocs={heap.AllocationCount} slots={heap.CellSlotCount} " +
                 $"marked={heap.LastGcMarkedCells} swept={heap.LastGcSweptCells} " +
                 $"propSlots={heap.LastGcPropertySlots} " +
