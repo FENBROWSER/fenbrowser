@@ -14,6 +14,30 @@ namespace FenBrowser.FenEngine.Rendering.Css
         public IReadOnlyList<CssOrigin> Origins => _origins;
         public IReadOnlyList<int> SourceOrders => _sourceOrders;
 
+        // Bumped on every change to the sheet list. A document's StyleSet is reused
+        // across cascades while its stylesheets are unchanged, so the rule index the
+        // cascade builds from it is kept here and rebuilt only when this moves on.
+        private int _version;
+        private object _ruleIndex;
+        private int _ruleIndexVersion = -1;
+
+        internal object GetCachedRuleIndex()
+        {
+            lock (_sheets)
+            {
+                return _ruleIndexVersion == _version ? _ruleIndex : null;
+            }
+        }
+
+        internal void SetCachedRuleIndex(object index)
+        {
+            lock (_sheets)
+            {
+                _ruleIndex = index;
+                _ruleIndexVersion = _version;
+            }
+        }
+
         /// <summary>
         /// Inserts a parsed stylesheet into a specific global source order slot.
         /// This ensures asynchronous loads do not corrupt DOM-based ordering.
@@ -38,6 +62,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             _sheets.Insert(index, sheet);
+            _version++;
             _sourceOrders.Insert(index, sourceOrder);
             _origins.Insert(index, origin);
         }
@@ -51,6 +76,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             _sheets.Clear();
             _sourceOrders.Clear();
             _origins.Clear();
+            _version++;
 
             if (sheet != null)
             {

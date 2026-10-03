@@ -114,19 +114,57 @@ private int _inlineStyleCacheEvictions;
             return _pseudoElementsWithRules?.Contains(pseudoElement.ToLowerInvariant()) ?? false;
         }
 
+        /// <summary>
+        /// The rule index built from one version of a StyleSet. Read-only once built,
+        /// so every cascade over an unchanged StyleSet shares it.
+        /// </summary>
+        private sealed class RuleIndex
+        {
+            public Dictionary<string, List<CssStyleRule>> Id, Class, Attribute, Tag;
+            public List<CssStyleRule> Universal;
+            public Dictionary<string, PseudoRuleIndex> Pseudo;
+            public HashSet<string> PseudoElementsWithRules;
+        }
+
         private void EnsureIndex()
         {
             if (_indexed) return;
             _indexed = true;
+
+            // Every cascade pass - an incremental recascade of one element included -
+            // makes a new engine, and indexing YouTube's rules from scratch each time
+            // was ~40% of the cascade a forced layout pays for.
+            if (_styleSet.GetCachedRuleIndex() is RuleIndex cached)
+            {
+                // Rule objects can be shared with other StyleSets (the parsed-rule
+                // template cache), and indexing stamps each one with this set's
+                // source order and origin. Another document's pass may have
+                // re-stamped them since, so restore this set's values - plain
+                // assignments, unlike rebuilding the index.
+                for (int i = 0; i < _styleSet.Count; i++)
+                {
+                    StampRules(_styleSet.Sheets[i].Rules, _styleSet.Origins[i], _styleSet.SourceOrders[i]);
+                }
+
+                _idIndex = cached.Id;
+                _classIndex = cached.Class;
+                _attributeIndex = cached.Attribute;
+                _tagIndex = cached.Tag;
+                _universalRules = cached.Universal;
+                _pseudoIndex = cached.Pseudo;
+                _pseudoElementsWithRules = cached.PseudoElementsWithRules;
+                return;
+            }
+
             _idIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _classIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _attributeIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _tagIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _universalRules = new List<CssStyleRule>();
             _pseudoIndex = new Dictionary<string, PseudoRuleIndex>(StringComparer.OrdinalIgnoreCase);
-            
+
             _pseudoElementsWithRules = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            
+
             for (int i = 0; i < _styleSet.Count; i++)
             {
                 var sheet = _styleSet.Sheets[i];
@@ -134,8 +172,36 @@ private int _inlineStyleCacheEvictions;
                 var sourceOrder = _styleSet.SourceOrders[i];
                 IndexRules(sheet.Rules, origin, sourceOrder);
             }
+
+            _styleSet.SetCachedRuleIndex(new RuleIndex
+            {
+                Id = _idIndex,
+                Class = _classIndex,
+                Attribute = _attributeIndex,
+                Tag = _tagIndex,
+                Universal = _universalRules,
+                Pseudo = _pseudoIndex,
+                PseudoElementsWithRules = _pseudoElementsWithRules
+            });
         }
-        
+
+        private static void StampRules(IEnumerable<CssRule> rules, CssOrigin defaultOrigin, int sourceOrder)
+        {
+            foreach (var rule in rules)
+            {
+                rule.StylesheetSourceOrder = sourceOrder;
+                if (rule.Origin == CssOrigin.UserAgent && defaultOrigin != CssOrigin.UserAgent)
+                {
+                    rule.Origin = defaultOrigin;
+                }
+
+                if (rule is CssMediaRule mediaRule)
+                {
+                    StampRules(mediaRule.Rules, defaultOrigin, sourceOrder);
+                }
+            }
+        }
+
         private void IndexRules(IEnumerable<CssRule> rules, CssOrigin defaultOrigin, int sourceOrder)
         {
             foreach (var rule in rules)
