@@ -341,6 +341,8 @@ public interface IBrowserScriptEngine
     Action<Uri, string> CookieWriteBridge { get; set; }
     Action RequestRender { get; set; }
 Action<Element> FlushPendingLayout { get; set; }
+    // Brings the document's style up to date without laying it out.
+    Action<Element> FlushPendingStyle { get; set; }
     Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
 
     /// <summary>
@@ -762,6 +764,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         TraceJsRoot(tracer, _activeWindowEventTarget);
         TraceJsRoot(tracer, _fenJsFileConstructor);
         TraceJsRoot(tracer, _fenJsStylePrototype);
+        TraceJsRoot(tracer, _computedStylePrototype);
 
         // A running worker's page-side handle is reachable only from this
         // dictionary, so leaving it untraced frees the very object the worker
@@ -1028,6 +1031,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     public Action<Uri, string> CookieWriteBridge { get; set; }
     public Action RequestRender { get; set; }
     public Action<Element> FlushPendingLayout { get; set; }
+    public Action<Element> FlushPendingStyle { get; set; }
     public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
     public Func<Uri, Uri, string, Task<string>> ExternalScriptFetcherWithNonce { get; set; }
     public Func<Uri, Uri, Task<string>> WorkerScriptFetcher { get; set; }
@@ -1886,6 +1890,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             RequestRender?.Invoke();
         };
         realm.FlushPendingLayout = FlushPendingLayout;
+        realm.FlushPendingStyle = FlushPendingStyle;
         realm.ExternalScriptFetcher = ExternalScriptFetcher;
         realm.ExternalScriptFetcherWithNonce = ExternalScriptFetcherWithNonce;
         realm.WorkerScriptFetcher = WorkerScriptFetcher;
@@ -6419,6 +6424,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _activeWindowEventTarget = JsValue.Undefined;
             _fenJsFileConstructor = JsValue.Undefined;
             _fenJsStylePrototype = JsValue.Undefined;
+            _computedStylePrototype = JsValue.Undefined;
             _activeParentBaseUri = null;
             _fenJsDomConstructorsInstalled = false;
 
@@ -16951,7 +16957,6 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return CreateComputedStyleObject(new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase));
                 }
 
-                FlushPendingLayout?.Invoke(element);
                 return CreateComputedStyleObjectForElement(element);
             },
             length: 1);
@@ -16980,16 +16985,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return values;
     }
 
-    private JsValue CreateComputedStyleObjectForElement(Element element)
+    private Dictionary<string, JsValue> BuildComputedStyleProps(Element element, out Action resolveLayoutDependent)
     {
-        if (element == null)
-        {
-            return CreateComputedStyleObject(new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase));
-        }
-
         var cs = element.GetComputedStyle() ?? new CssComputed();
 
-        var props = new Dictionary<string, JsValue>(ComputedStyleInitialValues, StringComparer.OrdinalIgnoreCase);
+        // Every dashed name is mirrored in camel case below; sized for that up front.
+        var props = new Dictionary<string, JsValue>(ComputedStyleInitialValues.Count * 2 + 64, StringComparer.OrdinalIgnoreCase);
+        foreach (var initial in ComputedStyleInitialValues)
+        {
+            props[initial.Key] = initial.Value;
+        }
         // Populate from the raw Map first (all CSS properties)
         if (cs.Map != null)
         {
@@ -17152,7 +17157,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         ResolveComputedCustomProperties(props);
 
-        return CreateComputedStyleObject(props, ResolveLayoutDependent);
+        resolveLayoutDependent = ResolveLayoutDependent;
+        return props;
     }
 
     /// <summary>The getComputedStyle properties whose resolved value is a used value.</summary>
