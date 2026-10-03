@@ -29209,8 +29209,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         element.SetAttribute("crossorigin", CoerceToHostString(value));
                     }
                     return true;
-                case Element element when property.StartsWith("on", StringComparison.OrdinalIgnoreCase):
-                    _owner.SetStoredHostProperty(element, property.ToLowerInvariant(), value);
+                // HTML 8.1.8.2: event handler IDL attributes are all lower case
+                // (onclick, onload). Any other on-prefixed name - YouTube's image
+                // loader sets img.onViewportEntered and reads it back from its
+                // IntersectionObserver callback - is an ordinary expando and keeps
+                // its case; folding it to lower case lost it, so no thumbnail loaded.
+                case Element element when property.StartsWith("on", StringComparison.Ordinal) &&
+                                          !property.Any(char.IsUpper):
+                    _owner.SetStoredHostProperty(element, property, value);
                     return true;
                 case Element element when string.Equals(property, "innerHTML", StringComparison.Ordinal):
                     element.InnerHTML = CoerceToHostString(value);
