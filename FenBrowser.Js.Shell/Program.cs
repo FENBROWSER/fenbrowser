@@ -99,6 +99,8 @@ if (args.Length >= 2 && args[0] == "--bench-compile")
     }
 
     var runs = args.Length > 2 && int.TryParse(args[2], out var n) ? n : 5;
+    // Timed compiles must not be answered by the process-global template cache.
+    BytecodeCache.Enabled = false;
     var source = new SourceText(File.ReadAllText(path), path);
     double bestLex = double.MaxValue, bestParse = double.MaxValue, bestCompile = double.MaxValue;
     for (var run = 0; run < runs; run++)
@@ -119,6 +121,28 @@ if (args.Length >= 2 && args[0] == "--bench-compile")
         Console.WriteLine($"run {run}: tokens={tokenCount} lex={bestLex:F0}ms/{(a1 - a0) >> 20}MB parse(incl lex)={bestParse:F0}ms/{(a2 - a1) >> 20}MB compile(incl parse)={bestCompile:F0}ms/{(a3 - a2) >> 20}MB");
     }
 
+    // What the process-global bytecode cache would hold for this file: whether
+    // the compiled tree may be shared at all, the memory it keeps alive, and
+    // what a cache hit (an execution copy) costs against compiling.
+    GC.Collect(2, GCCollectionMode.Forced, true, true);
+    var before = GC.GetTotalMemory(true);
+    var compiled = new BytecodeCompiler().CompileScript(new SourceText(File.ReadAllText(path), path + "#retained"));
+    var retained = GC.GetTotalMemory(true) - before;
+    const System.Reflection.BindingFlags internalInstance = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+#pragma warning disable IL2075 // dev-tool reflection over the engine's own internals
+    var copyMethod = typeof(BytecodeFunction).GetMethod("CreateExecutionCopy", internalInstance)!;
+    var cacheableMethod = typeof(BytecodeFunction).GetMethod("CanUseProcessGlobalTemplate", internalInstance)!;
+#pragma warning restore IL2075
+    var copyWatch = System.Diagnostics.Stopwatch.StartNew();
+    var copy = copyMethod.Invoke(compiled, null);
+    Console.WriteLine($"cacheable={cacheableMethod.Invoke(compiled, null)} retained={retained >> 20}MB copy={copyWatch.Elapsed.TotalMilliseconds:F0}ms");
+    GC.KeepAlive(copy);
+
+    BytecodeCache.Enabled = true;
+    new BytecodeCompiler().CompileScript(source);
+    var hitWatch = System.Diagnostics.Stopwatch.StartNew();
+    new BytecodeCompiler().CompileScript(source);
+    Console.WriteLine($"cache hit compile={hitWatch.Elapsed.TotalMilliseconds:F0}ms hits={BytecodeCache.HitCount}");
     return 0;
 }
 
