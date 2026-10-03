@@ -380,19 +380,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             TraceRootValue(tracer, dummy.Reject, "interp.dummyCapability.reject");
         }
 
-        foreach (var propertySet in _hostDefinedProperties.Values)
+        if (tracer.MinorOnly)
         {
-            foreach (var descriptor in propertySet.Values)
-            {
-                TraceRootValue(tracer, descriptor.Value, "interp.hostDefinedProperty.value");
-                TraceRootValue(tracer, descriptor.Get, "interp.hostDefinedProperty.get");
-                TraceRootValue(tracer, descriptor.Set, "interp.hostDefinedProperty.set");
-            }
+            _hostTableRoots.TraceYoung(_heap, tracer, "interp.hostTable.recent");
         }
-
-        foreach (var prototype in _hostObjectPrototypes.Values)
+        else
         {
-            TraceRootValue(tracer, prototype, "interp.hostObjectPrototype");
+            _hostTableRoots.Clear();
+            foreach (var propertySet in _hostDefinedProperties.Values)
+            {
+                foreach (var descriptor in propertySet.Values)
+                {
+                    TraceRootValue(tracer, descriptor.Value, "interp.hostDefinedProperty.value");
+                    TraceRootValue(tracer, descriptor.Get, "interp.hostDefinedProperty.get");
+                    TraceRootValue(tracer, descriptor.Set, "interp.hostDefinedProperty.set");
+                }
+            }
+
+            foreach (var prototype in _hostObjectPrototypes.Values)
+            {
+                TraceRootValue(tracer, prototype, "interp.hostObjectPrototype");
+            }
         }
 
         _globalEnvironment?.Trace(tracer);

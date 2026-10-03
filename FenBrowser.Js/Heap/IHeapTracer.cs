@@ -30,6 +30,15 @@ public interface IHeapTracer
     bool TraceEnvironmentChains => true;
 
     /// <summary>
+    /// True while a minor collection marks: only young cells can be freed, and
+    /// marking an Old one does nothing, so a root source may trace just the
+    /// values that could still be young (see <see cref="RecentRootLog"/>).
+    /// Every other tracer - major marking, audits, the heap verifier - sees the
+    /// whole root set.
+    /// </summary>
+    bool MinorOnly => false;
+
+    /// <summary>
     /// Announces an environment record that is about to be traced. Returns
     /// false when this collection has already traced it -- and therefore
     /// everything outside it too -- so the walk can stop there.

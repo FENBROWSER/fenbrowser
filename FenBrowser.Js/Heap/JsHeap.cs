@@ -1517,6 +1517,18 @@ public sealed class JsHeap
         return IsLiveObject(handle);
     }
 
+    /// <summary>Whether the handle names a live object that has been promoted.</summary>
+    public bool IsOldObject(ObjectHandle handle)
+    {
+        if ((uint)handle.Index >= (uint)_cells.Count)
+        {
+            return false;
+        }
+
+        var cell = _cells[handle.Index];
+        return cell is { Tier: GenerationTier.Old } && cell.Generation == handle.Generation;
+    }
+
     // Tier 4 #22: the minor-mode tracer needs to propagate through nested
     // child traces, so Mark takes the mode and constructs a matching
     // tracer for the recursive Trace call.
@@ -1735,6 +1747,9 @@ public sealed class JsHeap
 
         public bool BeginEnvironment(FenBrowser.Js.Environments.EnvironmentRecord record) =>
             _tracedEnvironments.Add(record);
+
+        // One instance serves minor and major marking, so the mode is the heap's.
+        public bool MinorOnly => _heap._currentMarkMinorMode;
 
         // Must run at the start of every collection. A record left in the set
         // would be skipped next time and its objects swept while still live.

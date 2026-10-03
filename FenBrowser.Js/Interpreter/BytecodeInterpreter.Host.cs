@@ -25,6 +25,9 @@ public sealed partial class BytecodeInterpreter
         new(CurrentRealmId: 0, CurrentDocumentEpoch: default, CurrentNavigationEpoch: default);
     private readonly Dictionary<HostObjectHandle, Dictionary<string, JsPropertyDescriptor>> _hostDefinedProperties = new();
     private readonly Dictionary<HostObjectHandle, JsValue> _hostObjectPrototypes = new();
+
+    // Values written into the two tables above, for minor collections.
+    private readonly RecentRootLog _hostTableRoots = new();
     private readonly Dictionary<HostObjectHandle, long> _hostPrivateBrands = new();
 
     public HostObjectTable HostObjectTable
@@ -266,6 +269,9 @@ public sealed partial class BytecodeInterpreter
         }
 
         properties[key] = descriptor;
+        _hostTableRoots.Record(descriptor.Value);
+        _hostTableRoots.Record(descriptor.Get);
+        _hostTableRoots.Record(descriptor.Set);
     }
 
     // Host embedder seam: read a host object's own property straight from
@@ -515,6 +521,7 @@ public sealed partial class BytecodeInterpreter
         }
 
         _hostObjectPrototypes[handle] = prototype;
+        _hostTableRoots.Record(prototype);
     }
 
     /// <summary>
