@@ -768,6 +768,36 @@ public sealed partial class BytecodeInterpreter
 
     private void CollectEnumerableKeys(JsObject obj, List<string> keys, HashSet<string> seen)
     {
+        // 14.7.5.9 EnumerateObjectProperties: a Proxy's keys come from its ownKeys
+        // trap and their enumerability from getOwnPropertyDescriptor; its
+        // prototype from the getPrototypeOf trap.
+        if (obj is ProxyObject proxy)
+        {
+            foreach (var proxyKey in ProxyOwnKeys(proxy))
+            {
+                if (proxyKey.Tag != JsValueTag.String)
+                {
+                    continue;
+                }
+
+                var name = proxyKey.AsString();
+                if (seen.Add(name) &&
+                    ProxyTryGetOwnPropertyDescriptor(proxy, proxyKey, out var proxyDescriptor) &&
+                    proxyDescriptor.Enumerable)
+                {
+                    keys.Add(name);
+                }
+            }
+
+            var proxyPrototype = ProxyGetPrototypeOf(proxy);
+            if (proxyPrototype.Tag == JsValueTag.Object)
+            {
+                CollectEnumerableKeys(_heap.GetObject(proxyPrototype.AsObjectHandle()), keys, seen);
+            }
+
+            return;
+        }
+
         foreach (var property in obj.EnumerateOwnProperties())
         {
             if (seen.Add(property.Key) && property.Value.Enumerable)

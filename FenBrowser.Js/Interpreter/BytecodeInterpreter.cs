@@ -11033,6 +11033,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 keys = ctx.PropertyList;
             }
+            else if (obj is ProxyObject proxyHolder)
+            {
+                // 25.5.2.5 step 5: EnumerableOwnProperties(value, key) - for a Proxy
+                // that is its ownKeys trap filtered by getOwnPropertyDescriptor.
+                var k = new List<string>();
+                foreach (var proxyKey in ProxyOwnKeys(proxyHolder))
+                {
+                    if (proxyKey.Tag == JsValueTag.String &&
+                        ProxyTryGetOwnPropertyDescriptor(proxyHolder, proxyKey, out var proxyDescriptor) &&
+                        proxyDescriptor.Enumerable)
+                    {
+                        k.Add(proxyKey.AsString());
+                    }
+                }
+                keys = k;
+            }
             else
             {
                 var k = new List<string>();
@@ -11803,6 +11819,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                 var fromObj = _heap.GetObject(fromValue.AsObjectHandle());
 
+                // 20.1.2.1 step 3.a: a Proxy source answers [[OwnPropertyKeys]],
+                // [[GetOwnProperty]] and [[Get]] through its traps, key by key in
+                // the order the ownKeys trap returned (string and symbol keys mixed).
+                if (fromObj is ProxyObject fromProxy)
+                {
+                    foreach (var key in ProxyOwnKeys(fromProxy))
+                    {
+                        if (!ProxyTryGetOwnPropertyDescriptor(fromProxy, key, out var keyDescriptor) ||
+                            !keyDescriptor.Enumerable)
+                        {
+                            continue;
+                        }
+
+                        var proxyValue = ProxyGet(fromProxy, fromValue, key);
+                        var assigned = key.Tag == JsValueTag.Symbol
+                            ? SetSymbolPropertyValue(toHandle, to, key.AsSymbolId(), proxyValue, toValue)
+                            : SetPropertyValue(toHandle, to, key.AsString(), proxyValue, toValue);
+                        if (!assigned)
+                        {
+                            throw new JsThrownException(CreateTypeError(
+                                "Cannot assign to read-only property '" + (key.Tag == JsValueTag.Symbol ? "symbol" : key.AsString()) + "'."));
+                        }
+                    }
+
+                    continue;
+                }
+
                 // String-keyed own enumerable properties, in own-key order. Read
                 // each value through [[Get]] (so getters run and their throws
                 // propagate) and write through [[Set]] (so setters/extensibility/
@@ -12076,6 +12119,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var fromObj = _heap.GetObject(fromValue.AsObjectHandle());
+
+        // 7.3.25 steps 4-5 on a Proxy source: its traps answer [[OwnPropertyKeys]],
+        // [[GetOwnProperty]] and [[Get]], key by key in trap order.
+        if (fromObj is ProxyObject fromProxy)
+        {
+            foreach (var key in ProxyOwnKeys(fromProxy))
+            {
+                if (!ProxyTryGetOwnPropertyDescriptor(fromProxy, key, out var keyDescriptor) ||
+                    !keyDescriptor.Enumerable)
+                {
+                    continue;
+                }
+
+                var proxyValue = ProxyGet(fromProxy, fromValue, key);
+                var dataDescriptor = new JsPropertyDescriptor(proxyValue, Writable: true, Enumerable: true, Configurable: true);
+                _ = key.Tag == JsValueTag.Symbol
+                    ? target.DefineOwnSymbolProperty(key.AsSymbolId(), dataDescriptor)
+                    : target.DefineOwnProperty(key.AsString(), dataDescriptor);
+                if (proxyValue.Tag == JsValueTag.Object)
+                {
+                    _heap.WriteBarrier(targetHandle, proxyValue.AsObjectHandle());
+                }
+            }
+
+            return;
+        }
 
         foreach (var pair in fromObj.EnumerateOwnProperties())
         {
