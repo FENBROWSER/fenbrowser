@@ -19254,7 +19254,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         if (movedFromFragment == null)
         {
-            UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(child));
+            UpgradeConnectedCustomElementTree(child);
             return;
         }
 
@@ -19262,9 +19262,29 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         {
             if (node is Element)
             {
-                UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(node));
+                UpgradeConnectedCustomElementTree(node);
             }
         }
+    }
+
+    /// <summary>
+    /// DOM 4.2.3 "insert" step 7.7: an inserted inclusive descendant is upgraded
+    /// only if it is connected. A tree built while disconnected - a template's
+    /// content moved into a fragment, innerHTML on a detached element - keeps its
+    /// custom elements un-upgraded until it is inserted into a document. Polymer
+    /// moves every nested template's content into a fragment and records child
+    /// indexes for its bindings; upgrading there stamped each element's shadow
+    /// content into the template, the indexes no longer matched, and stamping
+    /// threw "Cannot set properties of undefined (setting '__dataHost')".
+    /// </summary>
+    private void UpgradeConnectedCustomElementTree(Node root)
+    {
+        if (root == null || !root.IsConnected)
+        {
+            return;
+        }
+
+        UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(root));
     }
 
     private bool HasCustomElementDefinitions(JsValue registry)
@@ -20972,7 +20992,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 }
                 // The fragment parser inserted the new children: they upgrade
                 // like any other insertion (HTML 4.13.4 / DOM "insert").
-                UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(element));
+                UpgradeConnectedCustomElementTree(element);
                 break;
             case "outerHTML":
             {
@@ -20986,7 +21006,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     {
                         ExecuteInlineScriptsFromElement(replacedIn);
                     }
-                    UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(replacedIn));
+                    UpgradeConnectedCustomElementTree(replacedIn);
                 }
                 break;
             }
@@ -29198,7 +29218,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     {
                         _owner.ExecuteInlineScriptsFromElement(element);
                     }
-                    _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(element));
+                    _owner.UpgradeConnectedCustomElementTree(element);
                     return true;
                 case Element element when string.Equals(property, "textContent", StringComparison.Ordinal):
                     element.TextContent = CoerceToHostString(value);
@@ -29378,7 +29398,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case ShadowRoot shadowRoot when string.Equals(property, "innerHTML", StringComparison.Ordinal):
                     shadowRoot.InnerHTML = CoerceToHostString(value);
-                    _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(shadowRoot));
+                    _owner.UpgradeConnectedCustomElementTree(shadowRoot);
                     return true;
                 case FenJsDomStringMapHost domStringMap:
                     domStringMap.Element.SetAttribute(PropertyNameToDatasetAttribute(property), CoerceToHostString(value));
@@ -32172,11 +32192,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var html = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
                             _owner.InsertAdjacentHtml(element, position, html);
                             // beforebegin/afterend land in the parent; upgrade from there.
-                            _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(
+                            _owner.UpgradeConnectedCustomElementTree(
                                 string.Equals(position, "beforebegin", StringComparison.OrdinalIgnoreCase) ||
                                 string.Equals(position, "afterend", StringComparison.OrdinalIgnoreCase)
                                     ? element.ParentNode ?? element
-                                    : element));
+                                    : element);
                             return JsValue.Undefined;
                         },
                         length: 2);
