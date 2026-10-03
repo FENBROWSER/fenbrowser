@@ -53,11 +53,12 @@ public static class MediaFoundationDecoders
             registered++;
         }
 
-        bool gpu = MfGpuDevice.IsAvailable;
+        // The D3D11 device is not asked about here: creating it takes ~150 ms, and
+        // registration runs whenever a page first touches a media element - often
+        // only to feature-detect one. The first video decoder creates it.
         log.Emit(PlayerId.None, MediaEventKind.DecoderChosen, MediaLogLevel.Info,
-            gpu ? $"Media Foundation ready: {registered} OS decoders, video on the GPU."
-                : $"Media Foundation ready: {registered} OS decoders, video in software ({MfGpuDevice.Reason}).",
-            ("decoder", "mediafoundation"), ("count", registered.ToString(CultureInfo.InvariantCulture)), ("hardware", gpu ? "true" : "false"));
+            $"Media Foundation ready: {registered} OS decoders.",
+            ("decoder", "mediafoundation"), ("count", registered.ToString(CultureInfo.InvariantCulture)));
         return registered > 0;
     }
 
