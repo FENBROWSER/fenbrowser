@@ -12813,6 +12813,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     // its element in this engine, so the walk stops at frames and never matches
     // elements of a child document. The target name is read from the frame's name
     // attribute; a name the child sets on its own window is not seen here.
+    //
+    // Lookups here miss far more often than they hit - every test for a global the
+    // page does not have ends up here - and each miss walked the whole document.
+    // A miss is remembered until the DOM next changes (Node.MutationSequence moves
+    // on every tree and attribute mutation, in any document).
+    private readonly Dictionary<string, long> _windowNamedMisses = new(StringComparer.Ordinal);
+    private Document _windowNamedMissDocument;
+
     private JsValue? ResolveWindowNamedProperty(string name)
     {
         var document = _hostHooks?.CurrentDocument;
@@ -12821,7 +12829,24 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return null;
         }
 
+        var sequence = Node.MutationSequence;
+        if (!ReferenceEquals(_windowNamedMissDocument, document) || _windowNamedMisses.Count > 4096)
+        {
+            _windowNamedMisses.Clear();
+            _windowNamedMissDocument = document;
+        }
+        else if (_windowNamedMisses.TryGetValue(name, out var missedAt) && missedAt == sequence)
+        {
+            return null;
+        }
+
         var matches = CollectWindowNamedObjects(document, name, out var frame);
+        if (frame == null && matches.Count == 0)
+        {
+            _windowNamedMisses[name] = sequence;
+            return null;
+        }
+
         if (frame != null)
         {
             var window = GetIFrameContentWindowForCurrentContext(frame);
