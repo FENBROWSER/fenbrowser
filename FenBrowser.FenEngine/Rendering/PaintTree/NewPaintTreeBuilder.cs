@@ -4368,28 +4368,6 @@ namespace FenBrowser.FenEngine.Rendering
                                 }
                             }
                         }
-
-                        // Tight-fit guard: when container width is nearly equal to text advance,
-                        // preserve a tiny inset for glyph side-bearing so the first/last glyph
-                        // does not get clipped by overflow clips.
-                        float fitSlack = parentWidth - resolvedLineWidth;
-                        if (fitSlack >= 0f && fitSlack <= 3f)
-                        {
-                            float inset = 3.5f;
-                            float minAbsX = parentContent.Left + inset;
-                            float maxAbsX = parentContent.Right - resolvedLineWidth - inset;
-                            if (maxAbsX >= minAbsX)
-                            {
-                                if (absX < minAbsX) absX = minAbsX;
-                                else if (absX > maxAbsX) absX = maxAbsX;
-                            }
-                            else if (absX < minAbsX)
-                            {
-                                // If the container is too tight to honor both-side insets,
-                                // prioritize left-side inset to avoid clipping the first glyph.
-                                absX = minAbsX;
-                            }
-                        }
                     }
 
                     var lineBounds = new SKRect(absX, absY, absX + resolvedLineWidth, absY + line.Height);
