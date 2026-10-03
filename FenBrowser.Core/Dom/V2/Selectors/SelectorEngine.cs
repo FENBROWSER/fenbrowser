@@ -140,19 +140,12 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private static Element QueryFirstInternal(Node root, CompiledSelector selector)
         {
-            var stack = new Stack<Node>();
-            PushChildrenReverse(root, stack);
-
-            while (stack.Count > 0)
+            for (var node = root.FirstChild; node != null; node = NextInTreeOrder(node, root))
             {
-                var node = stack.Pop();
-
                 if (node is Element el && selector.Matches(el))
                 {
                     return el;
                 }
-
-                PushChildrenReverse(node, stack);
             }
 
             return null;
@@ -160,27 +153,32 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private static void QueryAllInternal(Node root, CompiledSelector selector, List<Node> results)
         {
-            var stack = new Stack<Node>();
-            PushChildrenReverse(root, stack);
-
-            while (stack.Count > 0)
+            for (var node = root.FirstChild; node != null; node = NextInTreeOrder(node, root))
             {
-                var node = stack.Pop();
-
                 if (node is Element el && selector.Matches(el))
                     results.Add(el);
-
-                PushChildrenReverse(node, stack);
             }
         }
 
-        private static void PushChildrenReverse(Node node, Stack<Node> stack)
+        // Pre-order successor within root's subtree, walking the tree's own links
+        // instead of staging every child on a per-query stack.
+        private static Node NextInTreeOrder(Node node, Node root)
         {
-            if (node is not ContainerNode container)
-                return;
+            var child = node.FirstChild;
+            if (child != null)
+                return child;
 
-            for (var child = container.LastChild; child != null; child = child.PreviousSibling)
-                stack.Push(child);
+            while (!ReferenceEquals(node, root))
+            {
+                var next = node.NextSibling;
+                if (next != null)
+                    return next;
+                node = node.ParentNode;
+                if (node == null)
+                    return null;
+            }
+
+            return null;
         }
     }
 

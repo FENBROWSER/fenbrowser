@@ -150,11 +150,73 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             return MatchesInternal(element, scope, leadingCombinator);
         }
 
+        // Chains up to this many compounds match by recursion, one frame per compound.
+        private const int MaxRecursiveParts = 32;
+
         private bool MatchesInternal(Element element, Element scope, Combinator leadingCombinator)
         {
             if (element == null || _parts.Length == 0)
                 return false;
 
+            // Every querySelector candidate and every cascade test lands here, and
+            // most chains are a single compound; allocating a backtracking stack per
+            // call was most of document.querySelectorAll's cost on YouTube.
+            if (_parts.Length <= MaxRecursiveParts)
+                return MatchFrom(_parts.Length - 1, element, scope, leadingCombinator);
+
+            return MatchesWithStack(element, scope, leadingCombinator);
+        }
+
+        // Right-to-left with full backtracking: for descendant and general-sibling
+        // combinators every candidate is tried, nearest first, because the nearest
+        // one matching its compound may fail the rest of the chain where a farther
+        // one succeeds (Selectors 4 section 16, "match a complex selector").
+        private bool MatchFrom(int partIndex, Element current, Element scope, Combinator leadingCombinator)
+        {
+            if (!_parts[partIndex].Compound.Matches(current))
+                return false;
+
+            if (partIndex == 0)
+                return scope == null || IsRelativeAnchorMatch(current, scope, leadingCombinator);
+
+            var previousPartIndex = partIndex - 1;
+            switch (_parts[previousPartIndex].Combinator)
+            {
+                case Combinator.Child:
+                {
+                    var parent = current.ParentElement;
+                    return parent != null && MatchFrom(previousPartIndex, parent, scope, leadingCombinator);
+                }
+
+                case Combinator.AdjacentSibling:
+                {
+                    var sibling = current.PreviousElementSibling;
+                    return sibling != null && MatchFrom(previousPartIndex, sibling, scope, leadingCombinator);
+                }
+
+                case Combinator.Descendant:
+                    for (var parent = current.ParentElement; parent != null; parent = parent.ParentElement)
+                    {
+                        if (MatchFrom(previousPartIndex, parent, scope, leadingCombinator))
+                            return true;
+                    }
+                    return false;
+
+                case Combinator.GeneralSibling:
+                    for (var sibling = current.PreviousElementSibling; sibling != null; sibling = sibling.PreviousElementSibling)
+                    {
+                        if (MatchFrom(previousPartIndex, sibling, scope, leadingCombinator))
+                            return true;
+                    }
+                    return false;
+
+                default:
+                    return false;
+            }
+        }
+
+        private bool MatchesWithStack(Element element, Element scope, Combinator leadingCombinator)
+        {
             // Greedily selecting the nearest matching descendant/general sibling is
             // incorrect when the selected candidate cannot satisfy the rest of the
             // chain but an earlier candidate can. Use explicit-stack backtracking.
