@@ -2207,6 +2207,57 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private sealed class FenJsSessionResetException(string message) : InvalidOperationException(message);
 
+    // Large classic scripts are compiled on a thread of their own while the
+    // script thread goes on running tasks. Until a parser-blocking script is
+    // ready to run only the parser waits, not the event loop (HTML 8.1.4.2,
+    // "prepare the script element"); compiling YouTube's 10.8M-char bundle on
+    // the script thread held input and rendering for 2-3 s before a line of it
+    // ran. Keyed by the source string the batch then evaluates.
+    private const int OffThreadCompileMinChars = 64 * 1024;
+    private readonly ConditionalWeakTable<string, BytecodeFunction> _offThreadCompiled = new();
+
+    private static string ScriptSourcePath(BrowserScriptLoadingRecord record) =>
+        !string.IsNullOrWhiteSpace(record?.Src)
+            ? record.Src
+            : !string.IsNullOrWhiteSpace(record?.SourceLabel)
+                ? record.SourceLabel
+                : "<fenbrowser-fenjs-eval>";
+
+    private Task CompileOffScriptThreadAsync(string code, string sourcePath)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The compiler recurses as deep as the script nests, so it gets the
+        // script thread's stack size, not a pool thread's.
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var watch = Stopwatch.StartNew();
+                var function = new BytecodeCompiler { ParserMaxRecursionDepth = FenJsBrowserParserMaxRecursionDepth }
+                    .CompileScript(new SourceText(code, sourcePath));
+                _offThreadCompiled.AddOrUpdate(code, function);
+                FenBrowser.Core.EngineLogCompat.Info(
+                    $"[FenJsBridge] script {code.Length} chars compiled off the script thread in {watch.ElapsedMilliseconds}ms",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+            }
+            catch (Exception)
+            {
+                // Left for the script thread, which compiles it again and reports
+                // the error where the page can observe it.
+            }
+            finally
+            {
+                done.SetResult();
+            }
+        }, FenJsLargeStackBytes)
+        {
+            IsBackground = true,
+            Name = "FenJS compile"
+        };
+        thread.Start();
+        return done.Task;
+    }
+
     private JsValue EvaluateWithFenJsRaw(string script)
     {
         // Snapshot the session generation at dispatch time. If a navigation
@@ -2241,12 +2292,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     // Name the source after the script being run so stack frames from
                     // a minified bundle say which file they came from.
                     var currentRecord = GetCurrentScriptRecord();
-                    var sourcePath = !string.IsNullOrWhiteSpace(currentRecord?.Src)
-                        ? currentRecord.Src
-                        : !string.IsNullOrWhiteSpace(currentRecord?.SourceLabel)
-                            ? currentRecord.SourceLabel
-                            : "<fenbrowser-fenjs-eval>";
-                    var function = _compiler.CompileScript(new SourceText(script, sourcePath));
+                    BytecodeFunction function;
+                    if (_offThreadCompiled.TryGetValue(script, out var compiledOffThread))
+                    {
+                        _offThreadCompiled.Remove(script);
+                        function = compiledOffThread;
+                    }
+                    else
+                    {
+                        function = _compiler.CompileScript(new SourceText(script, ScriptSourcePath(currentRecord)));
+                    }
                     var compileMs = compileWatch.ElapsedMilliseconds;
                     RegisterCallbackFunctionProvenance(function, currentRecord);
                     compileWatch.Restart();
@@ -4067,6 +4122,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 "[FenJsBridge] Script execution started",
                 executionStartedFields);
             FenBrowser.Core.EngineLogCompat.Info($"[DEBUG] About to call EvaluateWithFenJsRaw for script {item.ScriptRecord.ScriptId} ({item.FetchKey ?? "inline"}) length {code?.Length}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            if (!isModule && code != null && code.Length >= OffThreadCompileMinChars)
+            {
+                await CompileOffScriptThreadAsync(code, ScriptSourcePath(item.ScriptRecord)).ConfigureAwait(false);
+            }
+
             RunFenJsWithLargeStack<object>(() =>
             {
                 try
@@ -25463,9 +25523,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             // 3.8 seconds fetching, compiling and executing it, inside the
             // caller's own time budget.
             _ = fetch.ContinueWith(
-                completed => QueueOnDeliveryTail(
-                    () => FinishDynamicExternalScript(scriptElement, scriptRecord, scriptUri, completed),
-                    "[FenJsBridge] dynamic script completion failed"),
+                async completed =>
+                {
+                    // Compiled before it is queued, so the script task only runs it.
+                    if (completed.IsCompletedSuccessfully &&
+                        completed.Result is { Length: >= OffThreadCompileMinChars } code &&
+                        !string.Equals(scriptRecord?.Kind, "module", StringComparison.OrdinalIgnoreCase))
+                    {
+                        await CompileOffScriptThreadAsync(code, ScriptSourcePath(scriptRecord)).ConfigureAwait(false);
+                    }
+
+                    QueueOnDeliveryTail(
+                        () => FinishDynamicExternalScript(scriptElement, scriptRecord, scriptUri, completed),
+                        "[FenJsBridge] dynamic script completion failed");
+                },
                 CancellationToken.None,
                 TaskContinuationOptions.None,
                 TaskScheduler.Default);
