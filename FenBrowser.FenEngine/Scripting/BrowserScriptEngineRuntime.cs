@@ -9469,6 +9469,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
         UpdateEventLoopSnapshot(snapshot => snapshot.AnimationFramesScheduled++);
         AddEventLoopRecord("RequestAnimationFrameScheduled", callback.Tag.ToString(), id, AnimationFrameIntervalMs);
+        LogEventLoop(
+            "RequestAnimationFrameScheduled",
+            LogSeverity.Debug,
+            "[FenJsBridge] requestAnimationFrame scheduled",
+            new Dictionary<string, object>
+            {
+                ["id"] = id,
+                ["delayMs"] = AnimationFrameIntervalMs,
+                ["callbackTag"] = callback.Tag.ToString()
+            });
         var request = new AnimationFrameRequest(
             id,
             callback,
@@ -9542,7 +9552,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         request.Provenance,
                         request.SessionGeneration,
                         request.DocumentId,
-                        () => AddEventLoopRecord("RequestAnimationFrameFired", request.Callback.Tag.ToString(), request.Id, AnimationFrameIntervalMs));
+                        () =>
+                        {
+                            AddEventLoopRecord("RequestAnimationFrameFired", request.Callback.Tag.ToString(), request.Id, AnimationFrameIntervalMs);
+                            LogEventLoop(
+                                "RequestAnimationFrameFired",
+                                LogSeverity.Debug,
+                                "[FenJsBridge] requestAnimationFrame fired",
+                                new Dictionary<string, object>
+                                {
+                                    ["id"] = request.Id,
+                                    ["delayMs"] = AnimationFrameIntervalMs,
+                                    ["callbackTag"] = request.Callback.Tag.ToString()
+                                });
+                        });
                 }
 
                 return null;
