@@ -19146,6 +19146,29 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return moved.ToArray();
     }
 
+    /// <summary>
+    /// DOM 4.5 "clone a node": each element copy is created through "create an
+    /// element" in the copy's document, so a defined custom element is upgraded
+    /// before cloneNode / importNode returns (their CEReactions scope), connected
+    /// or not. Polymer stamps every template with importNode and binds to the
+    /// result straight away; un-upgraded children took the binding as a plain
+    /// property the upgrade then lost (YouTube's masthead menu icon never drew).
+    /// Only the realm's own document has a registry - not template contents'.
+    /// </summary>
+    private JsValue ToHostCloneUpgradingCustomElements(Node clone, Document realmDocument)
+    {
+        var host = ToHostNodeOrNull(clone);
+        if (_hasCustomElementDefinitions &&
+            clone is Element or DocumentFragment &&
+            realmDocument != null &&
+            ReferenceEquals(clone.OwnerDocument, realmDocument))
+        {
+            UpgradeCustomElementTreeIfDefined(host);
+        }
+
+        return host;
+    }
+
     private void UpgradeInsertedCustomElements(Node child, Node[] movedFromFragment)
     {
         if (!_hasCustomElementDefinitions)
@@ -29788,7 +29811,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var deep = args.Count > 1 && CoerceToHostBoolean(args[1]);
                             try
                             {
-                                return _owner.ToHostNodeOrNull(document.ImportNode(node, deep));
+                                return _owner.ToHostCloneUpgradingCustomElements(document.ImportNode(node, deep), _document);
                             }
                             catch (DomException ex)
                             {
@@ -30270,7 +30293,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         (_, args) =>
                         {
                             var deep = args.Count > 0 && CoerceToHostBoolean(args[0]);
-                            return _owner.ToHostNodeOrNull(node.CloneNode(deep));
+                            return _owner.ToHostCloneUpgradingCustomElements(node.CloneNode(deep), _document);
                         },
                         length: 1);
                     return true;
@@ -31753,7 +31776,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         (_, args) =>
                         {
                             var deep = args.Count > 0 && CoerceToHostBoolean(args[0]);
-                            return _owner.ToHostNodeOrNull(element.CloneNode(deep));
+                            return _owner.ToHostCloneUpgradingCustomElements(element.CloneNode(deep), _document);
                         },
                         length: 1);
                     return true;
@@ -32949,7 +32972,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         (_, args) =>
                         {
                             var deep = args.Count > 0 && CoerceToHostBoolean(args[0]);
-                            return _owner.ToHostNodeOrNull(fragment.CloneNode(deep));
+                            return _owner.ToHostCloneUpgradingCustomElements(fragment.CloneNode(deep), _document);
                         },
                         length: 0);
                     return true;
