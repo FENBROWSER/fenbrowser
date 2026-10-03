@@ -675,6 +675,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private readonly List<BrowserEventListener> _embeddedParentWindowListeners = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostCallableCache = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostPropertyStore = new();
+    // Values written into the two tables above, for minor collections.
+    private RecentRootLog _hostTableRoots = new();
     // Names script assigned on a platform object that it does not implement (expandos):
     // the only stored host properties that are the object's own (WebIDL 3.9).
     private ConditionalWeakTable<object, HashSet<string>> _scriptExpandoNames = new();
@@ -786,13 +788,21 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         {
             TraceBrowserEventListeners(tracer, entry.Value);
         }
-        foreach (var entry in _hostCallableCache)
+        if (tracer.MinorOnly && _interpreter != null)
         {
-            TraceJsRoots(tracer, entry.Value.Values);
+            _hostTableRoots.TraceYoung(_interpreter.Heap, tracer, "host.table.recent");
         }
-        foreach (var entry in _hostPropertyStore)
+        else
         {
-            TraceJsRoots(tracer, entry.Value.Values);
+            _hostTableRoots.Clear();
+            foreach (var entry in _hostCallableCache)
+            {
+                TraceJsRoots(tracer, entry.Value.Values);
+            }
+            foreach (var entry in _hostPropertyStore)
+            {
+                TraceJsRoots(tracer, entry.Value.Values);
+            }
         }
 
         TraceMediaJsRoots(tracer);
@@ -6388,6 +6398,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _fenJsPinScopes.Clear();
             _hostCallableCache = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
+            _hostTableRoots = new RecentRootLog();
             _scriptExpandoNames = new ConditionalWeakTable<object, HashSet<string>>();
             // Media bindings hold promise and error objects from the old heap.
             _mediaElements.Clear();
@@ -20225,6 +20236,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     {
         var store = GetHostPropertyStore(receiver);
         store[property] = value;
+        _hostTableRoots.Record(value);
     }
 
     /// <summary>Stores a script expando: a property the platform object does not implement.</summary>
@@ -21041,6 +21053,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         AttachFenJsPrototype(view, "DOMTokenList");
         store["__fenDomTokenListView"] = view;
+        _hostTableRoots.Record(view);
         return view;
     }
 
@@ -24270,6 +24283,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         store["__fenJsStyle"] = styleObj;
+        _hostTableRoots.Record(styleObj);
         return styleObj;
     }
 
@@ -26115,6 +26129,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var guarded = WrapHostCallable(name, call);
         var created = _interpreter.AllocateNativeFunction(name, guarded, length);
         methods[name] = created;
+        _hostTableRoots.Record(created);
         return created;
     }
 
