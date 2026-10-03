@@ -2224,7 +2224,27 @@ public void Dispose()
                 _activeBaseUri?.AbsoluteUri);
         }
 
-private void FlushPendingLayoutForScript(Element element)
+/// <summary>
+        /// CSSOM resolved values that are not used values need the document's
+        /// style current but not its layout: run a pending style pass inline (this
+        /// is the script thread, so waiting for the scheduled one would wait for
+        /// ourselves) and leave layout to whatever needs it.
+        /// </summary>
+        private void FlushPendingStyleForScript(Element element)
+        {
+            var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
+            if (root != null && (root.StyleDirty || root.ChildStyleDirty))
+            {
+                IncrementalRecascadeAsync(notifyRepaint: false).GetAwaiter().GetResult();
+                // The pass cleared the style flags a layout flush reads as "dirty",
+                // so the layout it now owes has to be remembered here.
+                _layoutOwedAfterScriptStyleFlush = true;
+            }
+        }
+
+        private bool _layoutOwedAfterScriptStyleFlush;
+
+        private void FlushPendingLayoutForScript(Element element)
         {
             var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
             if (root == null)
@@ -2240,7 +2260,8 @@ private void FlushPendingLayoutForScript(Element element)
 
             var styleSequence = Node.MutationSequence;
             if (ReferenceEquals(root, _lastScriptLayoutFlushRoot) &&
-                styleSequence == _lastScriptLayoutFlushSequence)
+                styleSequence == _lastScriptLayoutFlushSequence &&
+                !_layoutOwedAfterScriptStyleFlush)
             {
                 return;
             }
@@ -2255,7 +2276,8 @@ private void FlushPendingLayoutForScript(Element element)
 
             // Skip if nothing dirty in the document
             bool isDirty = layoutRoot.StyleDirty || layoutRoot.ChildStyleDirty ||
-                           layoutRoot.LayoutDirty || layoutRoot.ChildLayoutDirty;
+                           layoutRoot.LayoutDirty || layoutRoot.ChildLayoutDirty ||
+                           _layoutOwedAfterScriptStyleFlush;
             if (!isDirty)
             {
                 return;
@@ -2278,6 +2300,7 @@ private void FlushPendingLayoutForScript(Element element)
                 (float)(_activeViewportHeight ?? GetPrimaryWindowHeight()),
                 _activeBaseUri?.AbsoluteUri);
             ScheduleRepaintFromJs();
+            _layoutOwedAfterScriptStyleFlush = false;
             _lastScriptLayoutFlushRoot = root;
             _lastScriptLayoutFlushSequence = Node.MutationSequence;
         }
@@ -2830,6 +2853,7 @@ private void FlushPendingLayoutForScript(Element element)
                  CookieJar.SetDocumentCookie(scope, cookieString, _activeBaseUri ?? scope, BrowserSettings.Instance.BlockThirdPartyCookies);
              js.RequestRender = ScheduleRepaintFromJs;
              js.FlushPendingLayout = FlushPendingLayoutForScript;
+             js.FlushPendingStyle = FlushPendingStyleForScript;
              js.FrameElementLoader = FrameElementLoader;
              js.ImageLoaderScope = ImageLoaderScope;
              js.ViewportHitTester = ViewportHitTester;
