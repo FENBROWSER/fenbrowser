@@ -87,6 +87,41 @@ if (args.Length == 2 && args[0] == "--dump-tokens")
     return 0;
 }
 
+// Times lex / parse / compile of one file, best of N runs, so front-end work
+// can be measured on real bundles without a browser in the loop.
+if (args.Length >= 2 && args[0] == "--bench-compile")
+{
+    var path = args[1];
+    if (!File.Exists(path))
+    {
+        Console.Error.WriteLine($"File not found: {path}");
+        return 4;
+    }
+
+    var runs = args.Length > 2 && int.TryParse(args[2], out var n) ? n : 5;
+    var source = new SourceText(File.ReadAllText(path), path);
+    double bestLex = double.MaxValue, bestParse = double.MaxValue, bestCompile = double.MaxValue;
+    for (var run = 0; run < runs; run++)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        var tokenCount = new JsLexer(source).LexAll().Count;
+        bestLex = Math.Min(bestLex, sw.Elapsed.TotalMilliseconds);
+        var a1 = GC.GetAllocatedBytesForCurrentThread();
+        sw.Restart();
+        JsParser.ParseScript(source);
+        bestParse = Math.Min(bestParse, sw.Elapsed.TotalMilliseconds);
+        var a2 = GC.GetAllocatedBytesForCurrentThread();
+        sw.Restart();
+        new BytecodeCompiler().CompileScript(source);
+        bestCompile = Math.Min(bestCompile, sw.Elapsed.TotalMilliseconds);
+        var a3 = GC.GetAllocatedBytesForCurrentThread();
+        Console.WriteLine($"run {run}: tokens={tokenCount} lex={bestLex:F0}ms/{(a1 - a0) >> 20}MB parse(incl lex)={bestParse:F0}ms/{(a2 - a1) >> 20}MB compile(incl parse)={bestCompile:F0}ms/{(a3 - a2) >> 20}MB");
+    }
+
+    return 0;
+}
+
 if (args.Length == 2 && args[0] == "--dump-ast")
 {
     var path = args[1];
