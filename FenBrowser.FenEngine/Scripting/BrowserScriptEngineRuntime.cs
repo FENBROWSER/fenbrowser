@@ -9418,6 +9418,28 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return JsValue.FromNumber(id);
     }
 
+    // HTML 8.1.7.3 "update the rendering": once per rendering opportunity the event
+    // loop runs every animation frame callback registered before that step, in
+    // order, with one shared timestamp, and the step is taken between tasks rather
+    // than behind them. Each callback used to get its own 16 ms timer and a task at
+    // the back of the queue, so behind a busy page's backlog frames arrived late or
+    // not at all - YouTube's scheduler waits on its own frame callback before it
+    // runs idle work, and its icons never loaded.
+    private sealed record AnimationFrameRequest(
+        long Id,
+        JsValue Callback,
+        FenJsWindowCallbackContext WindowContext,
+        CallbackSourceProvenance Provenance,
+        int SessionGeneration,
+        string DocumentId);
+
+    private const int AnimationFrameIntervalMs = 16;
+    private readonly object _animationFrameLock = new();
+    private List<AnimationFrameRequest> _animationFrameRequests = new();
+    private bool _animationFrameStepPending;
+    private long _lastAnimationFrameStart;
+    private Timer _animationFrameTimer;
+
     private JsValue ScheduleFenJsAnimationFrame(IReadOnlyList<JsValue> args)
     {
         if (args == null || args.Count == 0)
@@ -9426,73 +9448,94 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         var callback = args[0];
-        var callbackContext = CaptureActiveWindowCallbackContext();
-        var callbackProvenance = CaptureCallbackProvenance(callback);
-        var callbackSessionGeneration = _fenJsSessionGeneration;
-        var callbackDocumentId = _currentDocumentId;
         var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
         UpdateEventLoopSnapshot(snapshot => snapshot.AnimationFramesScheduled++);
-        AddEventLoopRecord("RequestAnimationFrameScheduled", callback.Tag.ToString(), id, 16);
-        LogEventLoop(
-            "RequestAnimationFrameScheduled",
-            LogSeverity.Debug,
-            "[FenJsBridge] requestAnimationFrame scheduled",
-            new Dictionary<string, object>
-            {
-                ["id"] = id,
-                ["delayMs"] = 16,
-                ["callbackTag"] = callback.Tag.ToString()
-            });
-        var registration = new FenJsTimerRegistration
+        AddEventLoopRecord("RequestAnimationFrameScheduled", callback.Tag.ToString(), id, AnimationFrameIntervalMs);
+        var request = new AnimationFrameRequest(
+            id,
+            callback,
+            CaptureActiveWindowCallbackContext(),
+            CaptureCallbackProvenance(callback),
+            _fenJsSessionGeneration,
+            _currentDocumentId);
+
+        // Registered as a timer so the callback stays a GC root until it runs and
+        // cancelAnimationFrame (ClearFenJsTimer) can withdraw it.
+        _fenJsTimers[id] = new FenJsTimerRegistration
         {
             Callback = callback,
-            WindowContext = callbackContext
+            WindowContext = request.WindowContext
         };
-        registration.Timer = new Timer(
-            _ =>
+
+        lock (_animationFrameLock)
+        {
+            _animationFrameRequests.Add(request);
+            if (!_animationFrameStepPending)
             {
-                try
+                _animationFrameStepPending = true;
+                var sinceLastFrame = _lastAnimationFrameStart == 0
+                    ? AnimationFrameIntervalMs
+                    : Stopwatch.GetElapsedTime(_lastAnimationFrameStart).TotalMilliseconds;
+                var delay = (int)Math.Clamp(AnimationFrameIntervalMs - sinceLastFrame, 0, AnimationFrameIntervalMs);
+                (_animationFrameTimer ??= new Timer(static state => ((FenJsBrowserScriptEngine)state).RunAnimationFrameStep(), this, Timeout.Infinite, Timeout.Infinite))
+                    .Change(delay, Timeout.Infinite);
+            }
+        }
+
+        return JsValue.FromNumber(id);
+    }
+
+    private void RunAnimationFrameStep()
+    {
+        List<AnimationFrameRequest> batch;
+        lock (_animationFrameLock)
+        {
+            batch = _animationFrameRequests;
+            _animationFrameRequests = new List<AnimationFrameRequest>();
+            _animationFrameStepPending = false;
+        }
+
+        if (batch.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            RunFenJsWithLargeStack<object>(() =>
+            {
+                _lastAnimationFrameStart = Stopwatch.GetTimestamp();
+                var timestamp = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds);
+                foreach (var request in batch)
                 {
-                    var timestamp = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds);
+                    // Gone means cancelled, or dropped with its document.
+                    if (!_fenJsTimers.TryRemove(request.Id, out var registration))
+                    {
+                        continue;
+                    }
+
+                    registration.Dispose();
                     InvokeFenJsCallbackSafely(
-                        callback,
+                        request.Callback,
                         new[] { timestamp },
                         "requestAnimationFrame",
-                        id,
-                        callbackContext,
-                        callbackProvenance,
-                        callbackSessionGeneration,
-                        callbackDocumentId,
-                        () =>
-                        {
-                            AddEventLoopRecord("RequestAnimationFrameFired", callback.Tag.ToString(), id, 16);
-                            LogEventLoop(
-                                "RequestAnimationFrameFired",
-                                LogSeverity.Debug,
-                                "[FenJsBridge] requestAnimationFrame fired",
-                                new Dictionary<string, object>
-                                {
-                                    ["id"] = id,
-                                    ["delayMs"] = 16,
-                                    ["callbackTag"] = callback.Tag.ToString()
-                                });
-                        });
+                        request.Id,
+                        request.WindowContext,
+                        request.Provenance,
+                        request.SessionGeneration,
+                        request.DocumentId,
+                        () => AddEventLoopRecord("RequestAnimationFrameFired", request.Callback.Tag.ToString(), request.Id, AnimationFrameIntervalMs));
                 }
-                finally
-                {
-                    if (_fenJsTimers.TryRemove(id, out var completed))
-                    {
-                        completed.Dispose();
-                    }
-                }
-            },
-            null,
-            Timeout.Infinite,
-            Timeout.Infinite);
 
-        _fenJsTimers[id] = registration;
-        registration.Timer.Change(16, Timeout.Infinite);
-        return JsValue.FromNumber(id);
+                return null;
+            }, waitForWorkerMs: -1, instructionBudget: FenJsBrowserInstructionBudget, prioritize: true);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] animation frame step failed: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
     }
 
     private JsValue ClearFenJsTimer(IReadOnlyList<JsValue> args)
