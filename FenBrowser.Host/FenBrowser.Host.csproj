@@ -34,6 +34,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!--
+      Tiered compilation holds back promotion to optimized code until no new
+      method has been JIT-compiled for 100 ms. A page load JITs continuously, so the
+      script interpreter, lexer and parser ran their hot loops unoptimized for
+      seconds: YouTube's main bundle executed in ~5.7 s and compiled in ~4 s, against
+      ~3.3 s and ~2 s with the delay at zero.
+    -->
+    <RuntimeHostConfigurationOption Include="System.Runtime.TieredCompilation.CallCountingDelayMs" Value="0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>FenBrowser.Tests</_Parameter1>
     </AssemblyAttribute>
