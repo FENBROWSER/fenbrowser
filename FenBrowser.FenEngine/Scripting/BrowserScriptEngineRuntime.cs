@@ -3415,6 +3415,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
     }
 
+    private const int MaxEventLoopRecords = 8192;
+
     private void AddEventLoopRecord(string eventName, string detail = "", long id = 0, int delayMs = 0, bool repeating = false)
     {
         var timestamp = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -3423,6 +3425,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         using (ScriptEngineLockProbe.Hold(_eventLoopLock))
         {
             _lastEventLoopSnapshot ??= new BrowserEventLoopSnapshot();
+            // Several records per task, for the life of the document: unbounded,
+            // a long session grew this list without limit. Diagnostics read the
+            // recent end, so the oldest are dropped in blocks.
+            if (_lastEventLoopSnapshot.Events.Count >= MaxEventLoopRecords)
+            {
+                _lastEventLoopSnapshot.Events.RemoveRange(0, MaxEventLoopRecords / 4);
+            }
+
             _lastEventLoopSnapshot.Events.Add(new BrowserEventLoopRecord
             {
                 EventName = eventName ?? string.Empty,
