@@ -1,4 +1,5 @@
 using FenBrowser.Js.Source;
+using System.Collections.Frozen;
 using System.Globalization;
 using System.Text;
 
@@ -14,13 +15,28 @@ public sealed class JsLexer
         Hex
     }
 
-    private static readonly HashSet<string> Keywords = new(StringComparer.Ordinal)
+    private static readonly FrozenSet<string> Keywords = new[]
     {
         "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
         "do", "else", "export", "extends", "finally", "for", "function", "if", "import", "in", "of",
         "instanceof", "let", "new", "return", "super", "switch", "this", "throw", "try", "typeof", "enum",
         "var", "void", "while", "with", "yield", "true", "false", "null"
-    };
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    private static readonly FrozenSet<string>.AlternateLookup<ReadOnlySpan<char>> KeywordLookup =
+        Keywords.GetAlternateLookup<ReadOnlySpan<char>>();
+
+    // Minified bundles repeat the same few thousand names, numbers and short
+    // strings millions of times; each token's text is shared instead of
+    // allocated per occurrence. Created on first use so the many tiny lexers
+    // for template substitutions do not pay for it.
+    private HashSet<string>? _internTable;
+
+    // Longer strings rarely repeat; hashing them would cost more than it saves.
+    private const int MaxInternedStringLength = 64;
+
+    private Token[] _tokens = Array.Empty<Token>();
+    private int _tokenCount;
 
     private readonly string _source;
 
@@ -64,25 +80,69 @@ public sealed class JsLexer
         _moduleMode = moduleMode;
     }
 
-    public IReadOnlyList<Token> LexAll()
-    {
-        var tokens = new List<Token>();
+    public IReadOnlyList<Token> LexAll() => new ArraySegment<Token>(LexAllTokens(out var count), 0, count);
 
+    /// <summary>
+    /// Lexes the whole region into a buffer the caller indexes directly; only the
+    /// first <paramref name="count"/> entries are tokens, the last being EndOfFile.
+    /// </summary>
+    internal Token[] LexAllTokens(out int count)
+    {
+        // Minified code averages a token per three to four characters; sizing up
+        // front avoids copying a multi-megabyte buffer through every doubling.
+        _tokens = new Token[Math.Max(16, (_end - _index) / 3)];
+        _tokenCount = 0;
+        LexInto();
+        count = _tokenCount;
+        return _tokens;
+    }
+
+    private void AddToken(in Token token)
+    {
+        if (_tokenCount == _tokens.Length)
+        {
+            Array.Resize(ref _tokens, _tokens.Length + (_tokens.Length >> 1) + 16);
+        }
+
+        _tokens[_tokenCount++] = token;
+    }
+
+    private string Intern(ReadOnlySpan<char> text)
+    {
+        var table = _internTable ??= new HashSet<string>(StringComparer.Ordinal);
+        var lookup = table.GetAlternateLookup<ReadOnlySpan<char>>();
+        if (!lookup.TryGetValue(text, out var interned))
+        {
+            interned = text.ToString();
+            table.Add(interned);
+        }
+
+        return interned;
+    }
+
+    private static bool IsAsciiIdentifierStart(char ch) =>
+        (uint)((ch | 0x20) - 'a') <= 'z' - 'a' || ch == '$' || ch == '_';
+
+    private static bool IsAsciiIdentifierPart(char ch) =>
+        IsAsciiIdentifierStart(ch) || (uint)(ch - '0') <= 9;
+
+    private void LexInto()
+    {
         while (true)
         {
             SkipTrivia();
             if (_pendingMalformedTrivia is { } malformedTrivia)
             {
                 _pendingMalformedTrivia = null;
-                tokens.Add(malformedTrivia);
+                AddToken(malformedTrivia);
                 _lastSignificantToken = malformedTrivia;
                 continue;
             }
 
             if (_index >= _end)
             {
-                tokens.Add(new Token(TokenKind.EndOfFile, string.Empty, new SourceSpan(_index, 0, _line, _column)));
-                return tokens;
+                AddToken(new Token(TokenKind.EndOfFile, string.Empty, new SourceSpan(_index, 0, _line, _column)));
+                return;
             }
 
             _atLineStart = false;
@@ -97,8 +157,33 @@ public sealed class JsLexer
                 if (TryReadRegexLiteral(out var regexText))
                 {
                     var token = new Token(TokenKind.RegularExpression, regexText, new SourceSpan(start, regexText.Length, line, column));
-                    tokens.Add(token);
+                    AddToken(token);
                     _lastSignificantToken = token;
+                    continue;
+                }
+            }
+
+            // Plain ASCII identifier with no escape: no builder, text interned.
+            if (IsAsciiIdentifierStart(ch))
+            {
+                var end = _index + 1;
+                while (end < _end && IsAsciiIdentifierPart(_source[end]))
+                {
+                    end++;
+                }
+
+                if (end >= _end || (_source[end] < 0x80 && _source[end] != '\\'))
+                {
+                    var span = _source.AsSpan(_index, end - _index);
+                    var isKeyword = KeywordLookup.TryGetValue(span, out var keyword);
+                    var identifierToken = new Token(
+                        isKeyword ? TokenKind.Keyword : TokenKind.Identifier,
+                        isKeyword ? keyword! : Intern(span),
+                        new SourceSpan(start, span.Length, line, column));
+                    _column += span.Length;
+                    _index = end;
+                    AddToken(identifierToken);
+                    _lastSignificantToken = identifierToken;
                     continue;
                 }
             }
@@ -117,7 +202,7 @@ public sealed class JsLexer
                         _index++;
                         _column++;
                         var invalidEscape = new Token(TokenKind.Unknown, ch.ToString(), new SourceSpan(start, 1, line, column));
-                        tokens.Add(invalidEscape);
+                        AddToken(invalidEscape);
                         _lastSignificantToken = invalidEscape;
                         continue;
                     }
@@ -174,7 +259,7 @@ public sealed class JsLexer
                         ? TokenKind.Keyword
                         : TokenKind.Identifier;
                 var token = new Token(kind, text, new SourceSpan(start, _index - start, line, column), hadEscape);
-                tokens.Add(token);
+                AddToken(token);
                 _lastSignificantToken = token;
                 continue;
             }
@@ -190,7 +275,7 @@ public sealed class JsLexer
                 if (_index >= _end)
                 {
                     var hashToken = new Token(TokenKind.Unknown, "#", new SourceSpan(start, 1, line, column));
-                    tokens.Add(hashToken);
+                    AddToken(hashToken);
                     _lastSignificantToken = hashToken;
                     continue;
                 }
@@ -221,7 +306,7 @@ public sealed class JsLexer
                 else
                 {
                     var hashToken = new Token(TokenKind.Unknown, "#", new SourceSpan(start, 1, line, column));
-                    tokens.Add(hashToken);
+                    AddToken(hashToken);
                     _lastSignificantToken = hashToken;
                     continue;
                 }
@@ -262,7 +347,7 @@ public sealed class JsLexer
                     text,
                     new SourceSpan(start, _index - start, line, column),
                     hadEscape);
-                tokens.Add(privateToken);
+                AddToken(privateToken);
                 _lastSignificantToken = privateToken;
                 continue;
             }
@@ -374,12 +459,12 @@ public sealed class JsLexer
                     _column++;
                 }
 
-                var numberText = _source[start.._index];
+                var numberText = Intern(_source.AsSpan(start, _index - start));
                 var numberKind = HasInvalidNumericLiteralBoundary() || !HasValidNumericLiteralSeparators(numberText)
                     ? TokenKind.Unknown
                     : isBigInt ? TokenKind.BigInt : TokenKind.Number;
                 var token = new Token(numberKind, numberText, new SourceSpan(start, _index - start, line, column));
-                tokens.Add(token);
+                AddToken(token);
                 _lastSignificantToken = token;
                 continue;
             }
@@ -421,12 +506,12 @@ public sealed class JsLexer
                     }
                 }
 
-                var numberText = _source[start.._index];
+                var numberText = Intern(_source.AsSpan(start, _index - start));
                 var numberKind = HasInvalidNumericLiteralBoundary() || !HasValidNumericLiteralSeparators(numberText)
                     ? TokenKind.Unknown
                     : TokenKind.Number;
                 var token = new Token(numberKind, numberText, new SourceSpan(start, _index - start, line, column));
-                tokens.Add(token);
+                AddToken(token);
                 _lastSignificantToken = token;
                 continue;
             }
@@ -469,8 +554,11 @@ public sealed class JsLexer
                     }
                 }
 
-                var token = new Token(malformed ? TokenKind.Unknown : TokenKind.String, _source[start.._index], new SourceSpan(start, _index - start, line, column));
-                tokens.Add(token);
+                var stringText = _index - start <= MaxInternedStringLength
+                    ? Intern(_source.AsSpan(start, _index - start))
+                    : _source[start.._index];
+                var token = new Token(malformed ? TokenKind.Unknown : TokenKind.String, stringText, new SourceSpan(start, _index - start, line, column));
+                AddToken(token);
                 _lastSignificantToken = token;
                 continue;
             }
@@ -484,7 +572,7 @@ public sealed class JsLexer
                     new SourceSpan(start, text.Length, line, column),
                     ContainsEscape: containsEscape,
                     ContainsInvalidEscape: containsInvalidEscape);
-                tokens.Add(token);
+                AddToken(token);
                 _lastSignificantToken = token;
                 continue;
             }
@@ -492,7 +580,7 @@ public sealed class JsLexer
             if (TryReadPunctuator(out var punctuatorText))
             {
                 var token = new Token(TokenKind.Punctuator, punctuatorText, new SourceSpan(start, punctuatorText.Length, line, column));
-                tokens.Add(token);
+                AddToken(token);
                 _lastSignificantToken = token;
                 continue;
             }
@@ -500,7 +588,7 @@ public sealed class JsLexer
             _index++;
             _column++;
             var unknown = new Token(TokenKind.Unknown, ch.ToString(), new SourceSpan(start, 1, line, column));
-            tokens.Add(unknown);
+            AddToken(unknown);
             _lastSignificantToken = unknown;
         }
     }
@@ -629,64 +717,46 @@ public sealed class JsLexer
 
     private bool TryReadPunctuator(out string text)
     {
-        if (_index + 3 < _end)
+        // Longest match, returning shared literals: the parser compares token
+        // text against these same literals, so equality is a reference check.
+        var c1 = _index + 1 < _end ? _source[_index + 1] : '\0';
+        var c2 = _index + 2 < _end ? _source[_index + 2] : '\0';
+        string? match = _source[_index] switch
         {
-            var four = _source.Substring(_index, 4);
-            if (four is ">>>=")
-            {
-                _index += 4;
-                _column += 4;
-                text = four;
-                return true;
-            }
-        }
-
-        if (_index + 2 < _end)
-        {
-            var three = _source.Substring(_index, 3);
-            if (three is "===" or "!==" or "..." or "&&=" or "||=" or "??=" or ">>>" or "<<=" or ">>=" or "**=")
-            {
-                _index += 3;
-                _column += 3;
-                text = three;
-                return true;
-            }
-        }
-
-        if (_index + 1 < _end)
-        {
-            var two = _source.Substring(_index, 2);
+            '{' => "{", '}' => "}", '(' => "(", ')' => ")", '[' => "[", ']' => "]",
+            ';' => ";", ',' => ",", ':' => ":", '~' => "~", '@' => "@",
+            '.' => c1 == '.' && c2 == '.' ? "..." : ".",
             // ECMA-262 12.7: OptionalChainingPunctuator `?.` has the negative
-            // lookahead [∉ DecimalDigit], so `x?.5:y` is a conditional whose
-            // consequent is the numeric literal `.5`, not optional chaining.
-            if (two is "?." && _index + 2 < _end && _source[_index + 2] is >= '0' and <= '9')
-            {
-                _index += 1;
-                _column += 1;
-                text = "?";
-                return true;
-            }
+            // lookahead [lookahead not DecimalDigit], so `x?.5:y` is a conditional
+            // whose consequent is the numeric literal `.5`, not optional chaining.
+            '?' => c1 == '?' ? (c2 == '=' ? "??=" : "??") : c1 == '.' && c2 is not (>= '0' and <= '9') ? "?." : "?",
+            '>' => c1 == '>'
+                ? c2 == '>' ? (_index + 3 < _end && _source[_index + 3] == '=' ? ">>>=" : ">>>") : c2 == '=' ? ">>=" : ">>"
+                : c1 == '=' ? ">=" : ">",
+            '<' => c1 == '<' ? (c2 == '=' ? "<<=" : "<<") : c1 == '=' ? "<=" : "<",
+            '=' => c1 == '=' ? (c2 == '=' ? "===" : "==") : "=",
+            '!' => c1 == '=' ? (c2 == '=' ? "!==" : "!=") : "!",
+            '&' => c1 == '&' ? (c2 == '=' ? "&&=" : "&&") : c1 == '=' ? "&=" : "&",
+            '|' => c1 == '|' ? (c2 == '=' ? "||=" : "||") : c1 == '=' ? "|=" : "|",
+            '*' => c1 == '*' ? (c2 == '=' ? "**=" : "**") : c1 == '=' ? "*=" : "*",
+            '+' => c1 == '+' ? "++" : c1 == '=' ? "+=" : "+",
+            '-' => c1 == '-' ? "--" : c1 == '=' ? "-=" : "-",
+            '/' => c1 == '=' ? "/=" : "/",
+            '%' => c1 == '=' ? "%=" : "%",
+            '^' => c1 == '=' ? "^=" : "^",
+            _ => null
+        };
 
-            if (two is "==" or "!=" or "<=" or ">=" or "&&" or "||" or "??" or "?." or "+=" or "-=" or "*=" or "/=" or "%=" or "&=" or "^=" or "|=" or "++" or "--" or "<<" or ">>" or "**")
-            {
-                _index += 2;
-                _column += 2;
-                text = two;
-                return true;
-            }
-        }
-
-        var ch = _source[_index];
-        if (ch is '{' or '}' or '(' or ')' or '[' or ']' or ';' or ',' or '.' or ':' or '?' or '+' or '-' or '*' or '/' or '%' or '=' or '!' or '<' or '>' or '&' or '|' or '^' or '~' or '@')
+        if (match is null)
         {
-            _index++;
-            _column++;
-            text = ch.ToString();
-            return true;
+            text = string.Empty;
+            return false;
         }
 
-        text = string.Empty;
-        return false;
+        _index += match.Length;
+        _column += match.Length;
+        text = match;
+        return true;
     }
 
     private bool CanStartRegexLiteral()
@@ -908,6 +978,11 @@ public sealed class JsLexer
 
     private static bool IsIdentifierStart(Rune rune)
     {
+        if (rune.Value < 0x80)
+        {
+            return IsAsciiIdentifierStart((char)rune.Value);
+        }
+
         if (rune.Value == 0x2E2F)
         {
             return false;
@@ -932,6 +1007,11 @@ public sealed class JsLexer
 
     private static bool IsIdentifierPart(Rune rune)
     {
+        if (rune.Value < 0x80)
+        {
+            return IsAsciiIdentifierPart((char)rune.Value);
+        }
+
         if (IsIdentifierStart(rune) || IsOtherIdentifierContinue(rune) || rune.Value is 0x200C or 0x200D)
         {
             return true;
