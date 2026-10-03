@@ -389,15 +389,21 @@ public sealed partial class FenJsBrowserScriptEngine
                     }
 
                     if (typeof globalThis.requestIdleCallback !== 'function') {
+                        // HTML "start an idle period": the deadline runs from when the
+                        // idle period starts - when the callback is invoked - and is at
+                        // most 50 ms away. Measuring from the request instead handed every
+                        // callback that waited behind a busy page timeRemaining() == 0, so
+                        // idle-driven schedulers ran nothing and re-queued forever.
                         globalThis.requestIdleCallback = function (callback, options) {
                             var timeout = options && typeof options.timeout === 'number' ? Math.max(0, options.timeout) : 0;
-                            var start = Date.now();
+                            var requested = Date.now();
                             return setTimeout(function () {
+                                var deadline = performance.now() + 50;
                                 callback({
-                                    didTimeout: timeout > 0 && Date.now() - start >= timeout,
-                                    timeRemaining: function () { return Math.max(0, 50 - (Date.now() - start)); }
+                                    didTimeout: timeout > 0 && Date.now() - requested >= timeout,
+                                    timeRemaining: function () { return Math.max(0, deadline - performance.now()); }
                                 });
-                            }, 1);
+                            }, 0);
                         };
                         globalThis.cancelIdleCallback = function (handle) { clearTimeout(handle); };
                     }
