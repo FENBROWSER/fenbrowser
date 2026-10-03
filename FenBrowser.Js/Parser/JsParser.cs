@@ -157,6 +157,27 @@ public sealed class JsParser
         bool allowYieldExpression = false,
         bool allowAwaitExpression = false)
     {
+        try
+        {
+            return ParseProgramCore(kind, inheritedStrictMode, allowYieldExpression, allowAwaitExpression);
+        }
+        catch (JsParserException ex) when (ex.Line == 0)
+        {
+            // The parser stops at the token it could not accept; that is where
+            // the error is.
+            var span = Current().Span;
+            ex.Line = span.Line;
+            ex.Column = span.Column;
+            throw;
+        }
+    }
+
+    private ProgramNode ParseProgramCore(
+        ProgramKind kind,
+        bool inheritedStrictMode,
+        bool allowYieldExpression,
+        bool allowAwaitExpression)
+    {
         _moduleMode = kind == ProgramKind.Module;
         _strictMode = kind == ProgramKind.Module || inheritedStrictMode;
         _allowYieldExpression = allowYieldExpression;
