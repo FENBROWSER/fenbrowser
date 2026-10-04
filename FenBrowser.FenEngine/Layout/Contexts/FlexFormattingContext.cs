@@ -254,7 +254,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 // Keeping original logic for height.
 
                 // Respect alignment constraints
-                if (!isRow && alignItems == "stretch") childAvailWidth = container.Geometry.ContentBox.Width;
+                // A column container whose width is still being found (shrink-to-fit) has no
+                // cross size to stretch to yet; its items size to content and it sizes to them.
+                if (!isRow && alignItems == "stretch" &&
+                    float.IsFinite(container.Geometry.ContentBox.Width) && container.Geometry.ContentBox.Width > 0)
+                    childAvailWidth = container.Geometry.ContentBox.Width;
                 if (isRow && alignItems == "stretch" && container.Geometry.ContentBox.Height > 0) childAvailHeight = container.Geometry.ContentBox.Height;
 
                 var childState = state.Clone();
@@ -278,9 +282,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 // If child layout failed to handle Infinity and produced NaN, fix it here.
                 LayoutValidator.SanitizeBox(item, state.ViewportWidth, state.ViewportHeight);
 
-                // Keep flex rows from collapsing to 0px when auto-sized icon/control items
-                // are re-measured through nested contexts.
-                ApplyCollapsedFlexItemFallback(item);
                 if (isRow && preferIntrinsicWidth)
                 {
                     ExpandRowFlexItemToDescendantWidth(item, childState);
@@ -422,36 +423,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // Include gaps in total main size
             totalMainSize += gapForFlex * Math.Max(0, items.Count - 1);
-
-            // If a flex item still has 0 width, no flex-basis, and declares flex, recover.
-            if (isRow && containerMainSize > 0)
-            {
-                foreach (var item in items)
-                {
-                    if (item.Geometry.ContentBox.Width > 0) continue;
-                    var itemStyle = item.ComputedStyle;
-                    // Skip items with explicit flex-basis: 0 — they should grow, not be recovered
-                    if ((itemStyle?.FlexBasis.HasValue == true && !double.IsNaN(itemStyle.FlexBasis.Value)) ||
-                        itemStyle?.FlexBasisPercent.HasValue == true)
-                        continue;
-                    bool hasFlex = ResolveFlexGrow(itemStyle).GetValueOrDefault() > 0 ||
-                                   (itemStyle?.Map != null && (itemStyle.Map.ContainsKey("flex") || itemStyle.Map.ContainsKey("flex-grow")));
-                    if (!hasFlex) continue;
-
-                    float currentItemSize = item.Geometry.MarginBox.Width;
-                    float remainingForItem = containerMainSize - (totalMainSize - currentItemSize);
-                    if (remainingForItem <= 0) continue;
-
-                    LayoutBoxOps.ComputeBoxModelFromContent(item, remainingForItem, item.Geometry.ContentBox.Height);
-                    var reState = state.Clone();
-                    reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
-                    reState.ContainingBlockWidth = remainingForItem;
-                    reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
-                    LayoutWithForcedWidth(item, reState, remainingForItem);
-
-                    totalMainSize = totalMainSize - currentItemSize + item.Geometry.MarginBox.Width;
-                }
-            }
 
             bool mainSizeWasAuto = isRow
                 ? container.Geometry.ContentBox.Width <= 0
@@ -657,87 +628,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (item.Geometry.ContentBox.Height <= 0)
                     {
                         LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, newHeight);
-                    }
-                }
-            }
-
-            // Final safety: if any row flex item collapsed to near-zero width, recover using
-            // descendant content bounds but never exceed the container's main size.
-            if (isRow && containerMainSize > 0)
-            {
-                foreach (var item in items)
-                {
-                    if (item.Geometry.ContentBox.Width > 1f) continue;
-
-                    ApplyCollapsedFlexItemFallback(item);
-                    if (item.Geometry.ContentBox.Width > 1f) continue;
-
-                    float descendantWidth = 0f;
-                    if (TryGetDescendantExtent(item, out var requiredWidth, out _))
-                    {
-                        descendantWidth = Math.Max(0f, requiredWidth);
-                    }
-
-                    float targetWidth = descendantWidth > 1f
-                        ? Math.Min(containerMainSize, descendantWidth)
-                        : Math.Max(0, containerMainSize - (totalMainSize - item.Geometry.MarginBox.Width));
-
-                    if (targetWidth <= 1f) continue;
-
-                    LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, item.Geometry.ContentBox.Height);
-
-                    var reState = state.Clone();
-                    reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
-                    reState.ContainingBlockWidth = targetWidth;
-                    reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
-                    LayoutWithForcedWidth(item, reState, targetWidth);
-                }
-            }
-            else if (!isRow && containerMainSize > 0)
-            {
-                foreach (var item in items)
-                {
-                    if (item.Geometry.ContentBox.Height > 1f) continue;
-                    if (HasOnlyOutOfFlowOrIgnorableDescendants(item))
-                    {
-                        LayoutBoxOps.ComputeBoxModelFromContent(item, item.Geometry.ContentBox.Width, 0f);
-                        continue;
-                    }
-
-                    ApplyCollapsedFlexItemFallback(item);
-                    if (item.Geometry.ContentBox.Height > 1f) continue;
-
-                    float descendantHeight = 0f;
-                    if (TryGetDescendantExtent(item, out _, out var requiredHeight))
-                    {
-                        descendantHeight = Math.Max(0f, requiredHeight);
-                    }
-
-                    bool canUseRemainingSpace = ResolveFlexGrow(item.ComputedStyle).GetValueOrDefault() > 0;
-                    float currentItemSize = GetColumnMainSize(item);
-                    float targetHeight = descendantHeight > 1f
-                        ? Math.Min(containerMainSize, descendantHeight)
-                        : canUseRemainingSpace
-                            ? Math.Max(0, containerMainSize - (totalMainSize - currentItemSize))
-                            : 0f;
-
-                    if (targetHeight <= 1f) continue;
-
-                    float targetWidth = item.Geometry.ContentBox.Width > 0
-                        ? item.Geometry.ContentBox.Width
-                        : container.Geometry.ContentBox.Width;
-
-                    LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, targetHeight);
-
-                    var reState = state.Clone();
-                    reState.AvailableSize = new SKSize(targetWidth, targetHeight);
-                    reState.ContainingBlockWidth = targetWidth;
-                    reState.ContainingBlockHeight = targetHeight;
-                    LayoutWithForcedHeight(item, reState, targetHeight);
-
-                    if (item.Geometry.ContentBox.Height <= 1f)
-                    {
-                        LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, targetHeight);
                     }
                 }
             }
@@ -2079,81 +1969,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return fallback;
         }
 
-        private static void ApplyCollapsedFlexItemFallback(LayoutBox item)
-        {
-            if (item?.Geometry == null) return;
-
-            float currentW = item.Geometry.ContentBox.Width;
-            float currentH = item.Geometry.ContentBox.Height;
-            if (currentW > 1f && currentH > 0f) return;
-
-            float fallbackW = currentW;
-            float fallbackH = currentH;
-            var style = item.ComputedStyle;
-
-            if (fallbackW <= 0f && style?.Width.HasValue == true) fallbackW = (float)style.Width.Value;
-            if (fallbackH <= 0f && style?.Height.HasValue == true) fallbackH = (float)style.Height.Value;
-            if (fallbackH <= 0f &&
-                LayoutHelper.TryResolveLineHeight(style, out var resolvedLineHeight) &&
-                resolvedLineHeight > 0f)
-            {
-                fallbackH = resolvedLineHeight;
-            }
-
-            if (item.SourceNode is Element el)
-            {
-                string tag = el.TagName?.ToUpperInvariant() ?? string.Empty;
-                if (fallbackW <= 0f)
-                {
-                    if (tag == "SVG" || tag == "CANVAS") fallbackW = 24f;
-                    else if (tag == "IMG") fallbackW = 300f;
-                    else if (tag == "INPUT") fallbackW = 150f;
-                    else if (tag == "BUTTON") fallbackW = 60f;
-                }
-
-                if (fallbackH <= 0f)
-                {
-                    if (tag == "SVG" || tag == "CANVAS") fallbackH = 24f;
-                    else if (tag == "IMG") fallbackH = 150f;
-                    else if (tag == "INPUT" || tag == "SELECT") fallbackH = 24f;
-                    else if (tag == "BUTTON") fallbackH = 36f;
-                }
-            }
-
-            if (item.Children.Count == 1 && item.Children[0].SourceNode is Element childEl)
-            {
-                string childTag = childEl.TagName?.ToUpperInvariant() ?? string.Empty;
-                if (childTag == "SVG" || childTag == "IMG" || childTag == "CANVAS")
-                {
-                    if (fallbackW <= 0f) fallbackW = 24f;
-                    if (fallbackH <= 0f) fallbackH = 24f;
-                }
-            }
-
-            // Recover from narrow container widths when descendants clearly need more
-            // (e.g., icon/control clusters measured in intrinsic probe passes).
-            if (item.Children.Count > 0 && fallbackW <= 1f)
-            {
-                if (TryGetDescendantExtent(item, out var descendantWidth, out var descendantHeight))
-                {
-                    if (descendantWidth > 0f)
-                    {
-                        fallbackW = Math.Max(fallbackW, descendantWidth);
-                    }
-
-                    if (fallbackH <= 0f && descendantHeight > 0f)
-                    {
-                        fallbackH = descendantHeight;
-                    }
-                }
-            }
-
-            if (fallbackW <= 0f) fallbackW = 1f;
-            if (fallbackH <= 0f) fallbackH = 1f;
-
-            LayoutBoxOps.ComputeBoxModelFromContent(item, fallbackW, fallbackH);
-        }
-
         private static bool TryGetDescendantExtent(LayoutBox item, out float width, out float height)
         {
             width = 0f;
@@ -3299,31 +3114,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return true;
             }
             return box.Children.All(IsIgnorableFlexDescendant);
-        }
-
-        private static bool HasOnlyOutOfFlowOrIgnorableDescendants(LayoutBox box)
-        {
-            if (box == null || box.Children.Count == 0) return false;
-            return box.Children.All(IsOutOfFlowOrIgnorableDescendant);
-        }
-
-        private static bool IsOutOfFlowOrIgnorableDescendant(LayoutBox box)
-        {
-            if (box == null) return true;
-            if (box.IsOutOfFlow) return true;
-            if (box is TextLayoutBox textBox)
-            {
-                return string.IsNullOrWhiteSpace(textBox.TextContent);
-            }
-            if (box.SourceNode is Text textNode)
-            {
-                return string.IsNullOrWhiteSpace(textNode.Data);
-            }
-            if (box.Children.Count == 0)
-            {
-                return false;
-            }
-            return box.Children.All(IsOutOfFlowOrIgnorableDescendant);
         }
 
         private static double? ResolveFlexGrow(CssComputed style)
