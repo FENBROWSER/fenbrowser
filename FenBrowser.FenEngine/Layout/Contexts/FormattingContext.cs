@@ -31,6 +31,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         public void Layout(LayoutBox box, LayoutState state)
         {
             state.Deadline?.Check();
+            if (state.IsForced && !ReferenceEquals(state.ForcedBox, box))
+            {
+                state.IsForced = false;
+                state.ForcedBox = null;
+                state.ForcedWidth = float.NaN;
+                state.ForcedHeight = float.NaN;
+            }
             _layoutCalls++;
 
             if (box.Store.TryGetCachedLayout(box.StoreId, state) || box.Store.TryRestoreCachedLayout(box.StoreId, state))

@@ -91,6 +91,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         public bool IsForced;
 
         /// <summary>
+        /// The box a forced pass sizes. The flags describe that box only: its
+        /// descendants are laid out unforced (FormattingContext.Layout clears them),
+        /// otherwise every box under a flex item that was forced once keyed its
+        /// layout cache - and the forced-height path of nested flex containers - on
+        /// an ancestor's forced size.
+        /// </summary>
+        public FenBrowser.FenEngine.Layout.Tree.LayoutBox ForcedBox;
+
+        /// <summary>
         /// The width/height the flex forced-size passes write onto the box's style
         /// before laying it out, or NaN when this pass forces nothing.
         /// </summary>
@@ -131,6 +140,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             ScrollContainer = null;
             SubgridContext = null;
             IsForced = false;
+            ForcedBox = null;
             ForcedWidth = float.NaN;
             ForcedHeight = float.NaN;
             InlineContainingBlockWidth = float.NaN;
@@ -153,6 +163,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 ScrollContainer = this.ScrollContainer,
                 SubgridContext = this.SubgridContext,
                 IsForced = this.IsForced,
+                ForcedBox = this.ForcedBox,
                 ForcedWidth = this.ForcedWidth,
                 ForcedHeight = this.ForcedHeight
             };

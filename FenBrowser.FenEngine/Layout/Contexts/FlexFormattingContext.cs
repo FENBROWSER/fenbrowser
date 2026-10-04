@@ -2900,6 +2900,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             state.IsForced = true;
+            state.ForcedBox = item;
             state.ForcedWidth = Math.Max(0, forcedWidth);
 
             var style = item.ComputedStyle;
@@ -2997,6 +2998,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             state.IsForced = true;
+            state.ForcedBox = item;
             state.ForcedHeight = Math.Max(0, forcedHeight);
 
             var style = item.ComputedStyle;

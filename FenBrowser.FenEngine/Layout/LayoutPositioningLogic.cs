@@ -162,6 +162,7 @@ namespace FenBrowser.FenEngine.Layout
                 outer.ViewportHeight,
                 outer.Deadline);
             state.IsForced = true;
+            state.ForcedBox = box;
 
             bool borderBox = string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
             float horizontalExtras = borderBox
