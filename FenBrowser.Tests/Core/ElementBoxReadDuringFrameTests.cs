@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Rendering;
@@ -60,12 +59,12 @@ public sealed class ElementBoxReadDuringFrameTests
 
         try
         {
-            var watch = Stopwatch.StartNew();
             var read = Task.Run(() => renderer.GetElementBox(box));
-            Assert.True(read.Wait(TimeSpan.FromSeconds(2)), "GetElementBox waited for the render lock");
-            Assert.NotNull(read.Result);
-            Assert.Equal(120f, read.Result!.BorderBox.Width, 1);
-            Assert.True(watch.ElapsedMilliseconds < 2000);
+            var finished = await Task.WhenAny(read, Task.Delay(TimeSpan.FromSeconds(2)));
+            Assert.True(ReferenceEquals(finished, read), "GetElementBox waited for the render lock");
+            var result = await read;
+            Assert.NotNull(result);
+            Assert.Equal(120f, result!.BorderBox.Width, 1);
         }
         finally
         {
