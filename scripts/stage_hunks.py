@@ -19,10 +19,13 @@ import sys
 import tempfile
 
 
+# The diff is handled as bytes end to end: decoding it in text mode turned the
+# CRLF line endings of most files in this repo into LF, and git then refused
+# the rebuilt patch ("patch does not apply").
 def run(args):
-    p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    p = subprocess.run(args, capture_output=True)
     if p.returncode != 0 and p.stderr.strip():
-        print(p.stderr.strip(), file=sys.stderr)
+        print(p.stderr.decode("utf-8", "replace").strip(), file=sys.stderr)
     return p.stdout
 
 
@@ -30,7 +33,7 @@ def split_hunks(diff_text):
     lines = diff_text.splitlines(keepends=True)
     header, hunks, current = [], [], None
     for line in lines:
-        if line.startswith("@@"):
+        if line.startswith(b"@@"):
             if current is not None:
                 hunks.append(current)
             current = [line]
@@ -40,7 +43,7 @@ def split_hunks(diff_text):
             current.append(line)
     if current is not None:
         hunks.append(current)
-    return "".join(header), hunks
+    return b"".join(header), hunks
 
 
 def main():
@@ -57,21 +60,21 @@ def main():
 
     if "--list" in argv:
         for i, h in enumerate(hunks):
-            added = [l.rstrip() for l in h if l.startswith("+") and not l.startswith("+++")]
-            print(f"[{i}] {h[0].strip()}")
+            added = [l.decode("utf-8", "replace").rstrip() for l in h if l.startswith(b"+") and not l.startswith(b"+++")]
+            print(f"[{i}] {h[0].decode('utf-8', 'replace').strip()}")
             for a in added[:3]:
                 print(f"      {a[:100]}")
             if len(added) > 3:
                 print(f"      ... {len(added) - 3} more added lines")
         return
 
-    wanted = [argv[i + 1] for i, a in enumerate(argv) if a == "--contains"]
-    excluded = [argv[i + 1] for i, a in enumerate(argv) if a == "--not-contains"]
+    wanted = [argv[i + 1].encode("utf-8") for i, a in enumerate(argv) if a == "--contains"]
+    excluded = [argv[i + 1].encode("utf-8") for i, a in enumerate(argv) if a == "--not-contains"]
     if not wanted and not excluded:
         raise SystemExit("give at least one --contains or --not-contains <text>")
 
     def matches(h):
-        text = "".join(h)
+        text = b"".join(h)
         if excluded and any(e in text for e in excluded):
             return False
         return not wanted or any(w in text for w in wanted)
@@ -80,16 +83,15 @@ def main():
     if not keep:
         raise SystemExit("no hunk matched")
 
-    patch = header + "".join("".join(h) for h in keep)
+    patch = header + b"".join(b"".join(h) for h in keep)
     # Not .git/: inside a worktree that is a file, not a directory.
     fd, tmp = tempfile.mkstemp(prefix="stage_hunks_", suffix=".patch")
-    with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+    with os.fdopen(fd, "wb") as fh:
         fh.write(patch)
 
-    p = subprocess.run(["git", "apply", "--cached", "--unidiff-zero", tmp],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    p = subprocess.run(["git", "apply", "--cached", "--unidiff-zero", tmp], capture_output=True)
     if p.returncode != 0:
-        print(p.stderr.strip(), file=sys.stderr)
+        print(p.stderr.decode("utf-8", "replace").strip(), file=sys.stderr)
         raise SystemExit("failed to apply patch to index")
     os.unlink(tmp)
     print(f"staged {len(keep)} of {len(hunks)} hunk(s) from {path}")
