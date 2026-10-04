@@ -28,6 +28,8 @@ public sealed class IntersectionObserverTests
     private sealed class Page
     {
         public FenJsBrowserScriptEngine Engine = null!;
+        public int Flushes;
+        public int TargetFlushes;
         public Dictionary<Element, BoxModel> Boxes = new();
         public Document Document = null!;
 
@@ -44,7 +46,11 @@ public sealed class IntersectionObserverTests
         {
             WindowWidth = 1280,
             WindowHeight = 800,
-            FlushPendingLayout = _ => { },
+            FlushPendingLayout = element =>
+            {
+                page.Flushes++;
+                if (element is Element e && e.HasAttribute("data-target")) page.TargetFlushes++;
+            },
             LayoutBoxResolver = element => element is Element e && page.Boxes.TryGetValue(e, out var box) ? box : null
         };
         await page.Engine.SetDomAsync(page.Document.DocumentElement, baseUri);
@@ -155,6 +161,23 @@ public sealed class IntersectionObserverTests
         page.Boxes[page.Get("below")] = Box(0, 100, 100, 100);
         page.Engine.Evaluate("document.body.setAttribute('data-x', '2');");
         Assert.Equal("false,true", await WaitForAsync(page.Engine, "window.__calls.length > 1 ? window.__calls.join() : ''"));
+    }
+
+    [Fact]
+    public async Task UpdateStep_FlushesLayoutOncePerStepNotPerTarget()
+    {
+        // Every target is measured against one layout. The step used to flush per
+        // target, and a burst of script jobs queued one step each that then ran back
+        // to back: thirty observed elements cost hundreds of layout flushes.
+        var page = await CreatePageAsync();
+        page.Engine.Evaluate(
+            "var io = new IntersectionObserver(function () {});" +
+            "for (var i = 0; i < 30; i++) { var d = document.createElement('div'); d.setAttribute('data-target', ''); document.body.appendChild(d); io.observe(d); }");
+        await Task.Delay(500);
+
+        // One per step, and only a few steps for this burst; a single step that
+        // flushed per target would already reach 30.
+        Assert.InRange(page.TargetFlushes, 1, 12);
     }
 
     [Fact]

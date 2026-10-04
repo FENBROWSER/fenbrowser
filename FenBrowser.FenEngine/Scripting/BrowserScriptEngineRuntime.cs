@@ -9562,6 +9562,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private volatile bool _intersectionObserversActive;
     private long _lastIntersectionStepStart;
     private Timer _intersectionTimer;
+    private bool _intersectionStepLayoutFlushed;
 
     private void RequestIntersectionObservationStep()
     {
@@ -9591,12 +9592,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private void RunIntersectionObservationStep()
     {
-        Volatile.Write(ref _intersectionStepPending, 0);
         try
         {
             RunFenJsWithLargeStack<object>(() =>
             {
+                // Still pending until the step runs: a step queued behind other script
+                // work must absorb the requests those jobs make, or each one queued
+                // another step and they ran back to back.
+                Volatile.Write(ref _intersectionStepPending, 0);
                 _lastIntersectionStepStart = Stopwatch.GetTimestamp();
+                _intersectionStepLayoutFlushed = false;
                 var update = ReadGlobalValueOrUndefined("__fenUpdateIntersectionObservations");
                 if (_interpreter.CanCallValue(update) &&
                     _interpreter.InvokeFunction(update, Array.Empty<JsValue>(), _fenJsGlobalThis) is { Tag: JsValueTag.Boolean } remaining &&
@@ -27067,7 +27072,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return JsValue.Null;
         }
 
-        FlushPendingLayout?.Invoke(target);
+        // One flush per update step: every target is measured against the same
+        // layout, and observer callbacks only run after all of them are read.
+        if (!_intersectionStepLayoutFlushed)
+        {
+            FlushPendingLayout?.Invoke(target);
+            _intersectionStepLayoutFlushed = true;
+        }
+
         if (LayoutBoxResolver?.Invoke(target) is not BoxModel box)
         {
             return JsValue.Null;
