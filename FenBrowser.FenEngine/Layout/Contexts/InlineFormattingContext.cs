@@ -3214,7 +3214,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float? lineHeightOverride = style?.LineHeight.HasValue == true ? (float)style.LineHeight.Value : null;
             var metrics = _fontService.GetMetrics(fontFamily, fontSize, fontWeight, lineHeightOverride);
             float lineHeight = metrics.LineHeight;
-            if (lineHeight <= 0)
+            // line-height: 0 is a real value, not a missing one: the strut and text
+            // boxes collapse to nothing (CSS 2.1 §10.8.1), which icon wrappers rely on
+            // to sit their 24px glyph flush in a 24px box.
+            bool declaredZeroLineHeight = lineHeightOverride is float declared && declared == 0f;
+            if (lineHeight <= 0 && !declaredZeroLineHeight)
             {
                 lineHeight = fontSize * 1.25f;
             }
