@@ -189,6 +189,36 @@ public sealed class IncrementalLayoutCacheTests
     }
 
     [Fact]
+    public void ComputeLayout_RescansFramesAfterADomChange_NotOnEveryReuse()
+    {
+        // The frame scan walks the whole tree, so its answer is kept between reuses of
+        // the same result - script geometry reads call in once each. A DOM change has
+        // to drop it: an iframe inserted after the answer was taken still needs a box.
+        var root = new Element("div");
+        var styles = new Dictionary<Node, CssComputed>
+        {
+            [root] = new CssComputed { Display = "block", Width = 400, Height = 200 }
+        };
+        var engine = new LayoutEngine(styles, 800, 600);
+
+        var first = engine.ComputeLayout(root, 0, 0, 800);
+        Assert.Same(first, engine.ComputeLayout(root, 0, 0, 800));
+        Assert.Same(first, engine.ComputeLayout(root, 0, 0, 800));
+
+        var iframe = new Element("iframe");
+        iframe.SetAttribute("width", "304");
+        iframe.SetAttribute("height", "78");
+        root.AppendChild(iframe);
+        root.ClearDirty(InvalidationKind.Style | InvalidationKind.Layout);
+        iframe.ClearDirty(InvalidationKind.Style | InvalidationKind.Layout);
+
+        var afterInsert = engine.ComputeLayout(root, 0, 0, 800);
+
+        Assert.NotSame(first, afterInsert);
+        Assert.True(afterInsert.TryGetElementRect(iframe, out _));
+    }
+
+    [Fact]
     public void ComputeLayout_PreservesStyleInvalidationForUnstyledLateIframe()
     {
         var root = new Element("div");

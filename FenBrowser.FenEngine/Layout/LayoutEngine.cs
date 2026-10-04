@@ -108,15 +108,16 @@ namespace FenBrowser.FenEngine.Layout
             bool viewportChanged = Math.Abs(availableWidth - _cachedViewportWidth) > 0.5f ||
                                    Math.Abs(availableHeight - _cachedViewportHeight) > 0.5f;
 
-            bool hasUnmaterializedNestedBrowsingContext =
-                HasUnmaterializedNestedBrowsingContext(layoutRoot, _cachedResult, _context.Styles);
-
+            // The frame scan walks the whole tree, so it runs last and only when every
+            // other condition already allows reuse - script geometry reads land here
+            // once per call - and its answer is kept until the cached result or the DOM
+            // changes.
             if (!viewportChanged &&
                 ReferenceEquals(layoutRoot, _cachedLayoutRoot) &&
                 _cachedResult != null &&
                 !layoutRoot.LayoutDirty &&
                 !layoutRoot.ChildLayoutDirty &&
-                !hasUnmaterializedNestedBrowsingContext)
+                !HasUnmaterializedNestedBrowsingContextCached(layoutRoot))
             {
                 if (LayoutDebugLogEnabled)
                     DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Incremental: reusing cached LayoutResult\n");
@@ -358,6 +359,24 @@ namespace FenBrowser.FenEngine.Layout
                         frameRect.Value.Height);
                 }
             }
+        }
+
+        private LayoutResult _frameScanResult;
+        private long _frameScanMutationSequence = -1;
+        private bool _frameScanAnswer;
+
+        private bool HasUnmaterializedNestedBrowsingContextCached(Node layoutRoot)
+        {
+            var sequence = Node.MutationSequence;
+            if (ReferenceEquals(_frameScanResult, _cachedResult) && _frameScanMutationSequence == sequence)
+            {
+                return _frameScanAnswer;
+            }
+
+            _frameScanAnswer = HasUnmaterializedNestedBrowsingContext(layoutRoot, _cachedResult, _context.Styles);
+            _frameScanResult = _cachedResult;
+            _frameScanMutationSequence = sequence;
+            return _frameScanAnswer;
         }
 
         private static bool HasUnmaterializedNestedBrowsingContext(
