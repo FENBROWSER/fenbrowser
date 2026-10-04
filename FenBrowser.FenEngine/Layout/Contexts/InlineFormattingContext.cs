@@ -2737,7 +2737,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 else
                 {
                     if (w <= 0) w = 150f;
-                    if (h <= 0) h = 24f;
+                    // A text field is one line of its own text tall: its used line-height
+                    // (YouTube's search field: line-height 22px + 1px padding = 24px).
+                    if (h <= 0) h = GetStyleFontInfo(box.ComputedStyle ?? new CssComputed()).LineHeight;
                 }
             }
             else if (tag == "BUTTON")
