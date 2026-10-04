@@ -4223,6 +4223,37 @@ private static double? ExtractPx(string text, string prop)
             }
         }
 
+        /// <summary>
+        /// CSS Display 3 §2.7: the children of a flex or grid container are blockified -
+        /// their computed outer display is block. The box tree already built them as
+        /// blocks, but the computed style still said inline, so flex sizing measured a
+        /// flex-item &lt;a&gt; as inline content (YouTube's search-result channel avatar
+        /// came out 1288px wide) and getComputedStyle reported inline.
+        /// </summary>
+        private static string BlockifyFlexOrGridItemDisplay(string display, CssComputed parentCss)
+        {
+            switch (parentCss?.Display)
+            {
+                case "flex":
+                case "inline-flex":
+                case "grid":
+                case "inline-grid":
+                    break;
+                default:
+                    return display;
+            }
+
+            return display switch
+            {
+                "inline" or "inline-block" => "block",
+                "inline-flex" => "flex",
+                "inline-grid" => "grid",
+                "inline-table" => "table",
+                "inline-list-item" => "list-item",
+                _ => display,
+            };
+        }
+
         internal static CssComputed ResolveStyle(Element n, CssComputed parentCss, Dictionary<string, NewCss.CssDeclaration> cascadedProperties)
         {
             // DebugLog(@"debug_log.txt", "[D-BUG] ResolveStyle\r\n");
@@ -4407,6 +4438,7 @@ private static double? ExtractPx(string text, string prop)
                 {
                     css.Display = GetDefaultDisplayValue(n);
                 }
+                css.Display = BlockifyFlexOrGridItemDisplay(css.Display, parentCss);
                 
                 // Trace display:flex application (disabled — too verbose for production).
                 // Enable locally with FEN_TRACE_FLEX=1 to debug flex layout issues.
@@ -5786,6 +5818,7 @@ private static double? ExtractPx(string text, string prop)
             {
                 css.Display = GetDefaultDisplayValue(n);
             }
+            css.Display = BlockifyFlexOrGridItemDisplay(css.Display, parentCss);
             css.Position = Safe(DictGet(css.Map, "position"));
             css.Float = Safe(DictGet(css.Map, "float"));
             css.Clear = Safe(DictGet(css.Map, "clear"));
