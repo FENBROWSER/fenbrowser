@@ -13797,8 +13797,36 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             }
                         });
 
+                    // DOM nodes are EventTargets the engine implements too: Node.prototype
+                    // carries native forwarders to the engine's listener lists. DOM 2.7
+                    // gives every EventTarget one listener list, reached as much through
+                    // EventTarget.prototype as through the node; ShadyDOM in noPatch mode
+                    // captures the EventTarget.prototype methods as its "native" ones, so
+                    // Polymer's property-notify events (query-matches-changed and every
+                    // other two-way binding) went to a list no template listener was on,
+                    // and YouTube's watch page never left its single-column layout.
+                    var fenNodeEventPrototype = typeof Node === 'function' ? Node.prototype : null;
+                    var fenNodeEventMethods = Object.create(null);
+                    if (fenNodeEventPrototype) {
+                        ['addEventListener', 'removeEventListener', 'dispatchEvent'].forEach(
+                            function (name) {
+                                var own = Object.getOwnPropertyDescriptor(fenNodeEventPrototype, name);
+                                if (own && typeof own.value === 'function') {
+                                    fenNodeEventMethods[name] = own.value;
+                                }
+                            });
+                    }
+
                     function fenGlobalEventMethod(receiver, name) {
-                        return receiver === globalThis ? fenGlobalEventMethods[name] : undefined;
+                        if (receiver === globalThis) {
+                            return fenGlobalEventMethods[name];
+                        }
+                        if (fenNodeEventPrototype && fenNodeEventMethods[name] &&
+                            receiver !== null && typeof receiver === 'object' &&
+                            fenNodeEventPrototype.isPrototypeOf(receiver)) {
+                            return fenNodeEventMethods[name];
+                        }
+                        return undefined;
                     }
                     // Options were stored and never looked at, so once, signal and
                     // the capture half of listener identity all did nothing here.
