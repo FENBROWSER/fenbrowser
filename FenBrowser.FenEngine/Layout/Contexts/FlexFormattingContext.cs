@@ -960,10 +960,31 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     {
                         // align-self overrides stretch
                         string itemAlign = ResolveItemAlignment(item.ComputedStyle, alignItems);
-                        if (itemAlign != "stretch") continue;
+                        // A min cross size of `stretch` is the line's cross size (CSS Sizing 4
+                        // §3.1), which only the line knows: it raises the item to the line
+                        // whatever its alignment or preferred cross size.
+                        bool minCrossStretches = SizingKeywordResolver.IsStretchKeyword(
+                            isRow ? item.ComputedStyle?.MinHeightExpression : item.ComputedStyle?.MinWidthExpression);
+                        if (!minCrossStretches)
+                        {
+                            if (itemAlign != "stretch") continue;
+                            // CSS Flexbox 1 §9.4 step 11: stretch only an item whose computed cross
+                            // size is auto and neither of whose cross-axis margins is auto.
+                            if (HasNonAutoCrossSize(item.ComputedStyle, isRow)) continue;
+                            if (isRow
+                                    ? IsMarginAuto(item.ComputedStyle, "top") || IsMarginAuto(item.ComputedStyle, "bottom")
+                                    : IsMarginAuto(item.ComputedStyle, "left") || IsMarginAuto(item.ComputedStyle, "right"))
+                                continue;
+                        }
 
                         float itemCross = isRow ? item.Geometry.MarginBox.Height : item.Geometry.MarginBox.Width;
-                        if (itemCross >= lineCross) continue;
+                        // CSS Flexbox 1 §9.8.1: a stretched item's cross size is definite, and
+                        // its contents are laid out again against it so percentage-sized
+                        // children resolve - even when the item already measured the line's
+                        // size with that axis indefinite.
+                        if (itemCross > lineCross + 0.5f ||
+                            (itemCross >= lineCross - 0.5f && !HasPercentageCrossSizedChild(item, isRow)))
+                            continue;
 
                         // Per spec: stretched size = line cross size minus margin, padding, border
                         var iMargin = item.ComputedStyle?.Margin ?? new FenBrowser.Core.Thickness();
@@ -3359,6 +3380,54 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                    style.Map.TryGetValue("width", out var rawWidth) &&
                    !string.IsNullOrWhiteSpace(rawWidth) &&
                    !string.Equals(rawWidth.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// True when an in-flow descendant within a few levels sizes the item's cross axis
+        /// by percentage - directly, or through boxes that pass a definite size down (a
+        /// column of flex:1 items holding a height:50% box).
+        /// </summary>
+        private static bool HasPercentageCrossSizedChild(LayoutBox item, bool isRow, int depth = 3)
+        {
+            if (depth <= 0) return false;
+            foreach (var child in item.Children)
+            {
+                var childStyle = child?.ComputedStyle;
+                if (childStyle == null || child.IsOutOfFlow) continue;
+                string expression = isRow ? childStyle.HeightExpression : childStyle.WidthExpression;
+                if ((isRow ? childStyle.HeightPercent : childStyle.WidthPercent).HasValue ||
+                    (!string.IsNullOrEmpty(expression) && expression.IndexOf('%') >= 0) ||
+                    HasPercentageCrossSizedChild(child, isRow, depth - 1))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>True when the item's cross-axis size property (height in a row, width in a
+        /// column) computes to something other than auto.</summary>
+        private static bool HasNonAutoCrossSize(CssComputed style, bool isRow)
+        {
+            if (style == null) return false;
+            // A cross size of `stretch` fills the line, exactly as stretching does
+            // (CSS Sizing 4 §3.1).
+            if (SizingKeywordResolver.IsStretchKeyword(isRow ? style.HeightExpression : style.WidthExpression))
+                return false;
+            if (!isRow) return HasExplicitWidthForFlexSizing(style);
+
+            if (style.Height.HasValue ||
+                style.HeightPercent.HasValue ||
+                !string.IsNullOrEmpty(style.HeightExpression))
+            {
+                return true;
+            }
+
+            return style.Map != null &&
+                   style.Map.TryGetValue("height", out var rawHeight) &&
+                   !string.IsNullOrWhiteSpace(rawHeight) &&
+                   !string.Equals(rawHeight.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsWrapEnabled(CssComputed style)
