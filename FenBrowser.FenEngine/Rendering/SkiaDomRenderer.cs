@@ -516,7 +516,7 @@ namespace FenBrowser.FenEngine.Rendering
                     || _knownUnmaterializedIframesDomNodeCount != _lastDomNodeCount;
                 if (iframeScanNeeded)
                 {
-                    _knownUnmaterializedIframes = CollectUnmaterializedIframes(root, _lastLayout);
+                    _knownUnmaterializedIframes = CollectUnmaterializedIframes(root, _lastLayout, styles);
                     _knownUnmaterializedIframesDomNodeCount = _lastDomNodeCount;
                 }
                 forceLayout = _knownUnmaterializedIframes?.Count > 0;
@@ -2508,7 +2508,10 @@ namespace FenBrowser.FenEngine.Rendering
         /// re-scanned when the DOM node count changes (implying a new iframe was
         /// inserted or an existing one was cleaned up).
         /// </summary>
-        private static HashSet<Node> CollectUnmaterializedIframes(Node root, LayoutResult layout)
+        private static HashSet<Node> CollectUnmaterializedIframes(
+            Node root,
+            LayoutResult layout,
+            IReadOnlyDictionary<Node, CssComputed> styles)
         {
             var set = new HashSet<Node>();
             if (root == null || layout == null)
@@ -2519,6 +2522,15 @@ namespace FenBrowser.FenEngine.Rendering
             foreach (var frameElement in root.DescendantsAndSelf().OfType<Element>())
             {
                 if (!string.Equals(frameElement.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // A frame that is not rendered never gets a box, so it can never become
+                // materialized. YouTube's watch page keeps two display:none iframes;
+                // counting them forced a full layout on every frame - about 21 a second
+                // while the player animates - and every script layout read paid for it.
+                if (LayoutEngine.IsInDisplayNoneSubtree(frameElement, styles))
                 {
                     continue;
                 }

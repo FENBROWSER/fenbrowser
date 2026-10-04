@@ -404,7 +404,7 @@ namespace FenBrowser.FenEngine.Layout
         /// True when the element or an ancestor (across shadow boundaries) computes to
         /// display:none, so it generates no box (CSS Display 3, 2.5).
         /// </summary>
-        private static bool IsInDisplayNoneSubtree(Element element, IReadOnlyDictionary<Node, CssComputed> styles)
+        internal static bool IsInDisplayNoneSubtree(Element element, IReadOnlyDictionary<Node, CssComputed> styles)
         {
             if (styles == null)
             {
