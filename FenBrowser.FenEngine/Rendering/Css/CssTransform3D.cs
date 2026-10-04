@@ -37,6 +37,53 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         /// <summary>
+        /// The transformation matrix of a box with the given transform and transform-origin
+        /// (CSS Transforms 1 §6): translate(origin) · transform · translate(-origin), in the
+        /// coordinate space the border box is expressed in. Null when nothing transforms.
+        /// </summary>
+        public static SKMatrix? ResolveElementMatrix(string transform, string transformOrigin, SKRect borderBox)
+        {
+            if (string.IsNullOrEmpty(transform) || transform == "none")
+            {
+                return null;
+            }
+
+            var cssTransform = Parse(transform);
+            if (!cssTransform.HasTransform)
+            {
+                return null;
+            }
+
+            var matrix = cssTransform.ToSKMatrix(borderBox);
+            if (matrix == SKMatrix.Identity)
+            {
+                return null;
+            }
+
+            // Translation-only transforms are origin-independent; applying
+            // transform-origin wrapping introduces drift on hero media.
+            if (IsPureTranslationMatrix(matrix))
+            {
+                return matrix;
+            }
+
+            // Determine transform-origin (default is center of border box per CSS spec)
+            float ox = borderBox.MidX;
+            float oy = borderBox.MidY;
+            if (!string.IsNullOrEmpty(transformOrigin))
+            {
+                ParseTransformOrigin(transformOrigin, borderBox, out ox, out oy);
+            }
+
+            // PreConcat is right-multiply, so this builds origin * matrix * inverseOrigin.
+            var full = SKMatrix.CreateIdentity();
+            full = full.PreConcat(SKMatrix.CreateTranslation(ox, oy));
+            full = full.PreConcat(matrix);
+            full = full.PreConcat(SKMatrix.CreateTranslation(-ox, -oy));
+            return full;
+        }
+
+        /// <summary>
         /// Get the combined 2D matrix for SkiaSharp rendering
         /// </summary>
         public SKMatrix ToSKMatrix()
@@ -105,6 +152,55 @@ namespace FenBrowser.FenEngine.Rendering
         /// Check if this transform has any effect (not identity)
         /// </summary>
         public bool HasTransform => _functions.Count > 0;
+
+        private static void ParseTransformOrigin(string value, SKRect bounds, out float ox, out float oy)
+        {
+            ox = bounds.MidX;
+            oy = bounds.MidY;
+
+            if (string.IsNullOrWhiteSpace(value)) return;
+
+            var parts = value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length >= 1)
+            {
+                ox = ParseOriginValue(parts[0], bounds.Left, bounds.Width);
+            }
+            if (parts.Length >= 2)
+            {
+                oy = ParseOriginValue(parts[1], bounds.Top, bounds.Height);
+            }
+        }
+
+        /// <summary>
+        /// Parses a single transform-origin axis value (keyword, percentage, or length).
+        /// </summary>
+        private static float ParseOriginValue(string val, float start, float size)
+        {
+            val = val.Trim().ToLowerInvariant();
+            if (val == "left" || val == "top") return start;
+            if (val == "right" || val == "bottom") return start + size;
+            if (val == "center") return start + size / 2;
+            if (val.EndsWith("%") && float.TryParse(val.TrimEnd('%'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float pct))
+                return start + size * pct / 100f;
+            if (val.EndsWith("px") && float.TryParse(val.Replace("px", ""), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float px))
+                return start + px;
+            if (float.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float raw))
+                return start + raw;
+            return start + size / 2; // fallback to center
+        }
+
+        private static bool IsPureTranslationMatrix(SKMatrix matrix)
+        {
+            const float epsilon = 0.0001f;
+            return Math.Abs(matrix.ScaleX - 1f) <= epsilon &&
+                   Math.Abs(matrix.ScaleY - 1f) <= epsilon &&
+                   Math.Abs(matrix.SkewX) <= epsilon &&
+                   Math.Abs(matrix.SkewY) <= epsilon &&
+                   Math.Abs(matrix.Persp0) <= epsilon &&
+                   Math.Abs(matrix.Persp1) <= epsilon &&
+                   Math.Abs(matrix.Persp2 - 1f) <= epsilon;
+        }
 
         private static SKMatrix GetFunctionMatrix(TransformFunction func, SKRect referenceBox)
         {

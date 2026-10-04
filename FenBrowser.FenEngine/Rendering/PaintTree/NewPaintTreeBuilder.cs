@@ -625,45 +625,9 @@ namespace FenBrowser.FenEngine.Rendering
                 };
 
                 // Parse CSS transform and set on stacking context
-                if (!string.IsNullOrEmpty(style?.Transform) && style.Transform != "none")
+                if (CssTransform3D.ResolveElementMatrix(style?.Transform, style?.TransformOrigin, box?.BorderBox ?? default) is SKMatrix elementMatrix)
                 {
-                    var cssTransform = CssTransform3D.Parse(style.Transform);
-                    if (cssTransform.HasTransform)
-                    {
-                        var matrix = cssTransform.ToSKMatrix(box.BorderBox);
-                        if (matrix != SKMatrix.Identity)
-                        {
-                            // Translation-only transforms are origin-independent; applying
-                            // transform-origin wrapping introduces drift on hero media.
-                            if (IsPureTranslationMatrix(matrix))
-                            {
-                                childContext.TransformMatrix = matrix;
-                            }
-                            else
-                            {
-                                // Determine transform-origin (default is center of border box per CSS spec)
-                                float ox = box.BorderBox.MidX;
-                                float oy = box.BorderBox.MidY;
-
-                                if (!string.IsNullOrEmpty(style.TransformOrigin))
-                                {
-                                    ParseTransformOrigin(style.TransformOrigin, box.BorderBox, out ox, out oy);
-                                }
-
-                                // Build full matrix with transform-origin:
-                                // Effect: translate(ox,oy) * transform * translate(-ox,-oy) * point
-                                // PreConcat is right-multiply, so we build: origin * matrix * inverseOrigin
-                                var origin = SKMatrix.CreateTranslation(ox, oy);
-                                var inverseOrigin = SKMatrix.CreateTranslation(-ox, -oy);
-                                var full = SKMatrix.CreateIdentity();
-                                full = full.PreConcat(origin);
-                                full = full.PreConcat(matrix);
-                                full = full.PreConcat(inverseOrigin);
-
-                                childContext.TransformMatrix = full;
-                            }
-                        }
-                    }
+                    childContext.TransformMatrix = elementMatrix;
                 }
 
                 // position:fixed — laid out against its viewport in unscrolled document
@@ -6769,55 +6733,6 @@ namespace FenBrowser.FenEngine.Rendering
         /// Parses CSS transform-origin into x,y coordinates relative to the element's border box.
         /// Default is "50% 50%" (center of border box).
         /// </summary>
-        private static void ParseTransformOrigin(string value, SKRect bounds, out float ox, out float oy)
-        {
-            ox = bounds.MidX;
-            oy = bounds.MidY;
-
-            if (string.IsNullOrWhiteSpace(value)) return;
-
-            var parts = value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-
-            if (parts.Length >= 1)
-            {
-                ox = ParseOriginValue(parts[0], bounds.Left, bounds.Width);
-            }
-            if (parts.Length >= 2)
-            {
-                oy = ParseOriginValue(parts[1], bounds.Top, bounds.Height);
-            }
-        }
-
-        /// <summary>
-        /// Parses a single transform-origin axis value (keyword, percentage, or length).
-        /// </summary>
-        private static float ParseOriginValue(string val, float start, float size)
-        {
-            val = val.Trim().ToLowerInvariant();
-            if (val == "left" || val == "top") return start;
-            if (val == "right" || val == "bottom") return start + size;
-            if (val == "center") return start + size / 2;
-            if (val.EndsWith("%") && float.TryParse(val.TrimEnd('%'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float pct))
-                return start + size * pct / 100f;
-            if (val.EndsWith("px") && float.TryParse(val.Replace("px", ""), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float px))
-                return start + px;
-            if (float.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float raw))
-                return start + raw;
-            return start + size / 2; // fallback to center
-        }
-
-        private static bool IsPureTranslationMatrix(SKMatrix matrix)
-        {
-            const float epsilon = 0.0001f;
-            return Math.Abs(matrix.ScaleX - 1f) <= epsilon &&
-                   Math.Abs(matrix.ScaleY - 1f) <= epsilon &&
-                   Math.Abs(matrix.SkewX) <= epsilon &&
-                   Math.Abs(matrix.SkewY) <= epsilon &&
-                   Math.Abs(matrix.Persp0) <= epsilon &&
-                   Math.Abs(matrix.Persp1) <= epsilon &&
-                   Math.Abs(matrix.Persp2 - 1f) <= epsilon;
-        }
-
         /// <summary>
         /// Internal stacking context for building.
         /// Gathers nodes and child contexts, then flattens to paint order.

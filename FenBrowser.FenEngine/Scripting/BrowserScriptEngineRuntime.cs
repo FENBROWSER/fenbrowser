@@ -27233,9 +27233,41 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return CreateDomRect(0, 0, width, height);
         }
 
-        var r = box.BorderBox;
+        var r = ApplyTransforms(element, box.BorderBox);
         var scroll = ReadAncestorScrollOffset(element);
         return CreateDomRect(r.Left - scroll.X, r.Top - scroll.Y, r.Width, r.Height);
+    }
+
+    /// <summary>
+    /// Maps a layout rect of <paramref name="element"/> through the transforms of the
+    /// element and its composed ancestors and returns the bounding box of the result.
+    /// CSSOM View §6 getClientRects()/getBoundingClientRect() report border boxes after
+    /// transforms; paint builds the same matrices in document space, so applying each
+    /// one innermost-first composes them as rendered.
+    /// </summary>
+    private SKRect ApplyTransforms(Element element, SKRect rect)
+    {
+        for (Node current = element; current != null; current = ComposedParent(current))
+        {
+            if (current is not Element el)
+            {
+                continue;
+            }
+
+            var cs = el.GetComputedStyle();
+            if (string.IsNullOrEmpty(cs?.Transform) || cs.Transform == "none" ||
+                LayoutBoxResolver?.Invoke(el) is not BoxModel elBox)
+            {
+                continue;
+            }
+
+            if (CssTransform3D.ResolveElementMatrix(cs.Transform, cs.TransformOrigin, elBox.BorderBox) is SKMatrix matrix)
+            {
+                rect = matrix.MapRect(rect);
+            }
+        }
+
+        return rect;
     }
 
     /// <summary>
@@ -27268,7 +27300,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return JsValue.Null;
         }
 
-        var targetRect = ToClientRect(target, box.BorderBox);
+        var targetRect = ToClientRect(target, ApplyTransforms(target, box.BorderBox));
         var clip = targetRect;
         bool clippedAway = false;
         bool reachedRoot = root == null;
@@ -27645,7 +27677,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return CreateEmptyDomRectList();
         }
 
-        var rect = box.BorderBox;
+        var rect = ApplyTransforms(element, box.BorderBox);
         var scroll = ReadAncestorScrollOffset(element);
         var values = new[] { CreateDomRect(rect.Left - scroll.X, rect.Top - scroll.Y, rect.Width, rect.Height) };
         var array = _interpreter.AllocateArray(values);
