@@ -1348,7 +1348,7 @@ namespace FenBrowser.FenEngine.Rendering
             double cssTotalMs = System.Diagnostics.Stopwatch.GetElapsedTime(computeStarted).TotalMilliseconds;
             // Every stage of this CSS load on one line, so a slow page can be attributed
             // to a phase directly instead of reconstructing it from log timestamps.
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[PERF-CSS] Load complete: total={cssTotalMs:F0}ms queueWait={queueWaitMs:F0}ms discoveryAndFetch={discoveryAndFetchMs:F0}ms importExpansion={importExpansionMs:F0}ms ruleParse={ruleParseMs:F0}ms variableResolution={variableResolutionMs:F0}ms cascade={cascadeMs:F0}ms sources={cssBlobs.Count} expanded={expanded.Count} rules={allRulesForVars.Count} elements={computed.Count}");
+            EngineLogCompat.Log(LogCategory.CSS, LogLevel.Info, $"[PERF-CSS] Load complete: total={cssTotalMs:F0}ms queueWait={queueWaitMs:F0}ms discoveryAndFetch={discoveryAndFetchMs:F0}ms importExpansion={importExpansionMs:F0}ms ruleParse={ruleParseMs:F0}ms variableResolution={variableResolutionMs:F0}ms cascade={cascadeMs:F0}ms sources={cssBlobs.Count} expanded={expanded.Count} rules={allRulesForVars.Count} elements={computed.Count}");
 
                 return new CssLoadResult
                 {
