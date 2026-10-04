@@ -19,6 +19,13 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
     {
         private readonly ConditionalWeakTable<Element, ScrollState> _scrollStates = new();
         private readonly ScrollState _nullScrollState = new();
+
+        /// <summary>
+        /// Raised after the viewport (the null element's scroll state) moves. The host
+        /// owns document scrolling and pushes its offset in before each frame; script
+        /// learns of the move through this (CSSOM View "run the scroll steps").
+        /// </summary>
+        public event Action ViewportScrolled;
         private readonly object _lock = new();
 
         #region Scroll State Management
@@ -72,6 +79,12 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
             state.LastScrollUpdateUtc = nowUtc;
             state.LastScrollUpdateTimestamp = nowTimestamp;
+
+            if (element == null &&
+                (Math.Abs(state.ScrollX - previousX) > 0.01f || Math.Abs(state.ScrollY - previousY) > 0.01f))
+            {
+                ViewportScrolled?.Invoke();
+            }
         }
 
         /// <summary>

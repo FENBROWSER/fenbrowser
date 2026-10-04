@@ -595,6 +595,36 @@ namespace FenBrowser.FenEngine.Rendering
         public void SetExternalRenderer(SkiaDomRenderer renderer)
         {
             _externalRenderer = renderer;
+            ObserveViewportScroll(renderer);
+        }
+
+        // CSSOM View "run the scroll steps": when the viewport moves, script gets a
+        // scroll event. The host pushes its document scroll into the renderer's
+        // ScrollManager before each frame; that is the one place every mode sees it.
+        private SkiaDomRenderer _viewportScrollSource;
+
+        private void ObserveViewportScroll(SkiaDomRenderer renderer)
+        {
+            if (ReferenceEquals(_viewportScrollSource, renderer))
+            {
+                return;
+            }
+
+            if (_viewportScrollSource != null)
+            {
+                _viewportScrollSource.ScrollManager.ViewportScrolled -= OnViewportScrolled;
+            }
+
+            _viewportScrollSource = renderer;
+            if (renderer != null)
+            {
+                renderer.ScrollManager.ViewportScrolled += OnViewportScrolled;
+            }
+        }
+
+        private void OnViewportScrolled()
+        {
+            _activeJs?.NotifyViewportScrollChanged();
         }
         
         public CustomHtmlEngine()
@@ -1511,6 +1541,7 @@ public void Dispose()
                 _cachedRenderer = new SkiaDomRenderer();
             }
             activeRenderer = _cachedRenderer;
+            ObserveViewportScroll(_cachedRenderer);
 
             // Only set up visual rect provider if we own the renderer
             JavaScriptEngine.SetVisualRectProvider(this, () => _activeDom, element =>

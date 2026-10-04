@@ -403,6 +403,7 @@ Action<Element> FlushPendingLayout { get; set; }
     void SetHistoryBridge(IHistoryBridge bridge);
     void NotifyPopState(object state);
     void NotifyFrameScrollChanged(Element frameElement);
+    void NotifyViewportScrollChanged();
     bool IsEventDispatchBusy(Element element);
     bool DispatchEventForElement(Element element, string eventName, BrowserDomEventInit eventInit = null);
     /// <summary>
@@ -7776,6 +7777,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         InstallFenJsPerformance();
         InstallFenJsIntersectionObserverNatives();
+        if (_embeddingFrameElement == null)
+        {
+            InstallViewportScrollGlobals();
+        }
         InstallFenJsTimers();
         InstallCustomElementDefinitionTracker();
         InstallFenJsBrowserConstructors();
@@ -23200,8 +23205,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     }
 
     private (double X, double Y) ReadScrollArguments(IReadOnlyList<JsValue> args, bool relative)
+        => ReadScrollArguments(args, relative, ReadOwnedFrameScroll());
+
+    private (double X, double Y) ReadScrollArguments(IReadOnlyList<JsValue> args, bool relative, (double X, double Y) current)
     {
-        var current = ReadOwnedFrameScroll();
         var x = relative ? current.X : 0d;
         var y = relative ? current.Y : 0d;
         if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
@@ -24963,6 +24970,154 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             QueueOwnedWindowEvent("resize");
             ScheduleMediaViewportCheck();
         }
+    }
+
+    private int _viewportScrollEventPending;
+
+    /// <summary>
+    /// CSSOM View 7 "run the scroll steps" for the document viewport: one scroll
+    /// event at the Document (bubbling to the Window) per batch of moves. The event
+    /// task is also what lets the intersection observation step run after a scroll
+    /// that no script caused - YouTube loads more comments and recommendations
+    /// from IntersectionObserver continuations.
+    /// </summary>
+    public void NotifyViewportScrollChanged()
+    {
+        if (_embeddingFrameElement != null || _realmAbandoned ||
+            Interlocked.Exchange(ref _viewportScrollEventPending, 1) == 1)
+        {
+            return;
+        }
+
+        var sessionGeneration = _fenJsSessionGeneration;
+        lock (_windowMessageQueueLock)
+        {
+            _windowMessageDeliveryTail = _windowMessageDeliveryTail.ContinueWith(
+                _ =>
+                {
+                    Volatile.Write(ref _viewportScrollEventPending, 0);
+                    if (sessionGeneration != _fenJsSessionGeneration)
+                    {
+                        return;
+                    }
+
+                    RunFenJsWithLargeStack<object>(() =>
+                    {
+                        using (ScriptEngineLockProbe.Hold(_fenJsLock))
+                        {
+                            var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
+                            var documentHost = document != null
+                                ? ToHostOrNull(document, HostObjectKind.DomDocument)
+                                : JsValue.Null;
+                            var eventValue = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                            {
+                                ["type"] = JsValue.FromString("scroll"),
+                                ["bubbles"] = JsValue.FromBoolean(true)
+                            });
+                            if (documentHost.Tag == JsValueTag.HostObject)
+                            {
+                                PrepareDispatchedEvent(eventValue, documentHost);
+                                DispatchBrowserEvent(_documentEventListeners, "scroll", documentHost, eventValue);
+                                var documentHandler = GetStoredHostPropertyOrUndefined(document, "onscroll");
+                                if (_interpreter.CanCallValue(documentHandler))
+                                {
+                                    TryInvokeFenJsEventCallback(documentHandler, documentHost, eventValue, "scroll");
+                                }
+                            }
+
+                            if (!ReadJsBoolProperty(eventValue, "cancelBubble"))
+                            {
+                                DispatchWindowHostEvent(_interpreter.AllocateObject(new Dictionary<string, JsValue>
+                                {
+                                    ["type"] = JsValue.FromString("scroll"),
+                                    ["bubbles"] = JsValue.FromBoolean(true),
+                                    ["target"] = documentHost
+                                }));
+                            }
+
+                            _interpreter.PumpMicrotasks();
+                        }
+                        return null;
+                    });
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
+        }
+    }
+
+    /// <summary>
+    /// CSSOM View 4 for the top-level Window: scrollX/scrollY (and the pageXOffset/
+    /// pageYOffset aliases) read the viewport's live offset, and scroll/scrollTo/
+    /// scrollBy move it through the host that owns document scrolling. Only frame
+    /// realms used to get these; on the top-level window they were undefined, so
+    /// window.scrollTo(0, 0) threw.
+    /// </summary>
+    private void InstallViewportScrollGlobals()
+    {
+        _interpreter.RegisterGlobalValue(
+            "__fenViewportScroll",
+            _interpreter.AllocateNativeFunction(
+                "__fenViewportScroll",
+                (_, _) =>
+                {
+                    var offset = ReadViewportScroll();
+                    return _interpreter.AllocateArray(new[] { JsValue.FromNumber(offset.X), JsValue.FromNumber(offset.Y) });
+                },
+                length: 0));
+        var scrollTo = _interpreter.AllocateNativeFunction(
+            "scrollTo",
+            (_, args) =>
+            {
+                var (x, y) = ReadScrollArguments(args, relative: false, ReadViewportScroll());
+                ScrollViewportTo(x, y);
+                return JsValue.Undefined;
+            },
+            length: 0);
+        var scrollBy = _interpreter.AllocateNativeFunction(
+            "scrollBy",
+            (_, args) =>
+            {
+                var (x, y) = ReadScrollArguments(args, relative: true, ReadViewportScroll());
+                ScrollViewportTo(x, y);
+                return JsValue.Undefined;
+            },
+            length: 0);
+        _interpreter.RegisterGlobalValue("scrollTo", scrollTo);
+        _interpreter.RegisterGlobalValue("scroll", scrollTo);
+        _interpreter.RegisterGlobalValue("scrollBy", scrollBy);
+        EvaluateBootstrapWithFenJsRaw(
+            """
+            (function () {
+                // [Replaceable] readonly attributes: reads are live, and an assignment
+                // replaces the property with a plain data property (WebIDL 3.7.7).
+                [['scrollX', 0], ['pageXOffset', 0], ['scrollY', 1], ['pageYOffset', 1]].forEach(function (entry) {
+                    var name = entry[0], index = entry[1];
+                    Object.defineProperty(globalThis, name, {
+                        get: function () { return __fenViewportScroll()[index]; },
+                        set: function (value) {
+                            Object.defineProperty(globalThis, name, { value: value, writable: true, enumerable: true, configurable: true });
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+                });
+            })();
+            """);
+    }
+
+    private (double X, double Y) ReadViewportScroll() =>
+        FrameScrollReader != null ? FrameScrollReader(null) : (0d, 0d);
+
+    private void ScrollViewportTo(double x, double y)
+    {
+        x = Math.Max(0, double.IsFinite(x) ? x : 0);
+        y = Math.Max(0, double.IsFinite(y) ? y : 0);
+        // Reflect the move at once for the next read; the host's own scroll follows
+        // through its provider and is pushed back into the renderer each frame.
+        FrameScrollWriter?.Invoke(null, x, y);
+        JavaScriptEngine.TryScrollViewport(_currentDomRoot, x, y);
+        RequestRender?.Invoke();
     }
 
     public void NotifyFrameScrollChanged(Element frameElement)

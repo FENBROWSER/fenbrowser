@@ -250,7 +250,10 @@ namespace FenBrowser.FenEngine.Scripting
             object Owner,
             Func<FenBrowser.Core.Dom.V2.Node> Root,
             Func<FenBrowser.Core.Dom.V2.Element, SkiaSharp.SKRect?> VisualRect,
-            Action<FenBrowser.Core.Dom.V2.Element> ScrollTo);
+            Action<FenBrowser.Core.Dom.V2.Element> ScrollTo)
+        {
+            public Action<double, double> ScrollViewport { get; init; }
+        }
 
         private static readonly object ProviderGate = new();
         private static Registration[] _registrations = Array.Empty<Registration>();
@@ -315,6 +318,47 @@ namespace FenBrowser.FenEngine.Scripting
                 visualRect: null, scrollTo: provider);
         }
 
+        /// <summary>
+        /// Registers (or, with null, removes) the provider that scrolls the document
+        /// viewport of the tab <paramref name="owner"/> to an absolute offset - the
+        /// host owns that scroll, so window.scrollTo/scrollBy go through it.
+        /// </summary>
+        public static void SetViewportScrollProvider(
+            object owner,
+            Func<FenBrowser.Core.Dom.V2.Node> root,
+            Action<double, double> provider)
+        {
+            ArgumentNullException.ThrowIfNull(owner);
+            lock (ProviderGate)
+            {
+                var list = _registrations.ToList();
+                var index = list.FindIndex(r => ReferenceEquals(r.Owner, owner));
+                var updated = index >= 0
+                    ? list[index] with { Root = root ?? list[index].Root, ScrollViewport = provider }
+                    : new Registration(owner, root, null, null) { ScrollViewport = provider };
+                if (index >= 0) list.RemoveAt(index);
+                if (updated.VisualRect != null || updated.ScrollTo != null || updated.ScrollViewport != null) list.Add(updated);
+                _registrations = list.ToArray();
+            }
+        }
+
+        /// <summary>Scrolls the viewport of the tab whose document holds <paramref name="node"/>.</summary>
+        public static bool TryScrollViewport(FenBrowser.Core.Dom.V2.Node node, double x, double y)
+        {
+            var element = node as FenBrowser.Core.Dom.V2.Element ??
+                (node as FenBrowser.Core.Dom.V2.Document)?.DocumentElement ??
+                node?.OwnerDocument?.DocumentElement;
+            if (element == null)
+                return false;
+
+            var provider = ResolveRegistration(element, r => r.ScrollViewport != null)?.ScrollViewport;
+            if (provider == null)
+                return false;
+
+            provider(x, y);
+            return true;
+        }
+
         /// <summary>Drops everything <paramref name="owner"/> registered.</summary>
         public static void RemoveProviders(object owner)
         {
@@ -338,7 +382,7 @@ namespace FenBrowser.FenEngine.Scripting
                 var index = list.FindIndex(r => ReferenceEquals(r.Owner, owner));
                 var updated = index >= 0 ? change(list[index]) : new Registration(owner, root, visualRect, scrollTo);
                 if (index >= 0) list.RemoveAt(index);
-                if (updated.VisualRect != null || updated.ScrollTo != null) list.Add(updated);
+                if (updated.VisualRect != null || updated.ScrollTo != null || updated.ScrollViewport != null) list.Add(updated);
                 _registrations = list.ToArray();
             }
         }

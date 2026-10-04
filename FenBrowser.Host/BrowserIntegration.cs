@@ -395,6 +395,12 @@ public class BrowserIntegration : IDisposable
             }
         });
 
+        // window.scrollTo/scrollBy/scroll move the document scroll the host owns.
+        FenBrowser.FenEngine.Scripting.JavaScriptEngine.SetViewportScrollProvider(
+            this,
+            () => _browser?.Engine?.GetActiveDom(),
+            (_, y) => ScrollToY((float)y));
+
         // Wire browser events
         _browser.Navigated += (s, e) => 
         {
