@@ -1424,6 +1424,14 @@ return computed;
                 case "flex-flow":
                     ApplyFlexFlowShorthand(computed, declaration, value);
                     break;
+                case "flex":
+                    ApplyFlexShorthand(computed, declaration, value);
+                    break;
+                case "flex-grow":
+                case "flex-shrink":
+                case "flex-basis":
+                    SyncFlexShorthandFromLonghands(computed, declaration);
+                    break;
                 case "overflow":
                     ApplyOverflowShorthand(computed, declaration, value);
                     break;
@@ -2135,6 +2143,85 @@ return computed;
                 else
                     SetExpanded(computed, "flex-direction", part, source);
             }
+        }
+
+        /// <summary>
+        /// CSS Flexbox 1 §7.2: <c>flex</c> sets flex-grow, flex-shrink and flex-basis, an
+        /// omitted grow or shrink being 1 and an omitted basis 0%. Setting them here lets a
+        /// winning shorthand reset a longhand an earlier, weaker rule declared - YouTube's
+        /// `[action-buttons-update-owner-width] #owner { flex: 0 0 auto }` kept the
+        /// `flex-basis: 0.000000001px` of the plain `#owner` rule.
+        /// A var() value is split only after substitution, so it is left alone.
+        /// </summary>
+        private static void ApplyFlexShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return;
+            }
+
+            string grow = null, shrink = null, basis = null;
+            switch (value.Trim().ToLowerInvariant())
+            {
+                case "none":
+                    grow = "0"; shrink = "0"; basis = "auto";
+                    break;
+                case "auto":
+                    grow = "1"; shrink = "1"; basis = "auto";
+                    break;
+                case "initial":
+                case "unset":
+                    grow = "0"; shrink = "1"; basis = "auto";
+                    break;
+                case "inherit":
+                case "revert":
+                case "revert-layer":
+                    return;
+                default:
+                    foreach (var part in SplitCssValue(value.Trim()))
+                    {
+                        bool isNumber = double.TryParse(part, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out _);
+                        if (isNumber && grow == null) grow = part;
+                        else if (isNumber && shrink == null && basis == null) shrink = part;
+                        else basis = part;
+                    }
+
+                    grow ??= "1";
+                    shrink ??= "1";
+                    basis ??= "0%";
+                    break;
+            }
+
+            SetExpanded(computed, "flex-grow", grow, source);
+            SetExpanded(computed, "flex-shrink", shrink, source);
+            SetExpanded(computed, "flex-basis", basis, source);
+        }
+
+        /// <summary>
+        /// A flex longhand that wins over an earlier <c>flex</c> leaves the shorthand
+        /// entry describing the longhands as they now stand, so readers of either agree.
+        /// </summary>
+        private static void SyncFlexShorthandFromLonghands(Dictionary<string, CssDeclaration> computed, CssDeclaration source)
+        {
+            if (!computed.TryGetValue("flex", out var flex) ||
+                flex.Value?.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return;
+            }
+
+            string grow = computed.TryGetValue("flex-grow", out var g) ? g.Value : "0";
+            string shrink = computed.TryGetValue("flex-shrink", out var sh) ? sh.Value : "1";
+            string basis = computed.TryGetValue("flex-basis", out var b) ? b.Value : "auto";
+            if (string.IsNullOrWhiteSpace(grow) || string.IsNullOrWhiteSpace(shrink) || string.IsNullOrWhiteSpace(basis) ||
+                grow.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                shrink.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                basis.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return;
+            }
+
+            SetComputedDeclaration(computed, "flex", grow.Trim() + " " + shrink.Trim() + " " + basis.Trim(), flex.IsImportant ? flex : source);
         }
 
         private static void ApplyOverflowShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)

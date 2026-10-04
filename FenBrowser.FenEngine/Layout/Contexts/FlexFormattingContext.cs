@@ -229,12 +229,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 bool hasFlexGrow = ResolveFlexGrow(itemStyle).GetValueOrDefault() > 0;
                 string display = itemStyle?.Display?.ToLowerInvariant() ?? string.Empty;
                 bool inlineLike = display.StartsWith("inline", StringComparison.OrdinalIgnoreCase) || display.Length == 0;
-                bool hasFlexBasisExplicit = itemStyle?.Map != null &&
-                                           (itemStyle.Map.ContainsKey("flex-basis") ||
-                                            (itemStyle.Map.TryGetValue("flex", out var flexShorthand) &&
-                                             !string.IsNullOrWhiteSpace(flexShorthand) &&
-                                             flexShorthand.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Length >= 3));
-                bool isFlexBasisAuto = !hasFlexBasisExplicit && (itemStyle?.FlexBasis == null);
+                bool hasFlexBasisExplicit = HasDefiniteFlexBasisDeclaration(itemStyle);
+                bool isFlexBasisAuto = !hasFlexBasisExplicit && (itemStyle?.FlexBasis is not double declaredBasis || double.IsNaN(declaredBasis));
                 // Flex items with auto main-size should measure from intrinsic content width,
                 // not from the full container width, regardless of inline/block display.
                 bool preferIntrinsicWidth = isRow && !hasExplicitWidth && (isFlexBasisAuto || !hasFlexGrow);
@@ -3306,6 +3302,28 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     return flexGrow;
             }
             return null;
+        }
+
+        /// <summary>
+        /// True when flex-basis (declared, or the third value of flex) is something other
+        /// than auto or content - CSS Flexbox 1 §7.3.1 sizes those from the item itself.
+        /// </summary>
+        private static bool HasDefiniteFlexBasisDeclaration(CssComputed style)
+        {
+            if (style?.Map == null) return false;
+
+            if (!style.Map.TryGetValue("flex-basis", out var basis) &&
+                style.Map.TryGetValue("flex", out var flexShorthand) &&
+                !string.IsNullOrWhiteSpace(flexShorthand))
+            {
+                var parts = flexShorthand.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                basis = parts.Length >= 3 ? parts[2] : null;
+            }
+
+            if (string.IsNullOrWhiteSpace(basis)) return false;
+            basis = basis.Trim();
+            return !basis.Equals("auto", StringComparison.OrdinalIgnoreCase) &&
+                   !basis.Equals("content", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool HasExplicitWidthForFlexSizing(CssComputed style)
