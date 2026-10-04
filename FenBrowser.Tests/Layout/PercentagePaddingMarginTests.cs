@@ -92,6 +92,36 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public async Task CalcWithPercentage_ResolvesItsLengthAndPercentageParts()
+        {
+            // YouTube's watch-page player box: padding-top derived from two custom
+            // properties as a fraction of 100%.
+            var box = await LayoutAsync(
+                "#outer { width: 800px; --h: 9; --w: 16; } " +
+                "#ratio { padding-top: calc(var(--h) / var(--w) * 100%); } " +
+                "#mixed { padding-left: calc(50% - 20px); margin-left: calc(10% + 5px); height: 10px; }",
+                "<div id='outer'><div id='ratio'></div><div id='mixed'></div></div>");
+
+            var ratio = box("ratio");
+            Assert.Equal(450f, ratio.ContentBox.Top - ratio.PaddingBox.Top, 1);
+
+            var mixed = box("mixed");
+            Assert.Equal(380f, mixed.ContentBox.Left - mixed.PaddingBox.Left, 1);
+            Assert.Equal(85f, mixed.BorderBox.Left - box("outer").ContentBox.Left, 1);
+        }
+
+        [Fact]
+        public async Task CalcPercentagePadding_NeverGoesNegative()
+        {
+            var box = await LayoutAsync(
+                "#outer { width: 100px; } #inner { padding-top: calc(10% - 50px); height: 10px; }",
+                "<div id='outer'><div id='inner'></div></div>");
+
+            var inner = box("inner");
+            Assert.Equal(0f, inner.ContentBox.Top - inner.PaddingBox.Top, 1);
+        }
+
+        [Fact]
         public async Task LonghandPercentage_OverridesAnEarlierShorthandLength()
         {
             var box = await LayoutAsync(

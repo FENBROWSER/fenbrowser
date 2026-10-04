@@ -19,9 +19,24 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
         /// </summary>
         public static FenBrowser.Core.Thickness ResolvePadding(CssComputed style, float containingBlockWidth)
         {
-            return style == null
-                ? new FenBrowser.Core.Thickness()
-                : style.PaddingPercent.Resolve(style.Padding, containingBlockWidth);
+            if (style == null)
+            {
+                return new FenBrowser.Core.Thickness();
+            }
+
+            if (style.PaddingPercent.IsEmpty)
+            {
+                return style.Padding;
+            }
+
+            // Padding is never negative (CSS Box 3); calc(10% - 20px) can go below 0
+            // for a narrow containing block.
+            var padding = style.PaddingPercent.Resolve(style.Padding, containingBlockWidth);
+            return new FenBrowser.Core.Thickness(
+                Math.Max(0, padding.Left),
+                Math.Max(0, padding.Top),
+                Math.Max(0, padding.Right),
+                Math.Max(0, padding.Bottom));
         }
 
         /// <summary>Used margin: percentages resolve against the containing block's width (CSS 2.1 §8.3).</summary>

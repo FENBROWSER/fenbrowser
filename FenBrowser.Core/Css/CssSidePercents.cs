@@ -3,11 +3,12 @@ using System;
 namespace FenBrowser.Core.Css
 {
     /// <summary>
-    /// Percentage values of the four physical sides of a margin or padding.
+    /// Percentage parts of the four physical sides of a margin or padding.
     /// CSS 2.1 §8.3 / §8.4 (and CSS Box 3 §padding): a percentage margin or padding
     /// refers to the logical width of the containing block - for the vertical sides
-    /// too - so it cannot be turned into pixels at cascade time. A side left null
-    /// takes its length from the matching <see cref="Thickness"/> side.
+    /// too - so it cannot be turned into pixels at cascade time. The used side is the
+    /// matching <see cref="Thickness"/> side plus this percentage of that width: a
+    /// plain percentage has a zero length part, calc(100% - 20px) a -20px one.
     /// </summary>
     public readonly struct CssSidePercents : IEquatable<CssSidePercents>
     {
@@ -30,10 +31,10 @@ namespace FenBrowser.Core.Css
         public bool HasPositiveBottom => Bottom > 0;
 
         /// <summary>
-        /// The used sides: each percentage side resolved against
-        /// <paramref name="containingBlockWidth"/>, every other side taken from
-        /// <paramref name="lengths"/>. An indefinite basis (the min/max-content case of
-        /// CSS Sizing 3 §5.2.1) resolves percentages to zero.
+        /// The used sides: each side's length from <paramref name="lengths"/> plus its
+        /// percentage of <paramref name="containingBlockWidth"/>. An indefinite basis
+        /// (the min/max-content case of CSS Sizing 3 §5.2.1) resolves percentages to
+        /// zero.
         /// </summary>
         public Thickness Resolve(Thickness lengths, double containingBlockWidth)
         {
@@ -46,10 +47,10 @@ namespace FenBrowser.Core.Css
                 ? containingBlockWidth
                 : 0;
             return new Thickness(
-                Left.HasValue ? Left.Value * basis / 100.0 : lengths.Left,
-                Top.HasValue ? Top.Value * basis / 100.0 : lengths.Top,
-                Right.HasValue ? Right.Value * basis / 100.0 : lengths.Right,
-                Bottom.HasValue ? Bottom.Value * basis / 100.0 : lengths.Bottom);
+                lengths.Left + (Left ?? 0) * basis / 100.0,
+                lengths.Top + (Top ?? 0) * basis / 100.0,
+                lengths.Right + (Right ?? 0) * basis / 100.0,
+                lengths.Bottom + (Bottom ?? 0) * basis / 100.0);
         }
 
         public bool Equals(CssSidePercents other) =>

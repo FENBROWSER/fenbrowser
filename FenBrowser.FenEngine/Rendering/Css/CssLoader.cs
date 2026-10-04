@@ -10196,15 +10196,49 @@ private static double? ExtractPx(string text, string prop)
             Apply(ref right, DictGet(map, keys[10]));
         }
 
-        double? Percent(string token) =>
-            token != null && !TryPx(token, out _) && TryPercent(token, out var value) ? value : null;
+        // A plain percentage has no length part. A calc() mentioning a percentage is
+        // linear in its basis, so evaluating it against 0 and 100 splits it into the
+        // length part and the percentage: calc(var(--h) / var(--w) * 100%) - YouTube's
+        // player aspect box - is all percentage, calc(100% - 20px) is 100% and -20px.
+        // min()/max()/clamp() are not linear and keep their length-only value.
+        double? Percent(string token, ref double length)
+        {
+            if (token == null)
+            {
+                return null;
+            }
 
-        var percents = new CssSidePercents(Percent(left), Percent(top), Percent(right), Percent(bottom));
-        lengths = new Thickness(
-            percents.Left.HasValue ? 0 : lengths.Left,
-            percents.Top.HasValue ? 0 : lengths.Top,
-            percents.Right.HasValue ? 0 : lengths.Right,
-            percents.Bottom.HasValue ? 0 : lengths.Bottom);
+            if (token.StartsWith("calc(", StringComparison.OrdinalIgnoreCase) && token.Contains('%'))
+            {
+                if (TryParseCalc(token, out var atZero, 16.0, 0) && TryParseCalc(token, out var atHundred, 16.0, 100))
+                {
+                    var percent = atHundred - atZero;
+                    if (Math.Abs(percent) > 1e-9)
+                    {
+                        length = atZero;
+                        return percent;
+                    }
+                }
+
+                return null;
+            }
+
+            if (!TryPx(token, out _) && TryPercent(token, out var value))
+            {
+                length = 0;
+                return value;
+            }
+
+            return null;
+        }
+
+        double leftLength = lengths.Left, topLength = lengths.Top, rightLength = lengths.Right, bottomLength = lengths.Bottom;
+        var percents = new CssSidePercents(
+            Percent(left, ref leftLength),
+            Percent(top, ref topLength),
+            Percent(right, ref rightLength),
+            Percent(bottom, ref bottomLength));
+        lengths = new Thickness(leftLength, topLength, rightLength, bottomLength);
         return percents;
     }
 
