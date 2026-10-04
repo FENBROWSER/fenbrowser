@@ -41,6 +41,18 @@ namespace FenBrowser.FenEngine.Rendering
 
         private readonly SkiaRenderer _renderer = new SkiaRenderer();
         private readonly Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
+
+        // A copy of _boxes taken each time layout finishes, for readers that must not
+        // wait on _stateLock: Render holds it through layout, paint and raster, so a
+        // script geometry read (getBoundingClientRect, offsetWidth, IntersectionObserver)
+        // waited for the whole frame - hundreds of milliseconds each on YouTube's watch
+        // page. Never mutated once published.
+        private Dictionary<Node, BoxModel> _publishedBoxes = new Dictionary<Node, BoxModel>();
+
+        private void PublishBoxes()
+        {
+            Volatile.Write(ref _publishedBoxes, new Dictionary<Node, BoxModel>(_boxes));
+        }
         private readonly Interaction.ScrollManager _scrollManager = new Interaction.ScrollManager();
         private readonly PaintCompositingStabilityController _paintStabilityController = new PaintCompositingStabilityController();
         private readonly PaintDamageTracker _paintDamageTracker = new PaintDamageTracker();
@@ -192,15 +204,11 @@ namespace FenBrowser.FenEngine.Rendering
     public BoxModel GetElementBox(Node node)
     {
         if (node == null) return null;
-        // Lock against concurrent _boxes mutation inside Render(). Dictionary
-        // is not safe for concurrent read+write — TryGetValue against a
-        // partially-rebuilt table can return a stale BoxModel whose internal
-        // SKPicture/layer surfaces have been disposed, and dereferencing those
-        // later in Skia is the source of the native AV.
-        lock (_stateLock)
-        {
-            return _boxes.TryGetValue(node, out var box) ? box : null;
-        }
+        // Read the snapshot published when layout last finished rather than _boxes,
+        // which Render rebuilds under _stateLock: the snapshot is never mutated, so
+        // no reader sees a partially rebuilt table, and none waits for paint and
+        // raster to finish.
+        return Volatile.Read(ref _publishedBoxes).TryGetValue(node, out var box) ? box : null;
     }
 
     /// <summary>
@@ -293,6 +301,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _boxes[box.Key] = box.Value;
             }
+            PublishBoxes();
             // A layout-only flush changes hit-test geometry without rebuilding paint.
             // Do not let callers prefer a paint tree from an older geometry snapshot.
             _lastPaintTree = null;
@@ -748,6 +757,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                         layoutUpdated = true;
                         _layoutGeneration++;
+                        PublishBoxes();
 
                         if (scrollable != null)
                         {
@@ -1498,6 +1508,7 @@ namespace FenBrowser.FenEngine.Rendering
                     _retainedTileRasterizer.Invalidate();
                     _paintStabilityController.Reset();
                     _boxes.Clear();
+                    PublishBoxes();
                     CurrentOverlays.Clear();
                     canvas.Clear(SKColors.White);
                 }
@@ -1542,6 +1553,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _retainedTileRasterizer.Invalidate();
                 _paintStabilityController.Reset();
                 _boxes.Clear();
+                PublishBoxes();
                 CurrentOverlays.Clear();
                 
                 canvas.Clear(SKColors.White);
