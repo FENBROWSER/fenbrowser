@@ -2459,6 +2459,7 @@ public void Dispose()
                     // descendant, so using the dirty root for both loses selector rules.
                     var subtreeBaseUri = ResolveBaseUriForRecascadeRoot(root);
                     var stylesheetRoot = root.OwnerDocument?.DocumentElement ?? domEl;
+                    long subtreeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                     var subtreeStyles = await CssLoader.ComputeSubtreeAsync(
                         stylesheetRoot,
                         root,
@@ -2467,6 +2468,14 @@ public void Dispose()
                         activeViewportWidth,
                         activeViewportHeight,
                         fetchExternalCssForRootAsync: FetchExternalCssForRootAsync).ConfigureAwait(false);
+
+                    // What each root cost: a recascade of a large container or the root
+                    // element restyles thousands of elements on the script thread.
+                    EngineLogCompat.Info(
+                        $"[CustomHtmlEngine] Recascaded <{root.TagName}{(string.IsNullOrEmpty(root.Id) ? string.Empty : "#" + root.Id)}>: " +
+                        $"{subtreeStyles?.Count ?? 0} elements in " +
+                        $"{System.Diagnostics.Stopwatch.GetElapsedTime(subtreeStarted).TotalMilliseconds:F1}ms",
+                        LogCategory.CSS);
                     
                     if (subtreeStyles != null)
                     {
