@@ -48,6 +48,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
 
+            if (_layoutDepth == 0)
+            {
+                SizingKeywordResolver.BeginLayoutPass();
+            }
+
             if (_layoutDepth >= MaxLayoutDepth)
             {
                 FenBrowser.Core.EngineLogCompat.Warn($"[Layout] Max depth {MaxLayoutDepth} exceeded for {box.SourceNode?.NodeName}. Skipping.", FenBrowser.Core.Logging.LogCategory.Layout);
@@ -57,7 +62,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             try
             {
                 box.Store.SnapshotCurrentLayout(box.StoreId);
-                LayoutCore(box, state);
+                if (!SizingKeywordResolver.TryLayout(this, box, state, LayoutCore))
+                {
+                    LayoutCore(box, state);
+                }
                 ArrangeOutsideListMarker(box, state);
                 box.Store.SetCachedLayout(box.StoreId, state);
             }

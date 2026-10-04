@@ -1831,6 +1831,17 @@ return computed;
                 case "min-content":
                 case "max-content":
                 case "fit-content":
+                // CSS Sizing 4 §3: stretch, and the prefixed spellings sites still ship.
+                case "stretch":
+                case "-webkit-fill-available":
+                case "-moz-available":
+                case "fill-available":
+                case "-webkit-min-content":
+                case "-webkit-max-content":
+                case "-webkit-fit-content":
+                case "-moz-min-content":
+                case "-moz-max-content":
+                case "-moz-fit-content":
                     return true;
             }
 

@@ -1296,7 +1296,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             bool hasExplicitWidthFromMap = boxStyle?.Map != null &&
                                            boxStyle.Map.TryGetValue("width", out var rawWidthFromMap) &&
                                            !string.IsNullOrWhiteSpace(rawWidthFromMap) &&
-                                           !string.Equals(rawWidthFromMap.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
+                                           !string.Equals(rawWidthFromMap.Trim(), "auto", StringComparison.OrdinalIgnoreCase) &&
+                                           // min-content/max-content/fit-content arrive here already
+                                           // resolved to a length (FormattingContext.Layout), or
+                                           // as auto while their max-content is being probed.
+                                           !LayoutHelper.IsContentBasedSizeKeyword(rawWidthFromMap);
             bool hasExplicitWidth = boxStyle?.Width.HasValue == true ||
                                     boxStyle?.WidthPercent.HasValue == true ||
                                     !string.IsNullOrEmpty(boxStyle?.WidthExpression) ||

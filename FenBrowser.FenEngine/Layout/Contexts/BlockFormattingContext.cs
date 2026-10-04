@@ -782,33 +782,24 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 explicitHeight = Math.Max(0f, explicitHeight.Value - verticalExtras);
             }
 
-            float resolvedContentHeight;
-            if (explicitHeight.HasValue)
-            {
-                // Explicit height wins
-                resolvedContentHeight = explicitHeight.Value;
-            }
-            else
-            {
-                // Console.WriteLine($"[BlockBFC] No Explicit Height. Auto height: {autoHeight}");
-                // Use auto height
-                // We need to set the height of the box model buffers
-                resolvedContentHeight = autoHeight - ((float)blockBox.Geometry.Padding.Top + (float)blockBox.Geometry.Border.Top + (float)blockBox.Geometry.Padding.Bottom + (float)blockBox.Geometry.Border.Bottom);
-                if (resolvedContentHeight < 0) resolvedContentHeight = 0;
-            }
-
+            float autoContentHeight = Math.Max(0f, autoHeight - ((float)blockBox.Geometry.Padding.Top + (float)blockBox.Geometry.Border.Top + (float)blockBox.Geometry.Padding.Bottom + (float)blockBox.Geometry.Border.Bottom));
             bool isAtomicReplacedBox = blockBox.SourceNode is Element atomicElement &&
                                        ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(atomicElement);
-            if (!explicitHeight.HasValue && !isAtomicReplacedBox && !HasNonEmptyInFlowChild(blockBox))
+            if (!isAtomicReplacedBox && !HasNonEmptyInFlowChild(blockBox))
             {
-                resolvedContentHeight = 0f;
+                autoContentHeight = 0f;
             }
+
+            // Explicit height wins over the content height.
+            float resolvedContentHeight = explicitHeight ?? autoContentHeight;
 
             // Apply min/max height constraints (px, %, calc)
             if (blockBox.ComputedStyle != null)
             {
                 float minH = 0f;
                 float maxH = float.PositiveInfinity;
+                bool minIsContentHeight = false;
+                bool maxIsContentHeight = false;
 
                 if (blockBox.ComputedStyle.MinHeight.HasValue)
                 {
@@ -819,6 +810,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     float parentHeight = ResolvePercentageHeightContainingBlock(blockBox, state);
                     if (!float.IsInfinity(parentHeight) && parentHeight > 0)
                         minH = (float)(blockBox.ComputedStyle.MinHeightPercent.Value / 100.0 * parentHeight);
+                }
+                else if (LayoutHelper.IsContentBasedSizeKeyword(blockBox.ComputedStyle.MinHeightExpression))
+                {
+                    // CSS Sizing 3 §3.1: in a block container's block axis the content-based
+                    // keywords all behave as its automatic (content) height, already a
+                    // content-box size whatever box-sizing says.
+                    minH = autoContentHeight;
+                    minIsContentHeight = true;
                 }
                 else if (!string.IsNullOrEmpty(blockBox.ComputedStyle.MinHeightExpression))
                 {
@@ -841,6 +840,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (!float.IsInfinity(parentHeight) && parentHeight > 0)
                         maxH = (float)(blockBox.ComputedStyle.MaxHeightPercent.Value / 100.0 * parentHeight);
                 }
+                else if (LayoutHelper.IsContentBasedSizeKeyword(blockBox.ComputedStyle.MaxHeightExpression))
+                {
+                    maxH = autoContentHeight;
+                    maxIsContentHeight = true;
+                }
                 else if (!string.IsNullOrEmpty(blockBox.ComputedStyle.MaxHeightExpression))
                 {
                     float parentHeight = ResolveExpressionContainingBlockHeight(blockBox, state);
@@ -856,7 +860,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 // `box-sizing: border-box` measures them on the padding/border box, in
                 // which case map them back to content size (Acid2's nose: max-height
                 // 3em on a content-box float keeps 36px of content under its border).
-                if (!explicitHeight.HasValue && heightIsBorderBox)
+                // CSS Box Sizing 3 §3: that holds with an explicit height too - a
+                // border-box min-height on a box with height:10px still names its
+                // border box.
+                if (heightIsBorderBox)
                 {
                     float nonContentHeight =
                         (float)blockBox.Geometry.Padding.Top +
@@ -864,17 +871,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         (float)blockBox.Geometry.Border.Top +
                         (float)blockBox.Geometry.Border.Bottom;
 
-                    if (minH > 0f)
+                    if (minH > 0f && !minIsContentHeight)
                     {
                         float borderBoxMinHeight = minH;
                         minH = Math.Max(0f, minH - nonContentHeight);
-                        if (ShouldClampClippedInlineLabelAutoHeight(blockBox, borderBoxMinHeight, nonContentHeight, resolvedContentHeight))
+                        if (!explicitHeight.HasValue &&
+                            ShouldClampClippedInlineLabelAutoHeight(blockBox, borderBoxMinHeight, nonContentHeight, resolvedContentHeight))
                         {
                             resolvedContentHeight = minH;
                         }
                     }
 
-                    if (float.IsFinite(maxH))
+                    if (float.IsFinite(maxH) && !maxIsContentHeight)
                     {
                         maxH = Math.Max(0f, maxH - nonContentHeight);
                     }

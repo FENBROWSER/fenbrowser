@@ -8147,6 +8147,9 @@ private static double? ExtractPx(string text, string prop)
                    s == "fit-content" ||
                    s == "min-content" ||
                    s == "max-content" ||
+                   s is "stretch" or "-webkit-fill-available" or "-moz-available" or "fill-available" ||
+                   s is "-webkit-min-content" or "-webkit-max-content" or "-webkit-fit-content" ||
+                   s is "-moz-min-content" or "-moz-max-content" or "-moz-fit-content" ||
                    s.EndsWith("vh") ||
                    s.EndsWith("vw");
         }
