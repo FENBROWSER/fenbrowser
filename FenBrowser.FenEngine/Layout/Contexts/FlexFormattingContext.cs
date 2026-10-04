@@ -392,6 +392,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 else
                     contentBasis = measuredContent; // auto: use measured content size
 
+                // CSS Flexbox 1 §9.9.1: a content-sized container is the sum of its items'
+                // hypothetical main sizes - flex base sizes clamped by min/max - and with no
+                // free space left every item ends at that size. A column of buttons capped
+                // at max-height:36px otherwise made its container as tall as the unclamped
+                // wrapped content (YouTube's watch-page actions row).
+                if (shrinkToContentMainAxis)
+                {
+                    ResolveMainAxisMinMax(item, isRow, containerMainSize, out float hypoMin, out float hypoMax);
+                    contentBasis = Math.Max(hypoMin, Math.Min(contentBasis, hypoMax));
+                }
+
                 flexContentBases[item] = contentBasis;
                 if (isRow && TryResolveRowFlexItemShrinkFloor(item, out float shrinkFloor))
                 {
@@ -3403,6 +3414,68 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// Per CSS Flexbox §9.8, min/max are applied AFTER flex-grow/shrink
         /// but BEFORE final placement.
         /// </summary>
+        /// <summary>
+        /// An item's definite min and max main size as content-box sizes (no constraint:
+        /// 0 and +Infinity). Percentages resolve against the container's main size.
+        /// </summary>
+        private static void ResolveMainAxisMinMax(LayoutBox item, bool isRow, float containerMainSize, out float minMain, out float maxMain)
+        {
+            var style = item.ComputedStyle;
+            minMain = 0f;
+            maxMain = float.PositiveInfinity;
+            if (style == null) return;
+
+            bool percentBasis = containerMainSize > 0 && float.IsFinite(containerMainSize);
+
+            // Resolve min constraint for main axis
+            if (isRow)
+            {
+                if (style.MinWidth.HasValue)
+                    minMain = (float)style.MinWidth.Value;
+                else if (style.MinWidthPercent.HasValue == true && percentBasis)
+                    minMain = (float)(style.MinWidthPercent.Value / 100.0 * containerMainSize);
+            }
+            else
+            {
+                if (style.MinHeight.HasValue)
+                    minMain = (float)style.MinHeight.Value;
+                else if (style.MinHeightPercent.HasValue == true && percentBasis)
+                    minMain = (float)(style.MinHeightPercent.Value / 100.0 * containerMainSize);
+            }
+
+            if (minMain > 0f && string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                var chrome = isRow
+                    ? item.Geometry.Padding.Left + item.Geometry.Padding.Right + item.Geometry.Border.Left + item.Geometry.Border.Right
+                    : item.Geometry.Padding.Top + item.Geometry.Padding.Bottom + item.Geometry.Border.Top + item.Geometry.Border.Bottom;
+                minMain = Math.Max(0f, minMain - (float)chrome);
+            }
+
+            // Resolve max constraint for main axis
+            if (isRow)
+            {
+                if (style.MaxWidth.HasValue)
+                    maxMain = (float)style.MaxWidth.Value;
+                else if (style.MaxWidthPercent.HasValue == true && percentBasis)
+                    maxMain = (float)(style.MaxWidthPercent.Value / 100.0 * containerMainSize);
+            }
+            else
+            {
+                if (style.MaxHeight.HasValue)
+                    maxMain = (float)style.MaxHeight.Value;
+                else if (style.MaxHeightPercent.HasValue == true && percentBasis)
+                    maxMain = (float)(style.MaxHeightPercent.Value / 100.0 * containerMainSize);
+            }
+
+            if (float.IsFinite(maxMain) && string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                var chrome = isRow
+                    ? item.Geometry.Padding.Left + item.Geometry.Padding.Right + item.Geometry.Border.Left + item.Geometry.Border.Right
+                    : item.Geometry.Padding.Top + item.Geometry.Padding.Bottom + item.Geometry.Border.Top + item.Geometry.Border.Bottom;
+                maxMain = Math.Max(0f, maxMain - (float)chrome);
+            }
+        }
+
         private static void ClampFlexItemMainSizes(List<LayoutBox> items, bool isRow,
             float containerMainSize, LayoutState state)
         {
@@ -3417,55 +3490,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     : item.Geometry.ContentBox.Height;
                 if (currentMainSize <= 0f) continue;
 
-                // Resolve min constraint for main axis
-                float minMain = 0f;
-                if (isRow)
-                {
-                    if (style.MinWidth.HasValue)
-                        minMain = (float)style.MinWidth.Value;
-                    else if (style.MinWidthPercent.HasValue == true && containerMainSize > 0)
-                        minMain = (float)(style.MinWidthPercent.Value / 100.0 * containerMainSize);
-                }
-                else
-                {
-                    if (style.MinHeight.HasValue)
-                        minMain = (float)style.MinHeight.Value;
-                    else if (style.MinHeightPercent.HasValue == true && containerMainSize > 0)
-                        minMain = (float)(style.MinHeightPercent.Value / 100.0 * containerMainSize);
-                }
-
-                if (minMain > 0f && string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
-                {
-                    var chrome = isRow
-                        ? item.Geometry.Padding.Left + item.Geometry.Padding.Right + item.Geometry.Border.Left + item.Geometry.Border.Right
-                        : item.Geometry.Padding.Top + item.Geometry.Padding.Bottom + item.Geometry.Border.Top + item.Geometry.Border.Bottom;
-                    minMain = Math.Max(0f, minMain - (float)chrome);
-                }
-
-                // Resolve max constraint for main axis
-                float maxMain = float.PositiveInfinity;
-                if (isRow)
-                {
-                    if (style.MaxWidth.HasValue)
-                        maxMain = (float)style.MaxWidth.Value;
-                    else if (style.MaxWidthPercent.HasValue == true && containerMainSize > 0)
-                        maxMain = (float)(style.MaxWidthPercent.Value / 100.0 * containerMainSize);
-                }
-                else
-                {
-                    if (style.MaxHeight.HasValue)
-                        maxMain = (float)style.MaxHeight.Value;
-                    else if (style.MaxHeightPercent.HasValue == true && containerMainSize > 0)
-                        maxMain = (float)(style.MaxHeightPercent.Value / 100.0 * containerMainSize);
-                }
-
-                if (float.IsFinite(maxMain) && string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
-                {
-                    var chrome = isRow
-                        ? item.Geometry.Padding.Left + item.Geometry.Padding.Right + item.Geometry.Border.Left + item.Geometry.Border.Right
-                        : item.Geometry.Padding.Top + item.Geometry.Padding.Bottom + item.Geometry.Border.Top + item.Geometry.Border.Bottom;
-                    maxMain = Math.Max(0f, maxMain - (float)chrome);
-                }
+                ResolveMainAxisMinMax(item, isRow, containerMainSize, out float minMain, out float maxMain);
 
                 // Clamp and re-layout if needed
                 float clampedSize = currentMainSize;
